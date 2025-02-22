@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /Users/strickvl/coding/mcp-zenml
+cd path/to/mcp-zenml
 source .venv/bin/activate
 
 # FastMCP settings
