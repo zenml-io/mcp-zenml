@@ -6,7 +6,7 @@ Assumes that your local MCP settings will look something like this:
 {
     "mcpServers": {
         "zenml": {
-            "command": "/Users/strickvl/coding/mcp-zenml/run-zenml.sh",
+            "command": "path/to/run-zenml.sh",
             "args": []
         },
     }
