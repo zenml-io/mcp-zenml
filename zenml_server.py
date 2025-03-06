@@ -11,6 +11,7 @@ import logging
 import functools
 import os
 from typing import Callable, Any, TypeVar, cast
+from zenml.models.v2.core.pipeline import PipelineResponse
 
 # Configure minimal logging to stderr
 log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
@@ -67,7 +68,7 @@ def get_settings() -> str:
 @mcp.tool()
 @handle_exceptions
 def list_users(
-    sort_by: str = "created",
+    sort_by: str = "desc:created",
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
@@ -119,7 +120,7 @@ def get_stack(name_id_or_prefix: str) -> str:
 @mcp.tool()
 @handle_exceptions
 def list_stacks(
-    sort_by: str = "created",
+    sort_by: str = "desc:created",
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
@@ -158,20 +159,9 @@ def get_active_stack() -> str:
 
 @mcp.tool()
 @handle_exceptions
-def activate_stack(name_id_or_prefix: str) -> str:
-    """Activate a specific stack.
-
-    Sets the stack as active.
-    """
-    zenml_client.activate_stack(name_id_or_prefix)
-    return f"Stack activated: {name_id_or_prefix}"
-
-
-@mcp.tool()
-@handle_exceptions
 def list_pipelines() -> str:
     """List all pipelines in the ZenML workspace."""
-    pipelines = zenml_client.list_pipelines()
+    pipelines = zenml_client.list_pipelines(sort_by="desc:created")
 
     # Format pipeline data for readable output
     formatted_pipelines = []
@@ -189,9 +179,18 @@ def list_pipelines() -> str:
     )
 
 
+def get_latest_runs_status(
+    pipeline_response: PipelineResponse, num_runs: int = 5
+) -> str:
+    """Get the status of the latest run of a pipeline."""
+    latest_runs = pipeline_response.runs[:num_runs]
+    statuses = [run.status for run in latest_runs]
+    return f"Status of latest {num_runs} runs: {statuses}"
+
+
 @mcp.tool()
 @handle_exceptions
-def get_pipeline_details(name_id_or_prefix: str) -> str:
+def get_pipeline_details(name_id_or_prefix: str, num_runs: int = 5) -> str:
     """Get detailed information about a specific pipeline.
 
     Args:
@@ -205,14 +204,12 @@ ID: {pipeline.id}
 Status of latest run: {pipeline.latest_run_status}
 Created: {pipeline.created}
 Last Updated: {pipeline.updated}
-Steps: {', '.join(step.name for step in pipeline.steps)}
+Status of latest {num_runs} runs: {get_latest_runs_status(pipeline, num_runs)}
 """
 
 
 if __name__ == "__main__":
     try:
-        print("Starting server...")
-        # Initialize and run the server
         mcp.run(transport="stdio")
     except Exception as e:
         print(f"Error running server: {str(e)}", file=sys.stderr)
