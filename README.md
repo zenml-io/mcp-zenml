@@ -45,6 +45,8 @@ server, providing a way to get live information about:
 
 It also allows you to trigger new pipeline runs (if a run template is present).
 
+*Note: This is a beta/experimental release. We're still exploring how people will use this integration, so we welcome your feedback and suggestions! Please join our [Slack community](https://zenml.io/slack) to share your experience and help us improve.*
+
 ## How to use
 
 ### Prerequisites
