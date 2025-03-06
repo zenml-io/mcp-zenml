@@ -8,33 +8,19 @@
 # ///
 import sys
 import logging
-import traceback
 import functools
 import os
 from typing import Callable, Any, TypeVar, cast
-from pathlib import Path
 
-# Get log level from environment variable or default to WARNING
+# Configure minimal logging to stderr
 log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
 log_level = getattr(logging, log_level_name, logging.WARNING)
 
-# Create a logs directory in the user's home directory
-home_dir = Path.home()
-log_dir = home_dir / ".zenml-mcp" / "logs"
-log_dir.mkdir(parents=True, exist_ok=True)
-log_file = log_dir / "zenml_server.log"
-
-# Configure logging with a single file handler
+# Simple stderr logging configuration
 logging.basicConfig(
-    filename=str(log_file),
     level=log_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format="%(levelname)s: %(message)s",
 )
-
-# Get the logger for this module
-logger = logging.getLogger("zenml_server")
-logger.info(f"Logging to {log_file}")
 
 # Type variable for function return type
 T = TypeVar("T")
@@ -42,14 +28,15 @@ T = TypeVar("T")
 
 # Decorator for handling exceptions in tool functions
 def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
-    """Decorator to handle exceptions in tool functions and log them."""
+    """Decorator to handle exceptions in tool functions and return a friendly error message."""
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error in {func.__name__}: {str(e)}", exc_info=True)
+            # Print error to stderr for MCP to capture
+            print(f"Error in {func.__name__}: {str(e)}", file=sys.stderr)
             return cast(T, f"Error in {func.__name__}: {str(e)}")
 
     return wrapper
@@ -64,10 +51,8 @@ try:
 
     # Initialize ZenML client
     zenml_client = Client()
-
-    logger.info("Successfully initialized FastMCP and ZenML client")
 except Exception as e:
-    logger.error(f"Error during initialization: {str(e)}", exc_info=True)
+    print(f"Error during initialization: {str(e)}", file=sys.stderr)
     raise
 
 
@@ -226,9 +211,9 @@ Steps: {', '.join(step.name for step in pipeline.steps)}
 
 if __name__ == "__main__":
     try:
-        logger.info("Starting server...")
+        print("Starting server...")
         # Initialize and run the server
         mcp.run(transport="stdio")
     except Exception as e:
-        logger.error(f"Error running server: {str(e)}", exc_info=True)
+        print(f"Error running server: {str(e)}", file=sys.stderr)
         raise
