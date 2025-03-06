@@ -43,12 +43,25 @@ def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
     return wrapper
 
 
+INSTRUCTIONS = """
+You are a helpful assistant that can answer questions about a user's ZenML
+server.
+
+You might want to use custom arguments passed into the tool functions to filter
+and sort the results you're getting back. (By default, you generally will just
+get a handful of recent results back, but you might want to get more, iterate
+through the pages and so on.)
+
+Since a lot of the data comes back in JSON format, you might want to present
+this data to the user in a more readable format (e.g. a table).
+"""
+
 try:
     from mcp.server.fastmcp import FastMCP
     from zenml.client import Client
 
     # Initialize FastMCP server
-    mcp = FastMCP("zenml")
+    mcp = FastMCP(name="zenml", instructions=INSTRUCTIONS)
 
     # Initialize ZenML client
     zenml_client = Client()
