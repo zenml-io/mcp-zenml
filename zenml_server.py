@@ -1,4 +1,11 @@
-import os
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "httpx",
+#     "mcp[cli]",
+#     "zenml",
+# ]
+# ///
 import sys
 import logging
 import traceback
@@ -169,6 +176,7 @@ def list_stacks(
         debug_logger.error(f"Error in list_stacks: {str(e)}", exc_info=True)
         return f"Error listing stacks: {str(e)}"
 
+
 @mcp.tool()
 def get_active_stack() -> str:
     """Get the currently active stack."""
@@ -179,10 +187,11 @@ def get_active_stack() -> str:
         debug_logger.error(f"Error in get_active_stack: {str(e)}", exc_info=True)
         return f"Error retrieving active stack: {str(e)}"
 
+
 @mcp.tool()
 def activate_stack(name_id_or_prefix: str) -> str:
     """Activate a specific stack.
-    
+
     Sets the stack as active.
     """
     try:
@@ -191,6 +200,7 @@ def activate_stack(name_id_or_prefix: str) -> str:
     except Exception as e:
         debug_logger.error(f"Error in activate_stack: {str(e)}", exc_info=True)
         return f"Error activating stack: {str(e)}"
+
 
 @mcp.tool()
 def list_pipelines() -> str:
