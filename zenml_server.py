@@ -124,44 +124,58 @@ def list_stacks(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    id: str = None,
     created: str = None,
     updated: str = None,
     name: str = None,
-    description: str = None,
-    workspace_id: str = None,
-    user_id: str = None,
 ) -> str:
-    """List all stacks in the ZenML workspace."""
+    """List all stacks in the ZenML workspace.
+
+    By default, the stacks are sorted by creation date in descending order.
+
+    Args:
+        sort_by: The field to sort the stacks by
+        page: The page number to return
+        size: The number of stacks to return
+        created: The creation date of the stacks
+    """
     stacks = zenml_client.list_stacks(
         sort_by=sort_by,
         page=page,
         size=size,
         logical_operator=logical_operator,
-        id=id,
         created=created,
         updated=updated,
         name=name,
-        description=description,
-        workspace_id=workspace_id,
-        user_id=user_id,
     )
     return f"""# Stacks: {stacks}"""
 
-
 @mcp.tool()
 @handle_exceptions
-def get_active_stack() -> str:
-    """Get the currently active stack."""
-    stack = zenml_client.active_stack
-    return f"""# Active Stack: {stack}"""
+def list_pipelines(
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    created: str = None,
+    updated: str = None,
+) -> str:
+    """List all pipelines in the ZenML workspace.
 
+    By default, the pipelines are sorted by creation date in descending order.
 
-@mcp.tool()
-@handle_exceptions
-def list_pipelines() -> str:
-    """List all pipelines in the ZenML workspace."""
-    pipelines = zenml_client.list_pipelines(sort_by="desc:created")
+    Args:
+        sort_by: The field to sort the pipelines by
+        page: The page number to return
+        size: The number of pipelines to return
+        created: The creation date of the pipelines
+        updated: The last update date of the pipelines
+    """
+    pipelines = zenml_client.list_pipelines(
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        created=created,
+        updated=updated,
+    )
 
     # Format pipeline data for readable output
     formatted_pipelines = []
