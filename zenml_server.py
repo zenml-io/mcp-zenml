@@ -62,7 +62,7 @@ except Exception as e:
 def get_settings() -> str:
     """Get the current settings for the ZenML server."""
     settings = zenml_client.get_settings()
-    return f"Settings: {settings}"
+    return settings.model_dump_json()
 
 
 @mcp.tool()
@@ -72,33 +72,43 @@ def list_users(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    id: str = None,
-    external_user_id: str = None,
     created: str = None,
     updated: str = None,
     active: bool = None,
 ) -> str:
-    """List all users in the ZenML workspace."""
+    """List all users in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the users by
+        page: The page number to return
+        size: The number of users to return
+        logical_operator: The logical operator to use
+        created: The creation date of the users
+        updated: The last update date of the users
+        active: Whether the user is active
+    """
     users = zenml_client.list_users(
         sort_by=sort_by,
         page=page,
         size=size,
         logical_operator=logical_operator,
-        id=id,
-        external_user_id=external_user_id,
         created=created,
         updated=updated,
         active=active,
     )
-    return f"""# Users: {users}"""
+    return f"""{[user.model_dump_json() for user in users]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_user(name_id_or_prefix: str) -> str:
-    """Get detailed information about a specific user."""
+    """Get detailed information about a specific user.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the user to retrieve
+    """
     user = zenml_client.get_user(name_id_or_prefix)
-    return f"""# User: {user}"""
+    return user.model_dump_json()
 
 
 @mcp.tool()
@@ -106,15 +116,19 @@ def get_user(name_id_or_prefix: str) -> str:
 def get_active_user() -> str:
     """Get the currently active user."""
     user = zenml_client.active_user
-    return f"""# Active User: {user}"""
+    return user.model_dump_json()
 
 
 @mcp.tool()
 @handle_exceptions
 def get_stack(name_id_or_prefix: str) -> str:
-    """Get detailed information about a specific stack."""
+    """Get detailed information about a specific stack.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the stack to retrieve
+    """
     stack = zenml_client.get_stack(name_id_or_prefix)
-    return f"""# Stack: {stack}"""
+    return stack.model_dump_json()
 
 
 @mcp.tool()
@@ -136,7 +150,10 @@ def list_stacks(
         sort_by: The field to sort the stacks by
         page: The page number to return
         size: The number of stacks to return
+        logical_operator: The logical operator to use
         created: The creation date of the stacks
+        updated: The last update date of the stacks
+        name: The name of the stacks
     """
     stacks = zenml_client.list_stacks(
         sort_by=sort_by,
@@ -147,7 +164,7 @@ def list_stacks(
         updated=updated,
         name=name,
     )
-    return f"""# Stacks: {stacks}"""
+    return f"""{[stack.model_dump_json() for stack in stacks]}"""
 
 
 @mcp.tool()
@@ -177,58 +194,50 @@ def list_pipelines(
         created=created,
         updated=updated,
     )
-
-    # Format pipeline data for readable output
-    formatted_pipelines = []
-    for pipeline in pipelines:
-        formatted_pipelines.append(
-            f"Pipeline: {pipeline.name}\n"
-            f"ID: {pipeline.id}\n"
-            f"Status of latest run: {pipeline.latest_run_status}\n"
-            f"Created: {pipeline.created}\n"
-            "---"
-        )
-
-    return (
-        "\n".join(formatted_pipelines) if formatted_pipelines else "No pipelines found."
-    )
+    return f"""{[pipeline.model_dump_json() for pipeline in pipelines]}"""
 
 
 def get_latest_runs_status(
-    pipeline_response: PipelineResponse, num_runs: int = 5
+    pipeline_response: PipelineResponse,
+    num_runs: int = 5,
 ) -> str:
-    """Get the status of the latest run of a pipeline."""
+    """Get the status of the latest run of a pipeline.
+
+    Args:
+        pipeline_response: The pipeline response to get the latest runs from
+        num_runs: The number of runs to get the status of
+    """
     latest_runs = pipeline_response.runs[:num_runs]
     statuses = [run.status for run in latest_runs]
-    return f"Status of latest {num_runs} runs: {statuses}"
+    return f"""{[status for status in statuses]}"""
 
 
 @mcp.tool()
 @handle_exceptions
-def get_pipeline_details(name_id_or_prefix: str, num_runs: int = 5) -> str:
+def get_pipeline_details(
+    name_id_or_prefix: str,
+    num_runs: int = 5,
+) -> str:
     """Get detailed information about a specific pipeline.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the pipeline to retrieve
+        num_runs: The number of runs to get the status of
     """
     pipeline = zenml_client.get_pipeline(name_id_or_prefix)
-    return f"""
-Pipeline Details:
-Name: {pipeline.name}
-ID: {pipeline.id}
-Status of latest run: {pipeline.latest_run_status}
-Created: {pipeline.created}
-Last Updated: {pipeline.updated}
-Status of latest {num_runs} runs: {get_latest_runs_status(pipeline, num_runs)}
-"""
+    return f"""Pipeline: {pipeline.model_dump_json()}\n\nStatus of latest {num_runs} runs: {get_latest_runs_status(pipeline, num_runs)}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_service(name_id_or_prefix: str) -> str:
-    """Get detailed information about a specific service."""
+    """Get detailed information about a specific service.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the service to retrieve
+    """
     service = zenml_client.get_service(name_id_or_prefix)
-    return f"""# Service: {service.model_dump_json(indent=2)}"""
+    return service.model_dump_json()
 
 
 @mcp.tool()
@@ -249,7 +258,24 @@ def list_services(
     pipeline_step_name: str = None,
     model_version_id: str = None,
 ) -> str:
-    """List all services in the ZenML workspace."""
+    """List all services in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the services by
+        page: The page number to return
+        size: The number of services to return
+        logical_operator: The logical operator to use
+        id: The ID of the services
+        created: The creation date of the services
+        updated: The last update date of the services
+        name: The name of the services
+        running: Whether the service is running
+        service_name: The name of the service
+        pipeline_name: The name of the pipeline
+        pipeline_run_id: The ID of the pipeline run
+        pipeline_step_name: The name of the pipeline step
+        model_version_id: The ID of the model version
+    """
     services = zenml_client.list_services(
         sort_by=sort_by,
         page=page,
@@ -266,17 +292,19 @@ def list_services(
         pipeline_step_name=pipeline_step_name,
         model_version_id=model_version_id,
     )
-    return (
-        f"""# Services: {[service.model_dump_json(indent=2) for service in services]}"""
-    )
+    return f"""{[service.model_dump_json() for service in services]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_stack_component(name_id_or_prefix: str) -> str:
-    """Get detailed information about a specific stack component."""
+    """Get detailed information about a specific stack component.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the stack component to retrieve
+    """
     stack_component = zenml_client.get_stack_component(name_id_or_prefix)
-    return f"""# Stack Component: {stack_component.model_dump_json(indent=2)}"""
+    return stack_component.model_dump_json()
 
 
 @mcp.tool()
@@ -292,7 +320,19 @@ def list_stack_components(
     flavor: str = None,
     stack_id: str = None,
 ) -> str:
-    """List all stack components in the ZenML workspace."""
+    """List all stack components in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the stack components by
+        page: The page number to return
+        size: The number of stack components to return
+        logical_operator: The logical operator to use
+        created: The creation date of the stack components
+        updated: The last update date of the stack components
+        name: The name of the stack components
+        flavor: The flavor of the stack components
+        stack_id: The ID of the stack
+    """
     stack_components = zenml_client.list_stack_components(
         sort_by=sort_by,
         page=page,
@@ -304,15 +344,19 @@ def list_stack_components(
         flavor=flavor,
         stack_id=stack_id,
     )
-    return f"""# Stack Components: {[component.model_dump_json(indent=2) for component in stack_components]}"""
+    return f"""{[component.model_dump_json() for component in stack_components]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_flavor(name_id_or_prefix: str) -> str:
-    """Get detailed information about a specific flavor."""
+    """Get detailed information about a specific flavor.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the flavor to retrieve
+    """
     flavor = zenml_client.get_flavor(name_id_or_prefix)
-    return f"""# Flavor: {flavor.model_dump_json(indent=2)}"""
+    return flavor.model_dump_json()
 
 
 @mcp.tool()
@@ -328,7 +372,17 @@ def list_flavors(
     name: str = None,
     integration: str = None,
 ) -> str:
-    """List all flavors in the ZenML workspace."""
+    """List all flavors in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the flavors by
+        page: The page number to return
+        size: The number of flavors to return
+        logical_operator: The logical operator to use
+        id: The ID of the flavors
+        created: The creation date of the flavors
+        updated: The last update date of the flavors
+    """
     flavors = zenml_client.list_flavors(
         sort_by=sort_by,
         page=page,
@@ -340,7 +394,7 @@ def list_flavors(
         name=name,
         integration=integration,
     )
-    return f"""# Flavors: {[flavor.model_dump_json(indent=2) for flavor in flavors]}"""
+    return f"""{[flavor.model_dump_json() for flavor in flavors]}"""
 
 
 @mcp.tool()
@@ -380,9 +434,13 @@ def trigger_pipeline(
 @mcp.tool()
 @handle_exceptions
 def get_run_template(name_id_or_prefix: str) -> str:
-    """Get a run template for a pipeline."""
+    """Get a run template for a pipeline.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the run template to retrieve
+    """
     run_template = zenml_client.get_run_template(name_id_or_prefix)
-    return f"""# Run Template: {run_template.model_dump_json(indent=2)}"""
+    return run_template.model_dump_json()
 
 
 @mcp.tool()
@@ -396,7 +454,17 @@ def list_run_templates(
     name: str = None,
     tag: str = None,
 ) -> str:
-    """List all run templates in the ZenML workspace."""
+    """List all run templates in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the run templates by
+        page: The page number to return
+        size: The number of run templates to return
+        created: The creation date of the run templates
+        updated: The last update date of the run templates
+        name: The name of the run templates
+        tag: The tag of the run templates
+    """
     run_templates = zenml_client.list_run_templates(
         sort_by=sort_by,
         page=page,
@@ -406,15 +474,19 @@ def list_run_templates(
         name=name,
         tag=tag,
     )
-    return f"""# Run Templates: {[run_template.model_dump_json(indent=2) for run_template in run_templates]}"""
+    return f"""{[run_template.model_dump_json() for run_template in run_templates]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_schedule(name_id_or_prefix: str) -> str:
-    """Get a schedule for a pipeline."""
+    """Get a schedule for a pipeline.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the schedule to retrieve
+    """
     schedule = zenml_client.get_schedule(name_id_or_prefix)
-    return f"""# Schedule: {schedule.model_dump_json(indent=2)}"""
+    return schedule.model_dump_json()
 
 
 @mcp.tool()
@@ -440,6 +512,9 @@ def list_schedules(
         created: The creation date of the schedules
         updated: The last update date of the schedules
         name: The name of the schedules
+        pipeline_id: The ID of the pipeline
+        orchestrator_id: The ID of the orchestrator
+        active: Whether the schedule is active
     """
     schedules = zenml_client.list_schedules(
         sort_by=sort_by,
@@ -453,15 +528,19 @@ def list_schedules(
         orchestrator_id=orchestrator_id,
         active=active,
     )
-    return f"""# Schedules: {[schedule.model_dump_json(indent=2) for schedule in schedules]}"""
+    return f"""{[schedule.model_dump_json() for schedule in schedules]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_pipeline_run(name_id_or_prefix: str) -> str:
-    """Get a pipeline run by name, ID, or prefix."""
+    """Get a pipeline run by name, ID, or prefix.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the pipeline run to retrieve
+    """
     pipeline_run = zenml_client.get_pipeline_run(name_id_or_prefix)
-    return f"""# Pipeline Run: {pipeline_run.model_dump_json(indent=2)}"""
+    return pipeline_run.model_dump_json()
 
 
 @mcp.tool()
@@ -484,7 +563,26 @@ def list_pipeline_runs(
     stack: str = None,
     stack_component: str = None,
 ) -> str:
-    """List all pipeline runs in the ZenML workspace."""
+    """List all pipeline runs in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the pipeline runs by
+        page: The page number to return
+        size: The number of pipeline runs to return
+        logical_operator: The logical operator to use
+        created: The creation date of the pipeline runs
+        updated: The last update date of the pipeline runs
+        name: The name of the pipeline runs
+        pipeline_id: The ID of the pipeline
+        pipeline_name: The name of the pipeline
+        stack_id: The ID of the stack
+        status: The status of the pipeline runs
+        start_time: The start time of the pipeline runs
+        end_time: The end time of the pipeline runs
+        num_steps: The number of steps in the pipeline runs
+        stack: The stack of the pipeline runs
+        stack_component: The stack component of the pipeline runs
+    """
     pipeline_runs = zenml_client.list_pipeline_runs(
         sort_by=sort_by,
         page=page,
@@ -501,16 +599,21 @@ def list_pipeline_runs(
         end_time=end_time,
         num_steps=num_steps,
         stack=stack,
+        stack_component=stack_component,
     )
-    return f"""# Pipeline Runs: {[pipeline_run.model_dump_json(indent=2) for pipeline_run in pipeline_runs]}"""
+    return f"""{[pipeline_run.model_dump_json() for pipeline_run in pipeline_runs]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_run_step(step_run_id: str) -> str:
-    """Get a run step by name, ID, or prefix."""
+    """Get a run step by name, ID, or prefix.
+
+    Args:
+        step_run_id: The ID of the run step to retrieve
+    """
     run_step = zenml_client.get_run_step(step_run_id)
-    return f"""# Run Step: {run_step.model_dump_json(indent=2)}"""
+    return run_step.model_dump_json()
 
 
 @mcp.tool()
@@ -528,7 +631,26 @@ def list_run_steps(
     end_time: str = None,
     pipeline_run_id: str = None,
 ) -> str:
-    """List all run steps in the ZenML workspace."""
+    """List all run steps in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the run steps by
+        page: The page number to return
+        size: The number of run steps to return
+        logical_operator: The logical operator to use
+        created: The creation date of the run steps
+        updated: The last update date of the run steps
+        name: The name of the run steps
+        status: The status of the run steps
+        created=created,
+        updated=updated,
+        name=name,
+        status=status,
+        start_time=start_time,
+        end_time=end_time,
+        pipeline_run_id=pipeline_run_id,
+    )
+    """
     run_steps = zenml_client.list_run_steps(
         sort_by=sort_by,
         page=page,
@@ -542,7 +664,7 @@ def list_run_steps(
         end_time=end_time,
         pipeline_run_id=pipeline_run_id,
     )
-    return f"""# Run Steps: {[run_step.model_dump_json(indent=2) for run_step in run_steps]}"""
+    return f"""{[run_step.model_dump_json() for run_step in run_steps]}"""
 
 
 @mcp.tool()
@@ -557,7 +679,17 @@ def list_artifacts(
     name: str = None,
     tag: str = None,
 ) -> str:
-    """List all artifacts in the ZenML workspace."""
+    """List all artifacts in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the artifacts by
+        page: The page number to return
+        size: The number of artifacts to return
+        logical_operator: The logical operator to use
+        created: The creation date of the artifacts
+        updated: The last update date of the artifacts
+        name: The name of the artifacts
+    """
     artifacts = zenml_client.list_artifacts(
         sort_by=sort_by,
         page=page,
@@ -568,7 +700,7 @@ def list_artifacts(
         name=name,
         tag=tag,
     )
-    return f"""# Artifacts: {[artifact.model_dump_json(indent=2) for artifact in artifacts]}"""
+    return f"""{[artifact.model_dump_json() for artifact in artifacts]}"""
 
 
 @mcp.tool()
@@ -582,7 +714,17 @@ def list_secrets(
     updated: str = None,
     name: str = None,
 ) -> str:
-    """List all secrets in the ZenML workspace."""
+    """List all secrets in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the secrets by
+        page: The page number to return
+        size: The number of secrets to return
+        logical_operator: The logical operator to use
+        created: The creation date of the secrets
+        updated: The last update date of the secrets
+        name: The name of the secrets
+    """
     secrets = zenml_client.list_secrets(
         sort_by=sort_by,
         page=page,
@@ -592,15 +734,19 @@ def list_secrets(
         updated=updated,
         name=name,
     )
-    return f"""# Secrets: {[secret.model_dump_json(indent=2) for secret in secrets]}"""
+    return f"""{[secret.model_dump_json() for secret in secrets]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_service_connector(name_id_or_prefix: str) -> str:
-    """Get a service connector by name, ID, or prefix."""
+    """Get a service connector by name, ID, or prefix.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the service connector to retrieve
+    """
     service_connector = zenml_client.get_service_connector(name_id_or_prefix)
-    return f"""# Service Connector: {service_connector.model_dump_json(indent=2)}"""
+    return service_connector.model_dump_json()
 
 
 @mcp.tool()
@@ -615,7 +761,18 @@ def list_service_connectors(
     name: str = None,
     connector_type: str = None,
 ) -> str:
-    """List all service connectors in the ZenML workspace."""
+    """List all service connectors in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the service connectors by
+        page: The page number to return
+        size: The number of service connectors to return
+        logical_operator: The logical operator to use
+        created: The creation date of the service connectors
+        updated: The last update date of the service connectors
+        name: The name of the service connectors
+        connector_type: The type of the service connectors
+    """
     service_connectors = zenml_client.list_service_connectors(
         sort_by=sort_by,
         page=page,
@@ -626,15 +783,19 @@ def list_service_connectors(
         name=name,
         connector_type=connector_type,
     )
-    return f"""# Service Connectors: {[service_connector.model_dump_json(indent=2) for service_connector in service_connectors]}"""
+    return f"""{[service_connector.model_dump_json() for service_connector in service_connectors]}"""
 
 
 @mcp.tool()
 @handle_exceptions
 def get_model(name_id_or_prefix: str) -> str:
-    """Get a model by name, ID, or prefix."""
+    """Get a model by name, ID, or prefix.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the model to retrieve
+    """
     model = zenml_client.get_model(name_id_or_prefix)
-    return f"""# Model: {model.model_dump_json(indent=2)}"""
+    return model.model_dump_json()
 
 
 @mcp.tool()
@@ -649,7 +810,18 @@ def list_models(
     name: str = None,
     tag: str = None,
 ) -> str:
-    """List all models in the ZenML workspace."""
+    """List all models in the ZenML workspace.
+
+    Args:
+        sort_by: The field to sort the models by
+        page: The page number to return
+        size: The number of models to return
+        logical_operator: The logical operator to use
+        created: The creation date of the models
+        updated: The last update date of the models
+        name: The name of the models
+        tag: The tag of the models
+    """
     models = zenml_client.list_models(
         sort_by=sort_by,
         page=page,
@@ -660,7 +832,7 @@ def list_models(
         name=name,
         tag=tag,
     )
-    return f"""# Models: {[model.model_dump_json(indent=2) for model in models]}"""
+    return f"""{[model.model_dump_json() for model in models]}"""
 
 
 @mcp.tool()
@@ -669,12 +841,17 @@ def get_model_version(
     model_name_or_id: str,
     model_version_name_or_number_or_id: str,
 ) -> str:
-    """Get a model version by name, ID, or prefix."""
+    """Get a model version by name, ID, or prefix.
+
+    Args:
+        model_name_or_id: The name, ID or prefix of the model to retrieve
+        model_version_name_or_number_or_id: The name, ID or prefix of the model version to retrieve
+    """
     model_version = zenml_client.get_model_version(
         model_name_or_id,
         model_version_name_or_number_or_id,
     )
-    return f"""# Model Version: {model_version.model_dump_json(indent=2)}"""
+    return model_version.model_dump_json()
 
 
 @mcp.tool()
@@ -692,7 +869,21 @@ def list_model_versions(
     stage: str = None,
     tag: str = None,
 ) -> str:
-    """List all model versions for a model."""
+    """List all model versions for a model.
+
+    Args:
+        model_name_or_id: The name, ID or prefix of the model to retrieve
+        sort_by: The field to sort the model versions by
+        page: The page number to return
+        size: The number of model versions to return
+        logical_operator: The logical operator to use
+        created: The creation date of the model versions
+        updated: The last update date of the model versions
+        name: The name of the model versions
+        number: The number of the model versions
+        stage: The stage of the model versions
+        tag: The tag of the model versions
+    """
     model_versions = zenml_client.list_model_versions(
         model_name_or_id,
         sort_by=sort_by,
@@ -706,7 +897,9 @@ def list_model_versions(
         stage=stage,
         tag=tag,
     )
-    return f"""# Model Versions: {[model_version.model_dump_json(indent=2) for model_version in model_versions]}"""
+    return (
+        f"""{[model_version.model_dump_json() for model_version in model_versions]}"""
+    )
 
 
 @mcp.tool()
@@ -714,9 +907,13 @@ def list_model_versions(
 def get_step_code(
     step_run_id: str,
 ) -> str:
-    """Get the code for a step."""
+    """Get the code for a step.
+
+    Args:
+        step_run_id: The ID of the step to retrieve
+    """
     step_code = zenml_client.get_run_step(step_run_id).source_code
-    return f"""# Step Code: {step_code}"""
+    return f"""{step_code}"""
 
 
 if __name__ == "__main__":
