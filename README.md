@@ -6,8 +6,8 @@ Assumes that your local MCP settings will look something like this:
 {
     "mcpServers": {
         "zenml": {
-            "command": "uv run path/to/zenml_server.py",
-            "args": [],
+            "command": "/usr/local/bin/uv",
+            "args": ["run", "path/to/zenml_server.py"],
             "env": {
                 "ZENML_LOGGING_VERBOSITY": "WARN",
                 "LOGLEVEL": "WARN",
@@ -30,5 +30,7 @@ Assumes that your local MCP settings will look something like this:
 # steps
 
 - install uv
+- find the global path to your uv
+- specify that path in the config
 - get your store URL and API key from the ZenML server
 - add the server to your config (including your store URL and API key)
