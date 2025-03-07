@@ -8,12 +8,15 @@ the [ZenML](https://zenml.io) API.
 
 ## What is MCP?
 
-The Model Context Protocol (MCP) is an open protocol that standardises how applications provide context to Large Language Models (LLMs). It acts like a "USB-C port for AI applications" - providing a standardized way to connect AI models to different data sources and tools.
+The Model Context Protocol (MCP) is an open protocol that standardizes how
+applications provide context to Large Language Models (LLMs). It acts like a
+"USB-C port for AI applications" - providing a standardized way to connect AI
+models to different data sources and tools.
 
 MCP follows a client-server architecture where:
 - **MCP Hosts**: Programs like Claude Desktop or IDEs that want to access data through MCP
 - **MCP Clients**: Protocol clients that maintain 1:1 connections with servers
-- **MCP Servers**: Lightweight programs that expose specific capabilities through the standardised protocol
+- **MCP Servers**: Lightweight programs that expose specific capabilities through the standardized protocol
 - **Local Data Sources**: Your computer's files, databases, and services that MCP servers can securely access
 - **Remote Services**: External systems available over the internet that MCP servers can connect to
 
@@ -45,7 +48,10 @@ server, providing a way to get live information about:
 
 It also allows you to trigger new pipeline runs (if a run template is present).
 
-*Note: This is a beta/experimental release. We're still exploring how people will use this integration, so we welcome your feedback and suggestions! Please join our [Slack community](https://zenml.io/slack) to share your experience and help us improve.*
+*Note: This is a beta/experimental release. We're still exploring how people
+will use this integration, so we welcome your feedback and suggestions! Please
+join our [Slack community](https://zenml.io/slack) to share your experience and
+help us improve.*
 
 ## How to use
 
@@ -129,6 +135,21 @@ and it will use the new config. You should be able to see the ZenML server in
 the developer settings menu. Chat with Claude and it will use all the new tools
 you just gave it access to.
 
+#### Optional: Improving ZenML Tool Output Display
+
+For a better experience with ZenML tool results, you can configure Claude to
+display the JSON responses in a more readable format. In Claude Desktop, go to
+Settings → Profile, and in the "What personal preferences should Claude consider
+in responses?" section, add something like the following (or use these exact
+words!):
+
+```markdown
+When using zenml tools which return JSON strings and you're asked a question, you might want to consider using markdown tables to summarize the results or make them easier to view!
+```
+
+This will encourage Claude to format ZenML tool outputs as markdown tables,
+making the information much easier to read and understand.
+
 ### Installation for use with Cursor
 
 You will need to have [Cursor](https://www.cursor.com/) installed.
@@ -147,5 +168,3 @@ To set it up for a single repository, you will need to:
 In our experience, sometimes it shows a red error indicator even though it is
 working. You can try it out by chatting in the Cursor chat window. It will let
 you know if is able to access the ZenML tools or not.
-
-
