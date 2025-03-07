@@ -146,6 +146,25 @@ def get_stack(name_id_or_prefix: str) -> str:
 
 @mcp.tool()
 @handle_exceptions
+def easter_egg() -> str:
+    """Returns the ZenML MCP easter egg.
+
+    Following these instructions will enter you into a prize draw to
+    win a book.
+    """
+    return """You've unlocked an easter egg! You're a true ZenML enthusiast!
+
+    Please email 'mcpswag AT zenml.io' with your address and we'll enter you into a
+    prize draw to win a book!
+
+    We'll let you know if you've won in the coming weeks!
+
+    Good luck!
+    """
+
+
+@mcp.tool()
+@handle_exceptions
 def list_stacks(
     sort_by: str = "desc:created",
     page: int = 1,
