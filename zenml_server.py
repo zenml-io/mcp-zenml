@@ -6,11 +6,14 @@
 #     "zenml",
 # ]
 # ///
-import sys
-import logging
 import functools
+import json
+import logging
 import os
-from typing import Callable, Any, TypeVar, cast
+import sys
+from typing import Any, Callable, Dict, TypeVar, cast
+
+import requests
 from zenml.models.v2.core.pipeline import PipelineResponse
 
 # Configure minimal logging to stderr
@@ -68,6 +71,125 @@ try:
 except Exception as e:
     print(f"Error during initialization: {str(e)}", file=sys.stderr)
     raise
+
+
+def get_access_token(server_url: str, api_key: str) -> str:
+    """
+    Generate a short-lived access token using the ZenML API key.
+
+    Args:
+        server_url: The base URL of the ZenML server
+        api_key: The ZenML API key
+
+    Returns:
+        The access token as a string
+
+    Raises:
+        requests.HTTPError: If the request fails
+        ValueError: If the response doesn't contain an access token
+    """
+    # Ensure the server URL doesn't end with a slash
+    server_url = server_url.rstrip("/")
+
+    # Construct the login URL
+    url = f"{server_url}/api/v1/login"
+
+    logger.info("Generating access token")
+
+    # Make the request to get an access token
+    response = requests.post(
+        url,
+        data={"password": api_key},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    response.raise_for_status()
+
+    # Parse the response
+    token_data = response.json()
+
+    # Check if the access token is in the response
+    if "access_token" not in token_data:
+        raise ValueError("No access token in response")
+
+    return token_data["access_token"]
+
+
+def get_step_logs(server_url: str, step_id: str, access_token: str) -> Dict[str, Any]:
+    """Get logs for a specific step from the ZenML API.
+
+    Args:
+        server_url: The base URL of the ZenML server
+        step_id: The ID of the step to get logs for
+        access_token: The access token for authentication
+
+    Returns:
+        The logs data as a dictionary
+
+    Raises:
+        requests.HTTPError: If the request fails
+    """
+    # Ensure the server URL doesn't end with a slash
+    server_url = server_url.rstrip("/")
+
+    # Construct the full URL
+    url = f"{server_url}/api/v1/steps/{step_id}/logs"
+
+    # Prepare headers with the access token
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    logger.info(f"Fetching logs for step {step_id}")
+
+    # Make the request
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()  # Raise an exception for HTTP errors
+
+    return response.json()
+
+
+@mcp.tool()
+@handle_exceptions
+def get_step_logs(step_run_id: str) -> str:
+    """Get the logs for a specific step run.
+
+    Args:
+        step_run_id: The ID of the step run to get logs for
+    """
+    # Get server URL and API key from environment variables
+    server_url = os.environ.get("ZENML_STORE_URL")
+    api_key = os.environ.get("ZENML_STORE_API_KEY")
+
+    if not server_url:
+        raise ValueError("ZENML_STORE_URL environment variable not set")
+
+    if not api_key:
+        raise ValueError("ZENML_STORE_API_KEY environment variable not set")
+
+    try:
+        # Generate a short-lived access token
+        access_token = get_access_token(server_url, api_key)
+
+        # Get the logs using the access token
+        logs = get_step_logs(server_url, step_id, access_token)
+
+        # Print the logs in a formatted way
+        print(json.dumps(logs))
+
+    except requests.HTTPError as e:
+        if e.response.status_code == 401:
+            logger.error("Authentication failed. Please check your API key.")
+        elif e.response.status_code == 404:
+            logger.error(
+                "Logs not found. Please check the step ID. "
+                "Also note that if the step was run on a stack with a local "
+                "or non-cloud-based artifact store then no logs will have been "
+                "stored by ZenML."
+            )
+        else:
+            logger.error(f"Failed to fetch logs: {e}")
+    except ValueError as e:
+        logger.error(f"Value error: {e}")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
 
 
 @mcp.tool()
