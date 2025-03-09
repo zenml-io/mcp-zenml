@@ -71,7 +71,7 @@ try:
     # Initialize ZenML client
     zenml_client = Client()
 except Exception as e:
-    print(f"Error during initialization: {str(e)}", file=sys.stderr)
+    logger.error(f"Error during initialization: {str(e)}")
     raise
 
 
@@ -1065,5 +1065,5 @@ if __name__ == "__main__":
     try:
         mcp.run(transport="stdio")
     except Exception as e:
-        print(f"Error running server: {str(e)}", file=sys.stderr)
+        logger.error(f"Error running server: {str(e)}")
         raise
