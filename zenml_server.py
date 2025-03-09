@@ -72,14 +72,6 @@ except Exception as e:
 
 @mcp.tool()
 @handle_exceptions
-def get_settings() -> str:
-    """Get the current settings for the ZenML server."""
-    settings = zenml_client.get_settings()
-    return settings.model_dump_json()
-
-
-@mcp.tool()
-@handle_exceptions
 def list_users(
     sort_by: str = "desc:created",
     page: int = 1,
