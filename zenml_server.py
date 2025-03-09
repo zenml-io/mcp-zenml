@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, TypeVar, cast
 import requests
 from zenml.models.v2.core.pipeline import PipelineResponse
 
+logger = logging.getLogger(__name__)
+
 # Configure minimal logging to stderr
 log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
 log_level = getattr(logging, log_level_name, logging.WARNING)
@@ -114,7 +116,9 @@ def get_access_token(server_url: str, api_key: str) -> str:
     return token_data["access_token"]
 
 
-def get_step_logs(server_url: str, step_id: str, access_token: str) -> Dict[str, Any]:
+def make_step_logs_request(
+    server_url: str, step_id: str, access_token: str
+) -> Dict[str, Any]:
     """Get logs for a specific step from the ZenML API.
 
     Args:
@@ -169,27 +173,25 @@ def get_step_logs(step_run_id: str) -> str:
         access_token = get_access_token(server_url, api_key)
 
         # Get the logs using the access token
-        logs = get_step_logs(server_url, step_id, access_token)
-
-        # Print the logs in a formatted way
-        print(json.dumps(logs))
+        logs = make_step_logs_request(server_url, step_run_id, access_token)
+        return json.dumps(logs)
 
     except requests.HTTPError as e:
         if e.response.status_code == 401:
-            logger.error("Authentication failed. Please check your API key.")
+            return "Authentication failed. Please check your API key."
         elif e.response.status_code == 404:
-            logger.error(
+            return (
                 "Logs not found. Please check the step ID. "
                 "Also note that if the step was run on a stack with a local "
                 "or non-cloud-based artifact store then no logs will have been "
                 "stored by ZenML."
             )
         else:
-            logger.error(f"Failed to fetch logs: {e}")
+            return f"Failed to fetch logs: {e}"
     except ValueError as e:
-        logger.error(f"Value error: {e}")
+        return f"Value error: {e}"
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        return f"An error occurred: {e}"
 
 
 @mcp.tool()
