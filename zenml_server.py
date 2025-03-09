@@ -282,7 +282,6 @@ def list_services(
     id: str = None,
     created: str = None,
     updated: str = None,
-    name: str = None,
     running: bool = None,
     service_name: str = None,
     pipeline_name: str = None,
@@ -300,7 +299,6 @@ def list_services(
         id: The ID of the services
         created: The creation date of the services
         updated: The last update date of the services
-        name: The name of the services
         running: Whether the service is running
         service_name: The name of the service
         pipeline_name: The name of the pipeline
@@ -316,7 +314,6 @@ def list_services(
         id=id,
         created=created,
         updated=updated,
-        name=name,
         running=running,
         service_name=service_name,
         pipeline_name=pipeline_name,
