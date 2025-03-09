@@ -1061,6 +1061,28 @@ def get_step_code(
     return f"""{step_code}"""
 
 
+@mcp.prompt()
+@handle_exceptions
+def stack_components_analysis() -> str:
+    """Analyze the stacks in the ZenML workspace."""
+    return (
+        "Please generate a comprehensive report or dashboard on our ZenML stack components, "
+        "showing which ones are most frequently used across our pipelines. "
+        "Include information about version compatibility issues and performance variations."
+    )
+
+
+@mcp.prompt()
+@handle_exceptions
+def recent_runs_analysis() -> str:
+    """Analyze the recent runs in the ZenML workspace."""
+    return (
+        "Please generate a comprehensive report or dashboard on our recent runs, "
+        "showing which pipelines are most frequently run and which ones are most frequently failed."
+        "Include information about the status of the runs, the duration, and the stack components used."
+    )
+
+
 if __name__ == "__main__":
     try:
         mcp.run(transport="stdio")
