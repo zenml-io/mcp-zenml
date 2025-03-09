@@ -42,9 +42,10 @@ server, providing a way to get live information about:
 - Flavors
 - Pipeline run templates
 - Schedules
-- Artifacts
+- Artifacts (metadata about data artifacts, not the data itself)
 - Service Connectors
 - Step code
+- Step logs (if the step was run on a cloud-based stack)
 
 It also allows you to trigger new pipeline runs (if a run template is present).
 
