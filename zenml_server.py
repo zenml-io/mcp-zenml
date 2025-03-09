@@ -1083,6 +1083,21 @@ def recent_runs_analysis() -> str:
     )
 
 
+@mcp.resource(uri="resource://zenml_server/most_recent_runs?run_count={run_count}")
+@handle_exceptions
+def most_recent_runs(run_count: int = 10) -> str:
+    """Returns the ten most recent runs in the ZenML workspace.
+
+    Args:
+        run_count: The number of runs to return
+    """
+    return zenml_client.list_pipeline_runs(
+        sort_by="desc:created",
+        page=1,
+        size=run_count,
+    ).model_dump_json()
+
+
 if __name__ == "__main__":
     try:
         mcp.run(transport="stdio")
