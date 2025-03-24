@@ -69,7 +69,7 @@ Mac.
 You will also need to clone this repository somewhere locally:
 
 ```bash
-git clone https://github.com/zenml-io/zenml-mcp-server.git
+git clone https://github.com/zenml-io/mcp-zenml.git
 ```
 
 ### Your MCP config file
