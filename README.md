@@ -58,13 +58,13 @@ help us improve.*
 
 ### Prerequisites
 
-You will need to have access to a ZenML Cloud server. If you don't have one,
-you can sign up for a free trial at [ZenML Cloud](https://cloud.zenml.io).
+You will need to have access to a deployed ZenML server. If you don't have one,
+you can sign up for a free trial at [ZenML Pro](https://cloud.zenml.io) and we'll manage the deployment for you.
 
-You will also need to have `uv` installed locally. For more information, see
+You will also (probably) need to have `uv` installed locally. For more information, see
 the [`uv` documentation](https://docs.astral.sh/uv/getting-started/installation/).
 We recommend installation via their installer script or via `brew` if using a
-Mac.
+Mac. (Technically you don't *need* it, but it makes installation and setup easy.)
 
 You will also need to clone this repository somewhere locally:
 
