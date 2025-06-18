@@ -14,13 +14,12 @@ import sys
 from typing import Any, Callable, Dict, TypeVar, cast
 
 import requests
-from zenml.models.v2.core.pipeline import PipelineResponse
 
 logger = logging.getLogger(__name__)
 
 # Configure minimal logging to stderr
-log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
-log_level = getattr(logging, log_level_name, logging.WARNING)
+log_level_name = os.environ.get("LOGLEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
 
 # Simple stderr logging configuration
 logging.basicConfig(
@@ -62,17 +61,37 @@ this data to the user in a more readable format (e.g. a table).
 """
 
 try:
+    logger.info("Importing MCP dependencies...")
     from mcp.server.fastmcp import FastMCP
-    from zenml.client import Client
 
     # Initialize FastMCP server
+    logger.info("Initializing FastMCP server...")
     mcp = FastMCP(name="zenml", instructions=INSTRUCTIONS)
+    logger.info("FastMCP server initialized successfully")
 
-    # Initialize ZenML client
-    zenml_client = Client()
+    # ZenML client will be initialized lazily
+    zenml_client = None
+
 except Exception as e:
     logger.error(f"Error during initialization: {str(e)}")
     raise
+
+
+def get_zenml_client():
+    """Get or initialize the ZenML client lazily."""
+    global zenml_client
+    if zenml_client is None:
+        logger.info("Lazy importing ZenML...")
+        from zenml.client import Client
+
+        logger.info("Initializing ZenML client...")
+        try:
+            zenml_client = Client()
+            logger.info("ZenML client initialized successfully")
+        except Exception as e:
+            logger.error(f"ZenML client initialization failed: {e}")
+            raise
+    return zenml_client
 
 
 def get_access_token(server_url: str, api_key: str) -> str:
@@ -216,7 +235,7 @@ def list_users(
         updated: The last update date of the users
         active: Whether the user is active
     """
-    users = zenml_client.list_users(
+    users = get_zenml_client().list_users(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -236,7 +255,7 @@ def get_user(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the user to retrieve
     """
-    user = zenml_client.get_user(name_id_or_prefix)
+    user = get_zenml_client().get_user(name_id_or_prefix)
     return user.model_dump_json()
 
 
@@ -244,7 +263,7 @@ def get_user(name_id_or_prefix: str) -> str:
 @handle_exceptions
 def get_active_user() -> str:
     """Get the currently active user."""
-    user = zenml_client.active_user
+    user = get_zenml_client().active_user
     return user.model_dump_json()
 
 
@@ -256,7 +275,7 @@ def get_stack(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack to retrieve
     """
-    stack = zenml_client.get_stack(name_id_or_prefix)
+    stack = get_zenml_client().get_stack(name_id_or_prefix)
     return stack.model_dump_json()
 
 
@@ -303,7 +322,7 @@ def list_stacks(
         updated: The last update date of the stacks
         name: The name of the stacks
     """
-    stacks = zenml_client.list_stacks(
+    stacks = get_zenml_client().list_stacks(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -335,7 +354,7 @@ def list_pipelines(
         created: The creation date of the pipelines
         updated: The last update date of the pipelines
     """
-    pipelines = zenml_client.list_pipelines(
+    pipelines = get_zenml_client().list_pipelines(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -346,7 +365,7 @@ def list_pipelines(
 
 
 def get_latest_runs_status(
-    pipeline_response: PipelineResponse,
+    pipeline_response,  # PipelineResponse - imported lazily
     num_runs: int = 5,
 ) -> str:
     """Get the status of the latest run of a pipeline.
@@ -372,7 +391,7 @@ def get_pipeline_details(
         name_id_or_prefix: The name, ID or prefix of the pipeline to retrieve
         num_runs: The number of runs to get the status of
     """
-    pipeline = zenml_client.get_pipeline(name_id_or_prefix)
+    pipeline = get_zenml_client().get_pipeline(name_id_or_prefix)
     return f"""Pipeline: {pipeline.model_dump_json()}\n\nStatus of latest {num_runs} runs: {get_latest_runs_status(pipeline, num_runs)}"""
 
 
@@ -384,7 +403,7 @@ def get_service(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the service to retrieve
     """
-    service = zenml_client.get_service(name_id_or_prefix)
+    service = get_zenml_client().get_service(name_id_or_prefix)
     return service.model_dump_json()
 
 
@@ -422,7 +441,7 @@ def list_services(
         pipeline_step_name: The name of the pipeline step
         model_version_id: The ID of the model version
     """
-    services = zenml_client.list_services(
+    services = get_zenml_client().list_services(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -448,7 +467,7 @@ def get_stack_component(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack component to retrieve
     """
-    stack_component = zenml_client.get_stack_component(name_id_or_prefix)
+    stack_component = get_zenml_client().get_stack_component(name_id_or_prefix)
     return stack_component.model_dump_json()
 
 
@@ -478,7 +497,7 @@ def list_stack_components(
         flavor: The flavor of the stack components
         stack_id: The ID of the stack
     """
-    stack_components = zenml_client.list_stack_components(
+    stack_components = get_zenml_client().list_stack_components(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -500,7 +519,7 @@ def get_flavor(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the flavor to retrieve
     """
-    flavor = zenml_client.get_flavor(name_id_or_prefix)
+    flavor = get_zenml_client().get_flavor(name_id_or_prefix)
     return flavor.model_dump_json()
 
 
@@ -528,7 +547,7 @@ def list_flavors(
         created: The creation date of the flavors
         updated: The last update date of the flavors
     """
-    flavors = zenml_client.list_flavors(
+    flavors = get_zenml_client().list_flavors(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -568,7 +587,7 @@ def trigger_pipeline(
         trigger_pipeline(template_id=<ID>)
         ```
     """
-    pipeline_run = zenml_client.trigger_pipeline(
+    pipeline_run = get_zenml_client().trigger_pipeline(
         pipeline_name_or_id=pipeline_name_or_id,
         template_id=template_id,
         stack_name_or_id=stack_name_or_id,
@@ -584,7 +603,7 @@ def get_run_template(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the run template to retrieve
     """
-    run_template = zenml_client.get_run_template(name_id_or_prefix)
+    run_template = get_zenml_client().get_run_template(name_id_or_prefix)
     return run_template.model_dump_json()
 
 
@@ -610,7 +629,7 @@ def list_run_templates(
         name: The name of the run templates
         tag: The tag of the run templates
     """
-    run_templates = zenml_client.list_run_templates(
+    run_templates = get_zenml_client().list_run_templates(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -630,7 +649,7 @@ def get_schedule(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the schedule to retrieve
     """
-    schedule = zenml_client.get_schedule(name_id_or_prefix)
+    schedule = get_zenml_client().get_schedule(name_id_or_prefix)
     return schedule.model_dump_json()
 
 
@@ -661,7 +680,7 @@ def list_schedules(
         orchestrator_id: The ID of the orchestrator
         active: Whether the schedule is active
     """
-    schedules = zenml_client.list_schedules(
+    schedules = get_zenml_client().list_schedules(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -684,7 +703,7 @@ def get_pipeline_run(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the pipeline run to retrieve
     """
-    pipeline_run = zenml_client.get_pipeline_run(name_id_or_prefix)
+    pipeline_run = get_zenml_client().get_pipeline_run(name_id_or_prefix)
     return pipeline_run.model_dump_json()
 
 
@@ -728,7 +747,7 @@ def list_pipeline_runs(
         stack: The stack of the pipeline runs
         stack_component: The stack component of the pipeline runs
     """
-    pipeline_runs = zenml_client.list_pipeline_runs(
+    pipeline_runs = get_zenml_client().list_pipeline_runs(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -757,7 +776,7 @@ def get_run_step(step_run_id: str) -> str:
     Args:
         step_run_id: The ID of the run step to retrieve
     """
-    run_step = zenml_client.get_run_step(step_run_id)
+    run_step = get_zenml_client().get_run_step(step_run_id)
     return run_step.model_dump_json()
 
 
@@ -787,16 +806,11 @@ def list_run_steps(
         updated: The last update date of the run steps
         name: The name of the run steps
         status: The status of the run steps
-        created=created,
-        updated=updated,
-        name=name,
-        status=status,
-        start_time=start_time,
-        end_time=end_time,
-        pipeline_run_id=pipeline_run_id,
-    )
+        start_time: The start time of the run steps
+        end_time: The end time of the run steps
+        pipeline_run_id: The ID of the pipeline run
     """
-    run_steps = zenml_client.list_run_steps(
+    run_steps = get_zenml_client().list_run_steps(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -835,7 +849,7 @@ def list_artifacts(
         updated: The last update date of the artifacts
         name: The name of the artifacts
     """
-    artifacts = zenml_client.list_artifacts(
+    artifacts = get_zenml_client().list_artifacts(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -870,7 +884,7 @@ def list_secrets(
         updated: The last update date of the secrets
         name: The name of the secrets
     """
-    secrets = zenml_client.list_secrets(
+    secrets = get_zenml_client().list_secrets(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -890,7 +904,7 @@ def get_service_connector(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the service connector to retrieve
     """
-    service_connector = zenml_client.get_service_connector(name_id_or_prefix)
+    service_connector = get_zenml_client().get_service_connector(name_id_or_prefix)
     return service_connector.model_dump_json()
 
 
@@ -918,7 +932,7 @@ def list_service_connectors(
         name: The name of the service connectors
         connector_type: The type of the service connectors
     """
-    service_connectors = zenml_client.list_service_connectors(
+    service_connectors = get_zenml_client().list_service_connectors(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -939,7 +953,7 @@ def get_model(name_id_or_prefix: str) -> str:
     Args:
         name_id_or_prefix: The name, ID or prefix of the model to retrieve
     """
-    model = zenml_client.get_model(name_id_or_prefix)
+    model = get_zenml_client().get_model(name_id_or_prefix)
     return model.model_dump_json()
 
 
@@ -967,7 +981,7 @@ def list_models(
         name: The name of the models
         tag: The tag of the models
     """
-    models = zenml_client.list_models(
+    models = get_zenml_client().list_models(
         sort_by=sort_by,
         page=page,
         size=size,
@@ -992,7 +1006,7 @@ def get_model_version(
         model_name_or_id: The name, ID or prefix of the model to retrieve
         model_version_name_or_number_or_id: The name, ID or prefix of the model version to retrieve
     """
-    model_version = zenml_client.get_model_version(
+    model_version = get_zenml_client().get_model_version(
         model_name_or_id,
         model_version_name_or_number_or_id,
     )
@@ -1029,7 +1043,7 @@ def list_model_versions(
         stage: The stage of the model versions
         tag: The tag of the model versions
     """
-    model_versions = zenml_client.list_model_versions(
+    model_versions = get_zenml_client().list_model_versions(
         model_name_or_id,
         sort_by=sort_by,
         page=page,
@@ -1057,7 +1071,7 @@ def get_step_code(
     Args:
         step_run_id: The ID of the step to retrieve
     """
-    step_code = zenml_client.get_run_step(step_run_id).source_code
+    step_code = get_zenml_client().get_run_step(step_run_id).source_code
     return f"""{step_code}"""
 
 
@@ -1091,15 +1105,20 @@ def most_recent_runs(run_count: int = 10) -> str:
     Args:
         run_count: The number of runs to return
     """
-    return zenml_client.list_pipeline_runs(
-        sort_by="desc:created",
-        page=1,
-        size=run_count,
-    ).model_dump_json()
+    return (
+        get_zenml_client()
+        .list_pipeline_runs(
+            sort_by="desc:created",
+            page=1,
+            size=run_count,
+        )
+        .model_dump_json()
+    )
 
 
 if __name__ == "__main__":
     try:
+        logger.info("Starting MCP server with stdio transport...")
         mcp.run(transport="stdio")
     except Exception as e:
         logger.error(f"Error running server: {str(e)}")
