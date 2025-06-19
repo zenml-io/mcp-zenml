@@ -54,6 +54,21 @@ will use this integration, so we welcome your feedback and suggestions! Please
 join our [Slack community](https://zenml.io/slack) to share your experience and
 help us improve.*
 
+## Testing & Quality Assurance
+
+This project includes automated testing to ensure the MCP server remains functional:
+
+- **🔄 Automated Smoke Tests**: A comprehensive smoke test runs every 3 days via GitHub Actions
+- **🚨 Issue Creation**: Failed tests automatically create GitHub issues with detailed debugging information
+- **⚡ Fast CI**: Uses UV with caching for quick dependency installation and testing
+- **🧪 Manual Testing**: You can run the smoke test locally using `uv run scripts/test_mcp_server.py zenml_server.py`
+
+The automated tests verify:
+- MCP protocol connection and handshake
+- Server initialization and tool discovery  
+- Basic tool functionality (when ZenML server is accessible)
+- Resource and prompt enumeration
+
 ## How to use
 
 ### Prerequisites
