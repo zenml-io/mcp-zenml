@@ -1,8 +1,11 @@
-#!/usr/bin/env python3
-"""
-Simple MCP client smoke test for ZenML MCP server
-"""
-
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "httpx",
+#     "mcp[cli]",
+#     "zenml",
+# ]
+# ///
 import asyncio
 import sys
 from pathlib import Path
