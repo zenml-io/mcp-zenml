@@ -61,7 +61,7 @@ This project includes automated testing to ensure the MCP server remains functio
 - **🔄 Automated Smoke Tests**: A comprehensive smoke test runs every 3 days via GitHub Actions
 - **🚨 Issue Creation**: Failed tests automatically create GitHub issues with detailed debugging information
 - **⚡ Fast CI**: Uses UV with caching for quick dependency installation and testing
-- **🧪 Manual Testing**: You can run the smoke test locally using `uv run scripts/test_mcp_server.py zenml_server.py`
+- **🧪 Manual Testing**: You can run the smoke test locally using `uv run scripts/test_mcp_server.py server/zenml_server.py`
 
 The automated tests verify:
 - MCP protocol connection and handshake
