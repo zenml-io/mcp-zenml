@@ -4,8 +4,16 @@
 #     "httpx",
 #     "mcp[cli]",
 #     "zenml",
+#     "setuptools",
 # ]
 # ///
+
+# Ensure setuptools is imported first to provide distutils compatibility
+try:
+    import setuptools  # noqa
+except ImportError:
+    pass
+
 import functools
 import json
 import logging
@@ -723,7 +731,6 @@ def list_pipeline_runs(
     status: str = None,
     start_time: str = None,
     end_time: str = None,
-    num_steps: int = None,
     stack: str = None,
     stack_component: str = None,
 ) -> str:
@@ -743,7 +750,6 @@ def list_pipeline_runs(
         status: The status of the pipeline runs
         start_time: The start time of the pipeline runs
         end_time: The end time of the pipeline runs
-        num_steps: The number of steps in the pipeline runs
         stack: The stack of the pipeline runs
         stack_component: The stack component of the pipeline runs
     """
@@ -761,7 +767,6 @@ def list_pipeline_runs(
         status=status,
         start_time=start_time,
         end_time=end_time,
-        num_steps=num_steps,
         stack=stack,
         stack_component=stack_component,
     )
@@ -1118,8 +1123,6 @@ def most_recent_runs(run_count: int = 10) -> str:
 
 if __name__ == "__main__":
     try:
-        logger.info("Starting MCP server with stdio transport...")
         mcp.run(transport="stdio")
     except Exception as e:
-        logger.error(f"Error running server: {str(e)}")
-        raise
+        logger.error(f"Error running MCP server: {e}")
