@@ -26,14 +26,22 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Configure minimal logging to stderr
-log_level_name = os.environ.get("LOGLEVEL", "INFO").upper()
-log_level = getattr(logging, log_level_name, logging.INFO)
+log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
+log_level = getattr(logging, log_level_name, logging.WARNING)
 
-# Simple stderr logging configuration
+# Simple stderr logging configuration - explicitly use stderr to avoid JSON protocol issues
 logging.basicConfig(
     level=log_level,
     format="%(levelname)s: %(message)s",
+    stream=sys.stderr,
 )
+
+# Suppress all INFO level logging from all modules to prevent JSON protocol interference
+logging.getLogger().setLevel(logging.WARNING)
+
+# Specifically suppress ZenML's internal logging to prevent JSON protocol issues
+logging.getLogger("zenml").setLevel(logging.WARNING)
+logging.getLogger("zenml.client").setLevel(logging.WARNING)
 
 # Type variable for function return type
 T = TypeVar("T")

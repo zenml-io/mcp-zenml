@@ -26,9 +26,11 @@
       ],
       "env": {
         "PYTHONPATH": "${__dirname}/server/lib",
-        "LOGLEVEL": "INFO",
+        "LOGLEVEL": "WARNING",
         "NO_COLOR": "1",
         "ZENML_LOGGING_COLORS_DISABLED": "true",
+        "ZENML_LOGGING_VERBOSITY": "WARN",
+        "ZENML_ENABLE_RICH_TRACEBACK": "false",
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "UTF-8",
         "ZENML_STORE_URL": "${user_config.zenml_store_url}",
