@@ -72,7 +72,7 @@
     {
       "name": "recent_runs_analysis",
       "description": "Analyze the recent runs in the ZenML workspace",
-      "text": "Please generate a comprehensive report or dashboard on our ZenML stack components, showing which ones are most frequently used across our pipelines, including information about version compatibility issues and performance variations."
+      "text": "Please generate a comprehensive report or dashboard on our recent runs, showing which pipelines are most frequently run and which ones are most frequently failed. Include information about the status of the runs, the duration, and the stack components used."
     }
   ],
   "keywords": [
