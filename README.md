@@ -177,3 +177,17 @@ To set it up for a single repository, you will need to:
 In our experience, sometimes it shows a red error indicator even though it is
 working. You can try it out by chatting in the Cursor chat window. It will let
 you know if is able to access the ZenML tools or not.
+
+## Desktop Extensions (DXT) Support
+
+This project supports [Anthropic's Desktop Extensions (DXT) standard](https://www.anthropic.com/engineering/desktop-extensions), which makes installing MCP servers as simple as clicking a button. DXT is a new packaging format that bundles entire MCP servers into a single `.dxt` file, including all dependencies and providing user-friendly configuration.
+
+The `mcp-zenml.dxt` file in the repository root contains everything needed to run the ZenML MCP server, eliminating the need for complex manual installation steps. This makes powerful ZenML integrations accessible to users without requiring technical setup expertise.
+
+When you drag and drop the `.dxt` file into Claude Desktop's settings, it automatically handles:
+- Runtime dependency installation
+- Secure configuration management  
+- Cross-platform compatibility
+- User-friendly setup process
+
+For more information about Desktop Extensions and the DXT standard, visit the [official documentation](https://www.anthropic.com/engineering/desktop-extensions).
