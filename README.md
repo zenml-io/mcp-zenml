@@ -138,18 +138,11 @@ dependency installation for you.
 
 ### Installation for use with Claude Desktop
 
-You will need to have [Claude Desktop](https://claude.ai/download) installed.
+You will need to have the latest version of [Claude Desktop](https://claude.ai/download) installed.
 
-Once you have installed and opened Claude Desktop, you need to open the
-'Settings' menu and click on the 'Developer' tab. There will be an 'Edit Config'
-button which will open up a file explorer showing you the location of your
-config file.
-
-You should paste the contents of the (properly filled in) config file above into
-the JSON file revealed in the file explorer. Then just restart Claude Desktop
-and it will use the new config. You should be able to see the ZenML server in
-the developer settings menu. Chat with Claude and it will use all the new tools
-you just gave it access to.
+You can simply open the Settings menu and drag the `mcp-zenml.dxt` file from the
+root of this repository on top of the menu and it will guide you through the
+installation and setup process. You'll need to add your ZenML server URL and API key.
 
 #### Optional: Improving ZenML Tool Output Display
 
