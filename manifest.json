@@ -1,0 +1,87 @@
+{
+  "dxt_version": "0.1",
+  "name": "mcp-zenml",
+  "version": "1.0.0",
+  "description": "MCP server to connect an MCP client with your ZenML MLOps and LLMOps pipelines",
+  "long_description": "The server provides MCP tools to access core read functionality from the ZenML server, delivering live information about users, stacks, pipelines, pipeline runs, pipeline steps, services, stack components, flavors, pipeline run templates, schedules, artifacts (metadata about data artifacts, not the data itself), service connectors, step code, and step logs (if the step was run on a cloud-based stack), while also enabling you to trigger new pipeline runs when a run template is present.",
+  "author": {
+    "name": "ZenML",
+    "email": "hello@zenml.io",
+    "url": "https://zenml.io"
+  },
+  "homepage": "https://zenml.io",
+  "documentation": "https://github.com/zenml-io/mcp-zenml",
+  "support": "https://github.com/zenml-io/mcp-zenml/issues",
+  "icon": "assets/icon.png",
+  "screenshots": [
+    "assets/mcp-zenml.png"
+  ],
+  "server": {
+    "type": "python",
+    "entry_point": "server/zenml_server.py",
+    "mcp_config": {
+      "command": "python3",
+      "args": [
+        "${__dirname}/server/zenml_server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "${__dirname}/server/lib",
+        "LOGLEVEL": "WARNING",
+        "NO_COLOR": "1",
+        "ZENML_LOGGING_COLORS_DISABLED": "true",
+        "ZENML_LOGGING_VERBOSITY": "WARN",
+        "ZENML_ENABLE_RICH_TRACEBACK": "false",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "UTF-8",
+        "ZENML_STORE_URL": "${user_config.zenml_store_url}",
+        "ZENML_STORE_API_KEY": "${user_config.zenml_store_api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "zenml_store_url": {
+      "type": "string",
+      "title": "ZenML Server URL",
+      "description": "The URL of your ZenML server (e.g., https://your-server.cloudinfra.zenml.io)",
+      "required": true
+    },
+    "zenml_store_api_key": {
+      "type": "string",
+      "title": "ZenML API Key",
+      "description": "Your ZenML server API key",
+      "required": true,
+      "sensitive": true
+    }
+  },
+  "tools": [
+    {
+      "name": "get_step_logs",
+      "description": "Get the logs for a specific step run"
+    },
+    {
+      "name": "trigger_pipeline",
+      "description": "Trigger a pipeline to run from the server"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "stack_components_analysis",
+      "description": "Analyze the stacks in the ZenML workspace",
+      "text": "Please generate a comprehensive report or dashboard on our ZenML stack components, showing which ones are most frequently used across our pipelines, including information about version compatibility issues and performance variations."
+    },
+    {
+      "name": "recent_runs_analysis",
+      "description": "Analyze the recent runs in the ZenML workspace",
+      "text": "Please generate a comprehensive report or dashboard on our recent runs, showing which pipelines are most frequently run and which ones are most frequently failed. Include information about the status of the runs, the duration, and the stack components used."
+    }
+  ],
+  "keywords": [
+    "mlops",
+    "llmops"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zenml-io/mcp-zenml"
+  }
+}

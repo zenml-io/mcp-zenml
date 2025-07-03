@@ -102,7 +102,7 @@ You will need to specify your ZenML MCP server in the following format:
     "mcpServers": {
         "zenml": {
             "command": "/usr/local/bin/uv",
-            "args": ["run", "path/to/zenml_server.py"],
+            "args": ["run", "path/to/server/zenml_server.py"],
             "env": {
                 "LOGLEVEL": "INFO",
                 "NO_COLOR": "1",
@@ -138,18 +138,11 @@ dependency installation for you.
 
 ### Installation for use with Claude Desktop
 
-You will need to have [Claude Desktop](https://claude.ai/download) installed.
+You will need to have the latest version of [Claude Desktop](https://claude.ai/download) installed.
 
-Once you have installed and opened Claude Desktop, you need to open the
-'Settings' menu and click on the 'Developer' tab. There will be an 'Edit Config'
-button which will open up a file explorer showing you the location of your
-config file.
-
-You should paste the contents of the (properly filled in) config file above into
-the JSON file revealed in the file explorer. Then just restart Claude Desktop
-and it will use the new config. You should be able to see the ZenML server in
-the developer settings menu. Chat with Claude and it will use all the new tools
-you just gave it access to.
+You can simply open the Settings menu and drag the `mcp-zenml.dxt` file from the
+root of this repository on top of the menu and it will guide you through the
+installation and setup process. You'll need to add your ZenML server URL and API key.
 
 #### Optional: Improving ZenML Tool Output Display
 
@@ -184,3 +177,17 @@ To set it up for a single repository, you will need to:
 In our experience, sometimes it shows a red error indicator even though it is
 working. You can try it out by chatting in the Cursor chat window. It will let
 you know if is able to access the ZenML tools or not.
+
+## Desktop Extensions (DXT) Support
+
+This project supports [Anthropic's Desktop Extensions (DXT) standard](https://www.anthropic.com/engineering/desktop-extensions), which makes installing MCP servers as simple as clicking a button. DXT is a new packaging format that bundles entire MCP servers into a single `.dxt` file, including all dependencies and providing user-friendly configuration.
+
+The `mcp-zenml.dxt` file in the repository root contains everything needed to run the ZenML MCP server, eliminating the need for complex manual installation steps. This makes powerful ZenML integrations accessible to users without requiring technical setup expertise.
+
+When you drag and drop the `.dxt` file into Claude Desktop's settings, it automatically handles:
+- Runtime dependency installation
+- Secure configuration management  
+- Cross-platform compatibility
+- User-friendly setup process
+
+For more information about Desktop Extensions and the DXT standard, visit the [official documentation](https://www.anthropic.com/engineering/desktop-extensions).
