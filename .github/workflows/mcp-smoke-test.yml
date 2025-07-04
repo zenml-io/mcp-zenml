@@ -44,7 +44,7 @@ jobs:
         id: smoke-test
         run: |
           echo "Running MCP smoke test..."
-          uv run scripts/test_mcp_server.py zenml_server.py
+          uv run scripts/test_mcp_server.py server/zenml_server.py
         continue-on-error: true
       
       - name: Create issue on failure
@@ -121,6 +121,24 @@ jobs:
                 labels: ['bug']
               });
             }
+      
+      - name: Send Discord notification on failure
+        if: steps.smoke-test.outcome == 'failure'
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "🚨 MCP Smoke Test Failed"
+          description: |
+            The automated MCP smoke test has failed for the ZenML MCP server.
+            
+            **Workflow:** [Run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            **Branch:** ${{ github.ref_name }}
+            **Commit:** ${{ github.sha }}
+            **Triggered by:** ${{ github.event_name }}
+            
+            Please check the workflow logs for detailed error information.
+          color: 0xff0000
+          username: "GitHub Actions"
       
       - name: Report success
         if: steps.smoke-test.outcome == 'success'
