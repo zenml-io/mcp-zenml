@@ -44,7 +44,7 @@ jobs:
         id: smoke-test
         run: |
           echo "Running MCP smoke test..."
-          uv run scripts/test_mcp_server.py zenml_server.py
+          uv run scripts/test_mcp_server.py server/zenml_server.py
         continue-on-error: true
       
       - name: Create issue on failure
