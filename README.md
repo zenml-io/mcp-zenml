@@ -104,8 +104,11 @@ You will need to specify your ZenML MCP server in the following format:
             "command": "/usr/local/bin/uv",
             "args": ["run", "path/to/server/zenml_server.py"],
             "env": {
-                "LOGLEVEL": "INFO",
+                "LOGLEVEL": "WARNING",
                 "NO_COLOR": "1",
+                "ZENML_LOGGING_COLORS_DISABLED": "true",
+                "ZENML_LOGGING_VERBOSITY": "WARN",
+                "ZENML_ENABLE_RICH_TRACEBACK": "false",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONIOENCODING": "UTF-8",
                 "ZENML_STORE_URL": "https://your-zenml-server-goes-here.com",
@@ -177,6 +180,50 @@ To set it up for a single repository, you will need to:
 In our experience, sometimes it shows a red error indicator even though it is
 working. You can try it out by chatting in the Cursor chat window. It will let
 you know if is able to access the ZenML tools or not.
+
+## Docker Image
+
+You can run the server as a Docker container. The process communicates over stdio, so it will wait for an MCP client connection. Pass your ZenML credentials via environment variables.
+
+### Prebuilt Images (Docker Hub)
+
+Pull the latest multi-arch image:
+
+```bash
+docker pull zenmldocker/mcp-zenml:latest
+```
+
+Versioned releases are tagged as `vX.Y.Z`:
+
+```bash
+docker pull zenmldocker/mcp-zenml:v1.0.0
+```
+
+Run with your ZenML credentials (stdio mode):
+
+```bash
+docker run -i --rm \
+  -e ZENML_STORE_URL="https://your-zenml-server.example.com" \
+  -e ZENML_STORE_API_KEY="your-api-key" \
+  zenmldocker/mcp-zenml:latest
+```
+
+### Build Locally
+
+From the repository root:
+
+```bash
+docker build -t zenmldocker/mcp-zenml:local .
+```
+
+Run the locally built image:
+
+```bash
+docker run -i --rm \
+  -e ZENML_STORE_URL="https://your-zenml-server.example.com" \
+  -e ZENML_STORE_API_KEY="your-api-key" \
+  zenmldocker/mcp-zenml:local
+```
 
 ## Desktop Extensions (DXT) Support
 

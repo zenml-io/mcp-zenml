@@ -1,0 +1,34 @@
+# VCS/IDE
+.git
+.gitignore
+.cursor
+.vscode
+.DS_Store
+
+# CI and docs
+.github
+assets
+design
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.egg-info
+dist
+build
+.cache
+.venv
+venv
+env
+
+# Desktop extension bundle
+*.dxt
+
+# MCP registry metadata (if added later)
+.mcp
+
+# Vendored libs (we install via pip inside the image)
+server/lib/
