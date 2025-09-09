@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.zenml-io/mcp-zenml",
+  "description": "Model Context Protocol server for ZenML that lets clients browse ZenML resources (users, stacks, pipelines, runs, artifacts, services, etc.) and trigger pipeline runs through the ZenML API.",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/zenml-io/mcp-zenml",
+    "source": "github"
+  },
+  "version": "1.0.1",
+  "packages": [
+    {
+      "registry_type": "oci",
+      "registry_base_url": "https://docker.io",
+      "identifier": "mcp-zenml",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environment_variables": [
+        {
+          "description": "Base URL of your ZenML server (e.g., https://<workspace-id>-zenml.cloudinfra.zenml.io).",
+          "is_required": true,
+          "format": "string",
+          "is_secret": false,
+          "name": "ZENML_STORE_URL"
+        },
+        {
+          "description": "API key used to authenticate with your ZenML server (ideally a service account key).",
+          "is_required": true,
+          "format": "string",
+          "is_secret": true,
+          "name": "ZENML_STORE_API_KEY"
+        }
+      ]
+    }
+  ]
+}
