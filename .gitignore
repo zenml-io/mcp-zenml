@@ -177,3 +177,5 @@ cython_debug/
 design/
 mcp.json
 .claude/
+.mcpregistry_github_token
+.mcpregistry_registry_token
