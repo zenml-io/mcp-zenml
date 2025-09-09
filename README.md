@@ -104,8 +104,11 @@ You will need to specify your ZenML MCP server in the following format:
             "command": "/usr/local/bin/uv",
             "args": ["run", "path/to/server/zenml_server.py"],
             "env": {
-                "LOGLEVEL": "INFO",
+                "LOGLEVEL": "WARNING",
                 "NO_COLOR": "1",
+                "ZENML_LOGGING_COLORS_DISABLED": "true",
+                "ZENML_LOGGING_VERBOSITY": "WARN",
+                "ZENML_ENABLE_RICH_TRACEBACK": "false",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONIOENCODING": "UTF-8",
                 "ZENML_STORE_URL": "https://your-zenml-server-goes-here.com",
