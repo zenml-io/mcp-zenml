@@ -8,7 +8,7 @@ env:
   IMAGE_NAME: docker.io/zenmldocker/mcp-zenml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   docker:
@@ -54,3 +54,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release (auto notes)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
