@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.zenml-io/mcp-zenml",
-  "description": "Model Context Protocol server for ZenML that lets clients browse ZenML resources (users, stacks, pipelines, runs, artifacts, services, etc.) and trigger pipeline runs through the ZenML API.",
+  "description": "MCP server for ZenML - browse stacks, pipelines, runs, artifacts & trigger pipeline runs via API",
   "status": "active",
   "repository": {
     "url": "https://github.com/zenml-io/mcp-zenml",
