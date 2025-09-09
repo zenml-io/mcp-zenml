@@ -37,6 +37,7 @@ COPY --chown=appuser:appuser server/zenml_server.py /app/server/zenml_server.py
 LABEL org.opencontainers.image.title="ZenML MCP Server" \
       org.opencontainers.image.description="Model Context Protocol server for ZenML" \
       org.opencontainers.image.source="https://github.com/zenml-io/mcp-zenml" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT" \
+      io.modelcontextprotocol.server.name="io.github.zenml-io/mcp-zenml"
 
 ENTRYPOINT ["python", "-u", "server/zenml_server.py"]
