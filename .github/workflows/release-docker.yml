@@ -62,14 +62,12 @@ jobs:
           git clone https://github.com/modelcontextprotocol/registry publisher-repo
           cd publisher-repo
           make publisher
-          cp cmd/publisher/bin/mcp-publisher ../mcp-publisher
+          cp bin/mcp-publisher ../mcp-publisher
           cd ..
           chmod +x mcp-publisher
 
       - name: Login to MCP Registry
-        run: mcp-publisher login github --token ${{ secrets.GITHUB_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.MCP_GITHUB_TOKEN }}
+        run: ./mcp-publisher login github --token ${{ secrets.MCP_GITHUB_TOKEN }}
 
       - name: Publish to MCP Registry
         run: ./mcp-publisher publish
