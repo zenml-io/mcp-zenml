@@ -56,6 +56,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Install MCP Publisher
+        run: |
+          # Build publisher from source (requires Go)
+          git clone https://github.com/modelcontextprotocol/registry publisher-repo
+          cd publisher-repo
+          make publisher
+          cp cmd/publisher/bin/mcp-publisher ../mcp-publisher
+          cd ..
+          chmod +x mcp-publisher
+
+      - name: Login to MCP Registry
+        run: mcp-publisher login github --token ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.MCP_GITHUB_TOKEN }}
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
+
       - name: Create GitHub Release (auto notes)
         uses: softprops/action-gh-release@v2
         with:
