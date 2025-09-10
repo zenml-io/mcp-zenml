@@ -13,6 +13,9 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,8 +69,8 @@ jobs:
           cd ..
           chmod +x mcp-publisher
 
-      - name: Login to MCP Registry
-        run: ./mcp-publisher login github --token ${{ secrets.MCP_GITHUB_TOKEN }}
+      - name: Login to MCP Registry (OIDC)
+        run: ./mcp-publisher login github-oidc
 
       - name: Publish to MCP Registry
         run: ./mcp-publisher publish
