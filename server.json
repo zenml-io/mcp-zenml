@@ -7,7 +7,7 @@
     "url": "https://github.com/zenml-io/mcp-zenml",
     "source": "github"
   },
-  "version": "1.0.1",
+  "version": "1.0.3",
   "packages": [
     {
       "registry_type": "oci",
