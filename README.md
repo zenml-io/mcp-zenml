@@ -143,9 +143,11 @@ dependency installation for you.
 
 You will need to have the latest version of [Claude Desktop](https://claude.ai/download) installed.
 
-You can simply open the Settings menu and drag the `mcp-zenml.dxt` file from the
-root of this repository on top of the menu and it will guide you through the
+You can simply open the Settings menu and drag the `mcp-zenml.mcpb` file from the
+root of this repository onto the menu and it will guide you through the
 installation and setup process. You'll need to add your ZenML server URL and API key.
+
+Note: MCP bundles (`.mcpb`) replace the older Desktop Extensions (`.dxt`) format; existing `.dxt` files still work in Claude Desktop.
 
 #### Optional: Improving ZenML Tool Output Display
 
@@ -225,16 +227,18 @@ docker run -i --rm \
   zenmldocker/mcp-zenml:local
 ```
 
-## Desktop Extensions (DXT) Support
+## MCP Bundles (.mcpb)
 
-This project supports [Anthropic's Desktop Extensions (DXT) standard](https://www.anthropic.com/engineering/desktop-extensions), which makes installing MCP servers as simple as clicking a button. DXT is a new packaging format that bundles entire MCP servers into a single `.dxt` file, including all dependencies and providing user-friendly configuration.
+This project uses MCP Bundles (`.mcpb`) — the successor to Anthropic's Desktop Extensions (DXT). MCP Bundles package an entire MCP server (including dependencies) into a single file with user-friendly configuration.
 
-The `mcp-zenml.dxt` file in the repository root contains everything needed to run the ZenML MCP server, eliminating the need for complex manual installation steps. This makes powerful ZenML integrations accessible to users without requiring technical setup expertise.
+Note on rename: MCP Bundles replace the older `.dxt` format. Claude Desktop remains backward‑compatible with existing `.dxt` files, but we now ship `mcp-zenml.mcpb` and recommend using it going forward.
 
-When you drag and drop the `.dxt` file into Claude Desktop's settings, it automatically handles:
+The `mcp-zenml.mcpb` file in the repository root contains everything needed to run the ZenML MCP server, eliminating the need for complex manual installation steps. This makes powerful ZenML integrations accessible to users without requiring technical setup expertise.
+
+When you drag and drop the `.mcpb` file into Claude Desktop's settings, it automatically handles:
 - Runtime dependency installation
 - Secure configuration management  
 - Cross-platform compatibility
 - User-friendly setup process
 
-For more information about Desktop Extensions and the DXT standard, visit the [official documentation](https://www.anthropic.com/engineering/desktop-extensions).
+For more information, see Anthropic's announcement of Desktop Extensions (DXT) and related MCP bundle packaging guidance in their documentation: https://www.anthropic.com/engineering/desktop-extensions
