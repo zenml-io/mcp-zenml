@@ -56,11 +56,135 @@
   "tools": [
     {
       "name": "get_step_logs",
-      "description": "Get the logs for a specific step run"
+      "description": "Get the logs for a specific step run."
+    },
+    {
+      "name": "list_users",
+      "description": "List all users in the ZenML workspace."
+    },
+    {
+      "name": "get_user",
+      "description": "Get detailed information about a specific user."
+    },
+    {
+      "name": "get_active_user",
+      "description": "Get the currently active user."
+    },
+    {
+      "name": "get_stack",
+      "description": "Get detailed information about a specific stack."
+    },
+    {
+      "name": "easter_egg",
+      "description": "Returns the ZenML MCP easter egg."
+    },
+    {
+      "name": "list_stacks",
+      "description": "List all stacks in the ZenML workspace."
+    },
+    {
+      "name": "list_pipelines",
+      "description": "List all pipelines in the ZenML workspace."
+    },
+    {
+      "name": "get_pipeline_details",
+      "description": "Get detailed information about a specific pipeline."
+    },
+    {
+      "name": "get_service",
+      "description": "Get detailed information about a specific service."
+    },
+    {
+      "name": "list_services",
+      "description": "List all services in the ZenML workspace."
+    },
+    {
+      "name": "get_stack_component",
+      "description": "Get detailed information about a specific stack component."
+    },
+    {
+      "name": "list_stack_components",
+      "description": "List all stack components in the ZenML workspace."
+    },
+    {
+      "name": "get_flavor",
+      "description": "Get detailed information about a specific flavor."
+    },
+    {
+      "name": "list_flavors",
+      "description": "List all flavors in the ZenML workspace."
     },
     {
       "name": "trigger_pipeline",
-      "description": "Trigger a pipeline to run from the server"
+      "description": "Trigger a pipeline to run from the server."
+    },
+    {
+      "name": "get_run_template",
+      "description": "Get a run template for a pipeline."
+    },
+    {
+      "name": "list_run_templates",
+      "description": "List all run templates in the ZenML workspace."
+    },
+    {
+      "name": "get_schedule",
+      "description": "Get a schedule for a pipeline."
+    },
+    {
+      "name": "list_schedules",
+      "description": "List all schedules in the ZenML workspace."
+    },
+    {
+      "name": "get_pipeline_run",
+      "description": "Get a pipeline run by name, ID, or prefix."
+    },
+    {
+      "name": "list_pipeline_runs",
+      "description": "List all pipeline runs in the ZenML workspace."
+    },
+    {
+      "name": "get_run_step",
+      "description": "Get a run step by name, ID, or prefix."
+    },
+    {
+      "name": "list_run_steps",
+      "description": "List all run steps in the ZenML workspace."
+    },
+    {
+      "name": "list_artifacts",
+      "description": "List all artifacts in the ZenML workspace."
+    },
+    {
+      "name": "list_secrets",
+      "description": "List all secrets in the ZenML workspace."
+    },
+    {
+      "name": "get_service_connector",
+      "description": "Get a service connector by name, ID, or prefix."
+    },
+    {
+      "name": "list_service_connectors",
+      "description": "List all service connectors in the ZenML workspace."
+    },
+    {
+      "name": "get_model",
+      "description": "Get a model by name, ID, or prefix."
+    },
+    {
+      "name": "list_models",
+      "description": "List all models in the ZenML workspace."
+    },
+    {
+      "name": "get_model_version",
+      "description": "Get a model version by name, ID, or prefix."
+    },
+    {
+      "name": "list_model_versions",
+      "description": "List all model versions for a model."
+    },
+    {
+      "name": "get_step_code",
+      "description": "Get the code for a step."
     }
   ],
   "prompts": [
@@ -83,5 +207,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/zenml-io/mcp-zenml"
-  }
+  },
+  "privacy_policies": []
 }
