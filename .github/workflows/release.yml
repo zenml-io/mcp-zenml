@@ -1,0 +1,115 @@
+name: Release Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer to release (optional). If omitted, read from VERSION"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark this as a prerelease"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Skip commit/tag push; still build and run GitHub Release step"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Mondays at 09:00 UTC
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Orchestrate Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository (with PAT)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_RELEASE_PAT }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Configure Git user
+        run: |
+          git config user.name "release-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Bump version (SemVer)
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            python scripts/bump_version.py --version "${{ inputs.version }}"
+          else
+            python scripts/bump_version.py
+          fi
+
+      - name: Regenerate manifest fields
+        run: python scripts/generate_manifest_fields.py
+
+      - name: Build MCP bundle
+        run: bash scripts/build_mcpb.sh
+
+      - name: Read version from file
+        id: read_version
+        run: echo "value=$(tr -d '\n\r' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve version
+        id: resolve_version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ steps.read_version.outputs.value }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push changes
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          set -e
+          git add VERSION manifest.json server.json mcp-zenml.mcpb
+          git commit -m "chore(release): v${{ steps.resolve_version.outputs.value }}" || echo "No changes to commit"
+          git push origin HEAD:main
+
+      - name: Create and push annotated tag
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          set -e
+          TAG="v${{ steps.resolve_version.outputs.value }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists locally."
+          else
+            git tag -a "$TAG" -m "Release $TAG" || true
+          fi
+          git push origin "$TAG" || true
+
+      - name: Create/Update GitHub Release (attach MCP bundle)
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GH_RELEASE_PAT }}
+          tag_name: v${{ steps.resolve_version.outputs.value }}
+          name: v${{ steps.resolve_version.outputs.value }}
+          files: mcp-zenml.mcpb
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+        continue-on-error: true

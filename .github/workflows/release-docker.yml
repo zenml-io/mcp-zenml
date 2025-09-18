@@ -75,9 +75,23 @@ jobs:
       - name: Publish to MCP Registry
         run: ./mcp-publisher publish
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build MCP bundle
+        run: bash scripts/build_mcpb.sh
+
       - name: Create GitHub Release (auto notes)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          files: mcp-zenml.mcpb
           generate_release_notes: true

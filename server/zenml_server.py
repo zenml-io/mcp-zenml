@@ -1106,7 +1106,7 @@ def recent_runs_analysis() -> str:
     return (
         "Please generate a comprehensive report or dashboard on our recent runs, "
         "showing which pipelines are most frequently run and which ones are most frequently failed."
-        "Include information about the status of the runs, the duration, and the stack components used."
+        " Include information about the status of the runs, the duration, and the stack components used."
     )
 
 

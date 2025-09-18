@@ -26,6 +26,8 @@ env
 
 # Desktop extension bundle
 *.dxt
+# MCP bundle artifacts
+*.mcpb
 
 # MCP registry metadata (if added later)
 .mcp
