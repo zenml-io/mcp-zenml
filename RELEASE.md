@@ -1,6 +1,6 @@
 # Release Process
 
-This repository ships releases via a single "Release Orchestrator" GitHub Actions workflow. It treats the root `VERSION` file as the single source of truth, auto-updates related files, builds the MCP bundle (`mcp-zenml.mcpb`), creates a tag and GitHub Release, and triggers downstream publishers.
+This repository ships releases via a single "Release Orchestrator" GitHub Actions workflow. It treats the root `VERSION` file as the single source of truth, auto-updates related files, builds the MCP bundle (`mcp-zenml.mcpb`), creates a tag and GitHub Release, and triggers downstream publishers, including publishing to the official Anthropic MCP Registry.
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ A weekly cron (Monday 09:00 UTC) also triggers the workflow as a reminder, but i
   - Builds and pushes versioned Docker images:
     - `zenmldocker/mcp-zenml:vX.Y.Z`
   - Uploads/attaches `mcp-zenml.mcpb` to the corresponding GitHub Release.
-  - If configured, publishes to the MCP Registry based on `manifest.json`/`server.json`.
+  - Publishes to the **Anthropic MCP Registry** using the `mcp-publisher` CLI with GitHub OIDC (no static secrets). The registry entry is updated from the tagged commit's `manifest.json` and `server.json`.
 
 ## Manual Recovery
 
@@ -81,8 +81,8 @@ If something goes wrong:
 - Docker Images
   - `zenmldocker/mcp-zenml:latest` (main)
   - `zenmldocker/mcp-zenml:vX.Y.Z` (tag)
-- MCP Registry (if enabled)
-  - Publishes based on `manifest.json`/`server.json` from the tagged commit
+- Anthropic MCP Registry
+  - Registry entry updated on every tagged release (derived from `manifest.json` / `server.json`)
 
 ## Notes
 

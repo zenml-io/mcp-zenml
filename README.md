@@ -242,3 +242,13 @@ When you drag and drop the `.mcpb` file into Claude Desktop's settings, it autom
 - User-friendly setup process
 
 For more information, see Anthropic's announcement of Desktop Extensions (DXT) and related MCP bundle packaging guidance in their documentation: https://www.anthropic.com/engineering/desktop-extensions
+
+## Published on the Anthropic MCP Registry
+
+This MCP server is published to the official Anthropic MCP Registry and is discoverable by compatible hosts. On each **tagged release**, our CI updates the registry entry via the registry’s `mcp-publisher` CLI using GitHub OIDC, so you can install or discover the **ZenML MCP Server** directly wherever the registry is supported (e.g., Claude Desktop’s Extensions catalog).
+
+- **Always up to date:** the registry entry is refreshed with every release from the tagged commit’s `manifest.json` and `server.json`.
+- **Alternate install paths:** you can still install locally via the packaged `.mcpb` bundle (see above) or run the Docker image.
+
+Learn more about the registry here:
+- Anthropic MCP Registry (community repo): https://github.com/modelcontextprotocol/registry
