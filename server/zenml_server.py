@@ -5,6 +5,7 @@
 #     "mcp[cli]",
 #     "zenml",
 #     "setuptools",
+#     "requests>=2.32.0",
 # ]
 # ///
 
