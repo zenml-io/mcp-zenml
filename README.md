@@ -210,6 +210,32 @@ docker run -i --rm \
   zenmldocker/mcp-zenml:latest
 ```
 
+### Canonical MCP config using Docker
+
+```json
+{
+  "mcpServers": {
+    "zenml": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "ZENML_STORE_URL=https://...",
+        "-e", "ZENML_STORE_API_KEY=ZENKEY_...",
+        "-e", "ZENML_ACTIVE_PROJECT_ID=...",
+        "-e", "LOGLEVEL=WARNING",
+        "-e", "NO_COLOR=1",
+        "-e", "ZENML_LOGGING_COLORS_DISABLED=true",
+        "-e", "ZENML_LOGGING_VERBOSITY=WARN",
+        "-e", "ZENML_ENABLE_RICH_TRACEBACK=false",
+        "-e", "PYTHONUNBUFFERED=1",
+        "-e", "PYTHONIOENCODING=UTF-8",
+        "zenmldocker/mcp-zenml:latest"
+      ]
+    }
+  }
+}
+```
+
 ### Build Locally
 
 From the repository root:
