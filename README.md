@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/zenml-io-mcp-zenml-badge.png)](https://mseep.ai/app/zenml-io-mcp-zenml)
+
 # MCP Server for ZenML
 
 This project implements a [Model Context Protocol
