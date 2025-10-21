@@ -18,7 +18,7 @@ This repository ships releases via a single "Release Orchestrator" GitHub Action
      - `dry_run` (boolean): Perform all steps except committing/pushing and tagging. Default: false.
   4) Click "Run workflow"
 
-A weekly cron (Monday 09:00 UTC) also triggers the workflow as a reminder, but it won't push/tag if `dry_run` is set.
+Note: This workflow runs only when manually triggered via 'Run workflow'.
 
 ## How It Works
 

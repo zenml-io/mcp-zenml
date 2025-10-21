@@ -17,9 +17,6 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    # Mondays at 09:00 UTC
-    - cron: "0 9 * * 1"
 
 permissions:
   contents: write
