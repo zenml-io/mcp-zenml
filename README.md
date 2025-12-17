@@ -50,10 +50,36 @@ server, providing a way to get live information about:
 
 It also allows you to trigger new pipeline runs (if a run template is present).
 
-*Note: This is a beta/experimental release. We're still exploring how people
-will use this integration, so we welcome your feedback and suggestions! Please
-join our [Slack community](https://zenml.io/slack) to share your experience and
-help us improve.*
+*Note: We're continuously improving this integration based on user feedback.
+Please join our [Slack community](https://zenml.io/slack) to share your experience
+and help us make it even better!*
+
+## Quick Setup via Dashboard (Recommended)
+
+The easiest way to set up the ZenML MCP Server is through your ZenML dashboard's **MCP Settings page**.
+
+![MCP Settings Page](assets/mcp-settings-page.gif)
+
+Navigate to **Settings → MCP** in your ZenML dashboard to get:
+
+- **Pre-configured snippets** for your specific server URL and credentials
+- **One-click installation** via deep links for supported IDEs
+- **Copy-paste configurations** for VS Code, Claude Desktop, Cursor, Claude Code, OpenAI Codex, and more
+- **Docker and uv options** based on your preference
+
+### ZenML Pro Users
+
+The MCP Settings page lets you generate a Personal Access Token (PAT) with a single click. The token is automatically included in all generated configuration snippets.
+
+### ZenML OSS Users
+
+1. First create a service account token via **Settings → Service Accounts**
+2. Paste the token into the MCP Settings page
+3. Copy the generated configuration for your IDE
+
+---
+
+**Prefer manual setup?** See the detailed instructions below.
 
 ## Testing & Quality Assurance
 
@@ -70,12 +96,14 @@ The automated tests verify:
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
 
-## How to use
+## Manual Setup
 
 ### Prerequisites
 
 You will need to have access to a deployed ZenML server. If you don't have one,
 you can sign up for a free trial at [ZenML Pro](https://cloud.zenml.io) and we'll manage the deployment for you.
+
+> **Tip:** Once you have a ZenML server, check out the [MCP Settings page](#quick-setup-via-dashboard-recommended) in your dashboard for the easiest setup experience.
 
 You will also (probably) need to have `uv` installed locally. For more information, see
 the [`uv` documentation](https://docs.astral.sh/uv/getting-started/installation/).
@@ -142,6 +170,8 @@ dependency installation for you.
 
 ### Installation for use with Claude Desktop
 
+> **Quick alternative:** Use the MCP Settings page in your ZenML dashboard (Settings → MCP) to get pre-configured installation instructions and deep links for Claude Desktop.
+
 You will need to have the latest version of [Claude Desktop](https://claude.ai/download) installed.
 
 You can simply open the Settings menu and drag the `mcp-zenml.mcpb` file from the
@@ -166,6 +196,8 @@ This will encourage Claude to format ZenML tool outputs as markdown tables,
 making the information much easier to read and understand.
 
 ### Installation for use with Cursor
+
+> **Quick alternative:** The MCP Settings page in your ZenML dashboard (Settings → MCP) can generate the exact `mcp.json` content with your credentials pre-filled.
 
 You will need to have [Cursor](https://www.cursor.com/) installed.
 
