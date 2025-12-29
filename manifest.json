@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.1",
   "name": "mcp-zenml",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "MCP server to connect an MCP client with your ZenML MLOps and LLMOps pipelines",
   "long_description": "The server provides MCP tools to access core read functionality from the ZenML server, delivering live information about users, stacks, pipelines, pipeline runs, pipeline steps, services, stack components, flavors, pipeline run templates, schedules, artifacts (metadata about data artifacts, not the data itself), service connectors, step code, and step logs (if the step was run on a cloud-based stack), while also enabling you to trigger new pipeline runs when a run template is present.",
   "author": {
