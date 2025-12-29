@@ -228,10 +228,10 @@ Pull the latest multi-arch image:
 docker pull zenmldocker/mcp-zenml:latest
 ```
 
-Versioned releases are tagged as `vX.Y.Z`:
+Versioned releases are tagged as `X.Y.Z`:
 
 ```bash
-docker pull zenmldocker/mcp-zenml:v1.0.0
+docker pull zenmldocker/mcp-zenml:1.0.8
 ```
 
 Run with your ZenML credentials (stdio mode):
