@@ -59,3 +59,65 @@ The server requires:
 - **Lazy Loading**: ZenML client initialized only when needed to improve startup performance
 - **Environment Variables**: Server configuration via `ZENML_STORE_URL` and
   `ZENML_STORE_API_KEY`
+
+## Release Process
+
+### Triggering a Release
+
+Releases are done via GitHub Actions:
+
+```bash
+gh workflow run release.yml --repo zenml-io/mcp-zenml -f version=X.Y.Z
+```
+
+This triggers:
+1. **Release Orchestrator** (`release.yml`): Bumps version files, creates tag, builds `.mcpb` bundle
+2. **Release Docker** (`release-docker.yml`): Triggered by `v*.*.*` tag push, builds Docker image, publishes to MCP Registry
+
+### Version Files
+
+Three files must stay in sync (handled by `scripts/bump_version.py`):
+- `VERSION` - Source of truth
+- `manifest.json` - DXT/MCPB manifest
+- `server.json` - MCP Registry server definition
+
+### Debugging MCP Registry Schema Failures
+
+The MCP Registry schema evolves frequently. If the "Publish to MCP Registry" step fails with a deprecated schema error:
+
+1. **Find the current schema version** by checking the mcp-publisher source:
+   ```bash
+   curl -s https://raw.githubusercontent.com/modelcontextprotocol/registry/main/pkg/model/constants.go | grep CurrentSchemaVersion
+   ```
+
+2. **Verify the schema URL exists**:
+   ```bash
+   curl -sI "https://static.modelcontextprotocol.io/schemas/YYYY-MM-DD/server.schema.json" | head -1
+   # Should return HTTP/2 200
+   ```
+
+3. **Update `server.json`** with the new schema URL
+
+4. **Check the changelog** for breaking changes:
+   https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/server-json/CHANGELOG.md
+
+### Common Schema Migration Issues
+
+- **snake_case → camelCase** (2025-09-16): Field names like `registry_type` became `registryType`
+- **OCI identifier format** (2025-12-11): Removed `registryBaseUrl` and separate `version` fields; use canonical identifier instead: `docker.io/owner/image:version`
+- **Removed fields**: `status` and `privacy_policies` are no longer valid
+
+### Release Cleanup
+
+If a release fails partway through, clean up before retrying:
+
+```bash
+# Delete failed release and tag
+gh release delete vX.Y.Z --repo zenml-io/mcp-zenml --yes
+git push origin --delete vX.Y.Z
+
+# Then re-trigger with the corrected code
+gh workflow run release.yml --repo zenml-io/mcp-zenml -f version=X.Y.Z
+```
+
+**Important**: The `release-docker.yml` workflow checks out code **at the tag**, not from HEAD. If you push a fix to main, you must delete and recreate the tag for the fix to take effect.
