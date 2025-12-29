@@ -93,12 +93,24 @@ def _update_server_versions(version: str) -> None:
     if not isinstance(first_pkg, dict):
         print("Error: server.json packages[0] is not an object", file=sys.stderr)
         sys.exit(1)
-    if "version" not in first_pkg:
-        print("Error: server.json packages[0] missing 'version' field", file=sys.stderr)
-        sys.exit(1)
 
     server["version"] = version
-    first_pkg["version"] = version
+
+    # Handle OCI packages with canonical identifier format (docker.io/owner/image:version)
+    # Per MCP registry schema 2025-12-11, OCI packages embed version in identifier
+    if first_pkg.get("registryType") == "oci" and "identifier" in first_pkg:
+        identifier = first_pkg["identifier"]
+        # Replace version tag in identifier (e.g., docker.io/owner/image:1.0.0 -> docker.io/owner/image:1.0.1)
+        if ":" in identifier:
+            base_identifier = identifier.rsplit(":", 1)[0]
+            first_pkg["identifier"] = f"{base_identifier}:{version}"
+        else:
+            # No version tag present, append it
+            first_pkg["identifier"] = f"{identifier}:{version}"
+    elif "version" in first_pkg:
+        # Legacy format with separate version field
+        first_pkg["version"] = version
+
     _dump_json(SERVER_JSON, server)
 
 
