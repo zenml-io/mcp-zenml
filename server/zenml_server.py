@@ -22,8 +22,8 @@ import os
 import sys
 from typing import Any, Callable, Dict, TypeVar, cast
 
-import analytics
 import requests
+import zenml_mcp_analytics as analytics
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,15 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
         except Exception as e:
             success = False
             error_type = type(e).__name__
-            # Print error to stderr for MCP to capture
-            print(f"Error in {func.__name__}: {str(e)}", file=sys.stderr)
-            return cast(T, f"Error in {func.__name__}: {str(e)}")
+
+            if analytics.DEV_MODE:
+                error_detail = str(e)
+            else:
+                error_detail = error_type
+
+            message = f"Error in {func.__name__}: {error_detail}"
+            print(message, file=sys.stderr)
+            return cast(T, message)
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             size = analytics.extract_size_from_call(func.__name__, args, kwargs)
@@ -197,6 +203,7 @@ def get_access_token(server_url: str, api_key: str) -> str:
         url,
         data={"password": api_key},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=(3.05, 30),
     )
     response.raise_for_status()
 
@@ -238,7 +245,7 @@ def make_step_logs_request(
     logger.info(f"Fetching logs for step {step_id}")
 
     # Make the request
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=(3.05, 30))
     response.raise_for_status()  # Raise an exception for HTTP errors
 
     return response.json()

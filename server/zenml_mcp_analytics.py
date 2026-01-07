@@ -9,6 +9,7 @@ never affect MCP server functionality.
 import atexit
 import hashlib
 import json
+import logging
 import os
 import platform
 import signal
@@ -16,24 +17,28 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from queue import Empty, Full, Queue
+from threading import Event, Lock, Thread
 from typing import Any
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Check opt-out environment variables
 _enabled_env = os.getenv("ZENML_MCP_ANALYTICS_ENABLED", "true").lower()
 _disable_env = os.getenv("ZENML_MCP_DISABLE_ANALYTICS", "").lower()
 
-# Track which variable caused disable (for accurate status message)
-_disabled_by_env_var: str | None = None
+# Track why analytics was disabled (for accurate status message)
+_disabled_reason: str | None = None
 if _disable_env in ("true", "1", "yes"):
-    _disabled_by_env_var = "ZENML_MCP_DISABLE_ANALYTICS"
+    _disabled_reason = f"ZENML_MCP_DISABLE_ANALYTICS={_disable_env}"
 elif _enabled_env not in ("true", "1", "yes"):
-    _disabled_by_env_var = "ZENML_MCP_ANALYTICS_ENABLED"
+    _disabled_reason = f"ZENML_MCP_ANALYTICS_ENABLED={_enabled_env}"
 
-ANALYTICS_ENABLED = _disabled_by_env_var is None
+ANALYTICS_ENABLED = _disabled_reason is None
 
 DEV_MODE = os.getenv("ZENML_MCP_ANALYTICS_DEV", "").lower() in ("true", "1", "yes")
 
@@ -45,6 +50,8 @@ ANALYTICS_TIMEOUT_S = float(os.getenv("ZENML_MCP_ANALYTICS_TIMEOUT_S", "2.0"))
 # Debug flag for events (routes to dev vs prod Segment on server side)
 ANALYTICS_DEBUG = os.getenv("LOGLEVEL", "").upper() == "DEBUG" or DEV_MODE
 
+# Fire-and-forget queue config
+ANALYTICS_QUEUE_MAXSIZE = 100
 
 # =============================================================================
 # Module state
@@ -57,10 +64,15 @@ _tools_used: set[str] = set()
 _user_id: str | None = None
 _init_attempted = False
 _init_failed = False
-_shutdown_registered = False  # Track if shutdown handlers are registered
+_shutdown_registered = False
+_http_client: Any = None
 
-# HTTP client (lazy initialized)
-_http_client: Any = None  # httpx.Client
+_event_queue: Queue[list[dict[str, Any]] | None] = Queue(
+    maxsize=ANALYTICS_QUEUE_MAXSIZE
+)
+_sender_thread: Thread | None = None
+_sender_stop_event = Event()
+_sender_start_lock = Lock()
 
 
 # =============================================================================
@@ -177,8 +189,20 @@ def is_ci_environment() -> bool:
     return any(os.getenv(var) for var in ci_env_vars)
 
 
-def _send_events(events: list[dict[str, Any]]) -> None:
-    """Send events to the analytics server (best-effort).
+def _close_http_client() -> None:
+    global _http_client
+    if _http_client is None:
+        return
+    try:
+        _http_client.close()
+    except Exception:
+        pass
+    finally:
+        _http_client = None
+
+
+def _send_events_sync(events: list[dict[str, Any]]) -> None:
+    """Send events to the analytics server synchronously (best-effort).
 
     This function never raises - all errors are silently ignored
     to ensure analytics never affects server functionality.
@@ -204,6 +228,64 @@ def _send_events(events: list[dict[str, Any]]) -> None:
         )
     except Exception:
         pass  # Best effort - never affect the server
+
+
+def _sender_worker() -> None:
+    while not _sender_stop_event.is_set():
+        try:
+            batch = _event_queue.get(timeout=0.5)
+        except Empty:
+            continue
+
+        if batch is None:
+            break
+
+        _send_events_sync(batch)
+
+    _close_http_client()
+
+
+def _ensure_sender_thread_started() -> None:
+    global _sender_thread
+
+    if _sender_thread is not None and _sender_thread.is_alive():
+        return
+
+    with _sender_start_lock:
+        if _sender_thread is not None and _sender_thread.is_alive():
+            return
+
+        _sender_stop_event.clear()
+        _sender_thread = Thread(
+            target=_sender_worker,
+            name="zenml-mcp-analytics",
+            daemon=True,
+        )
+        _sender_thread.start()
+
+
+def _stop_sender_thread() -> None:
+    _sender_stop_event.set()
+    try:
+        _event_queue.put_nowait(None)
+    except Full:
+        pass
+    except Exception:
+        pass
+
+
+def _send_events(events: list[dict[str, Any]]) -> None:
+    """Enqueue events for async delivery (best-effort, non-blocking)."""
+    if not events:
+        return
+
+    try:
+        _ensure_sender_thread_started()
+        _event_queue.put_nowait(list(events))
+    except Full:
+        pass
+    except Exception:
+        pass
 
 
 def _build_track_event(event_name: str, properties: dict[str, Any]) -> dict[str, Any]:
@@ -319,10 +401,7 @@ def _do_init_analytics() -> None:
         return
 
     if _should_identify():
-        try:
-            _send_events([_build_identify_event(_get_traits())])
-        except Exception:
-            pass  # Never let analytics affect the server
+        _send_events([_build_identify_event(_get_traits())])
 
 
 def init_analytics() -> None:
@@ -339,7 +418,7 @@ def init_analytics() -> None:
     _init_attempted = True
 
     if not ANALYTICS_ENABLED:
-        print(f"Analytics: disabled ({_disabled_by_env_var}=true)", file=sys.stderr)
+        print(f"Analytics: disabled ({_disabled_reason})", file=sys.stderr)
         return
 
     try:
@@ -399,10 +478,7 @@ def track_event(event_name: str, properties: dict[str, Any] | None = None) -> No
         print(f"[Analytics DEV] {event_name}: {props}", file=sys.stderr)
         return
 
-    try:
-        _send_events([_build_track_event(event_name, props)])
-    except Exception:
-        pass  # Never let analytics affect the server
+    _send_events([_build_track_event(event_name, props)])
 
 
 def track_tool_call(
@@ -458,29 +534,30 @@ def _on_shutdown() -> None:
 
     IMPORTANT: This function never calls init_analytics() during shutdown.
     """
-    if not ANALYTICS_ENABLED:
-        return
-
-    if _session_start_time is None:
-        return
-
-    uptime = int(time.time() - _session_start_time)
-    props = {
-        "uptime_seconds": uptime,
-        "total_tool_calls": _tool_call_count,
-        "unique_tools_used": len(_tools_used),
-        "session_id": _session_id,
-        "is_ci": is_ci_environment(),
-    }
-
-    if DEV_MODE:
-        print(f"[Analytics DEV] MCP Server Shutdown: {props}", file=sys.stderr)
-        return
-
     try:
+        if not ANALYTICS_ENABLED:
+            return
+
+        if _session_start_time is None:
+            return
+
+        uptime = int(time.time() - _session_start_time)
+        props = {
+            "uptime_seconds": uptime,
+            "total_tool_calls": _tool_call_count,
+            "unique_tools_used": len(_tools_used),
+            "session_id": _session_id,
+            "is_ci": is_ci_environment(),
+        }
+
+        if DEV_MODE:
+            print(f"[Analytics DEV] MCP Server Shutdown: {props}", file=sys.stderr)
+            return
+
         _send_events([_build_track_event("MCP Server Shutdown", props)])
-    except Exception:
-        pass  # Best effort - never affect shutdown
+    finally:
+        _stop_sender_thread()
+        _close_http_client()
 
 
 # =============================================================================
@@ -501,7 +578,6 @@ def _coerce_to_int(value: Any) -> int | None:
         if isinstance(value, int):
             result = value
         elif isinstance(value, str):
-            # Handle string numeric values (e.g., "10")
             result = int(value)
         elif isinstance(value, float):
             result = int(value)
