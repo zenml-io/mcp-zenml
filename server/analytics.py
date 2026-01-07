@@ -1,9 +1,9 @@
 """
 Analytics module for ZenML MCP Server.
 
-Provides anonymous usage tracking via Segment to help improve the product.
-All analytics calls are non-blocking and exception-safe - they will never
-affect MCP server functionality.
+Provides anonymous usage tracking via the ZenML Analytics Server to help improve
+the product. All analytics calls are best-effort and exception-safe - they will
+never affect MCP server functionality.
 """
 
 import atexit
@@ -26,79 +26,30 @@ from typing import Any
 _enabled_env = os.getenv("ZENML_MCP_ANALYTICS_ENABLED", "true").lower()
 _disable_env = os.getenv("ZENML_MCP_DISABLE_ANALYTICS", "").lower()
 
-ANALYTICS_ENABLED = _enabled_env in ("true", "1", "yes") and _disable_env not in (
-    "true",
-    "1",
-    "yes",
-)
+# Track which variable caused disable (for accurate status message)
+_disabled_by_env_var: str | None = None
+if _disable_env in ("true", "1", "yes"):
+    _disabled_by_env_var = "ZENML_MCP_DISABLE_ANALYTICS"
+elif _enabled_env not in ("true", "1", "yes"):
+    _disabled_by_env_var = "ZENML_MCP_ANALYTICS_ENABLED"
+
+ANALYTICS_ENABLED = _disabled_by_env_var is None
 
 DEV_MODE = os.getenv("ZENML_MCP_ANALYTICS_DEV", "").lower() in ("true", "1", "yes")
 
-# Segment write key - hardcoded default with env override
-SEGMENT_WRITE_KEY = os.getenv(
-    "ZENML_MCP_SEGMENT_WRITE_KEY", "iZAi5eWiCRTua7016fA1W9hu1b82bj24"
-)
+# Analytics server endpoint (hardcoded; no env var override)
+ANALYTICS_ENDPOINT = "https://analytics.zenml.io/batch"
+ANALYTICS_SOURCE_CONTEXT = "mcp-zenml"
+ANALYTICS_TIMEOUT_S = float(os.getenv("ZENML_MCP_ANALYTICS_TIMEOUT_S", "2.0"))
 
-# =============================================================================
-# Tool allowlist - only track actual MCP tools, not prompts/resources
-# =============================================================================
+# Debug flag for events (routes to dev vs prod Segment on server side)
+ANALYTICS_DEBUG = os.getenv("LOGLEVEL", "").upper() == "DEBUG" or DEV_MODE
 
-TRACKED_TOOL_NAMES: set[str] = {
-    # User tools
-    "list_users",
-    "get_user",
-    "get_active_user",
-    # Stack tools
-    "list_stacks",
-    "get_stack",
-    # Pipeline tools
-    "list_pipelines",
-    "get_pipeline_details",
-    "trigger_pipeline",
-    # Run tools
-    "list_pipeline_runs",
-    "get_pipeline_run",
-    "list_run_steps",
-    "get_run_step",
-    # Step tools
-    "get_step_logs",
-    "get_step_code",
-    # Service tools
-    "list_services",
-    "get_service",
-    # Component tools
-    "list_stack_components",
-    "get_stack_component",
-    # Flavor tools
-    "list_flavors",
-    "get_flavor",
-    # Template tools
-    "list_run_templates",
-    "get_run_template",
-    # Schedule tools
-    "list_schedules",
-    "get_schedule",
-    # Artifact tools
-    "list_artifacts",
-    # Secret tools
-    "list_secrets",
-    # Connector tools
-    "list_service_connectors",
-    "get_service_connector",
-    # Model tools
-    "list_models",
-    "get_model",
-    "list_model_versions",
-    "get_model_version",
-    # Easter egg
-    "easter_egg",
-}
 
 # =============================================================================
 # Module state
 # =============================================================================
 
-_analytics: Any = None
 _session_id: str | None = None
 _session_start_time: float | None = None
 _tool_call_count = 0
@@ -106,6 +57,10 @@ _tools_used: set[str] = set()
 _user_id: str | None = None
 _init_attempted = False
 _init_failed = False
+_shutdown_registered = False  # Track if shutdown handlers are registered
+
+# HTTP client (lazy initialized)
+_http_client: Any = None  # httpx.Client
 
 
 # =============================================================================
@@ -159,17 +114,25 @@ def get_or_create_user_id() -> str:
 def get_server_domain_hash() -> str:
     """Hash the ZenML server domain for anonymous tracking.
 
-    Only hashes the domain portion of the URL, not the full path.
+    Only hashes the hostname portion of the URL (not port/credentials).
     Returns first 16 characters of SHA256 hash.
+    Handles URLs with or without scheme (e.g., "localhost:8080" or "https://localhost:8080").
     """
     url = os.getenv("ZENML_STORE_URL", "")
     if url:
         try:
             from urllib.parse import urlparse
 
-            domain = urlparse(url).netloc
-            if domain:
-                return hashlib.sha256(domain.encode()).hexdigest()[:16]
+            # Normalize: if no scheme present, prepend https:// for proper parsing
+            normalized_url = url.strip()
+            if "://" not in normalized_url:
+                normalized_url = f"https://{normalized_url}"
+
+            parsed = urlparse(normalized_url)
+            # Use hostname (excludes port and credentials) for consistent hashing
+            hostname = parsed.hostname
+            if hostname:
+                return hashlib.sha256(hostname.lower().encode()).hexdigest()[:16]
         except Exception:
             pass
     return "unknown"
@@ -214,9 +177,54 @@ def is_ci_environment() -> bool:
     return any(os.getenv(var) for var in ci_env_vars)
 
 
-def should_track_function(func_name: str) -> bool:
-    """Check if a function should be tracked (is it an MCP tool?)."""
-    return func_name in TRACKED_TOOL_NAMES
+def _send_events(events: list[dict[str, Any]]) -> None:
+    """Send events to the analytics server (best-effort).
+
+    This function never raises - all errors are silently ignored
+    to ensure analytics never affects server functionality.
+    """
+    global _http_client
+
+    if not events:
+        return
+
+    try:
+        import httpx
+
+        if _http_client is None:
+            _http_client = httpx.Client(timeout=ANALYTICS_TIMEOUT_S)
+
+        _http_client.post(
+            ANALYTICS_ENDPOINT,
+            json=events,
+            headers={
+                "Content-Type": "application/json",
+                "Source-Context": ANALYTICS_SOURCE_CONTEXT,
+            },
+        )
+    except Exception:
+        pass  # Best effort - never affect the server
+
+
+def _build_track_event(event_name: str, properties: dict[str, Any]) -> dict[str, Any]:
+    """Build a track event in analytics server format."""
+    return {
+        "type": "track",
+        "user_id": get_or_create_user_id(),
+        "event": event_name,
+        "properties": properties,
+        "debug": ANALYTICS_DEBUG,
+    }
+
+
+def _build_identify_event(traits: dict[str, Any]) -> dict[str, Any]:
+    """Build an identify event in analytics server format."""
+    return {
+        "type": "identify",
+        "user_id": get_or_create_user_id(),
+        "traits": traits,
+        "debug": ANALYTICS_DEBUG,
+    }
 
 
 # =============================================================================
@@ -270,28 +278,16 @@ def _should_identify() -> bool:
 # =============================================================================
 
 
-def _do_init_analytics() -> None:
-    """Actually initialize the Segment analytics client."""
-    global _analytics, _session_id, _session_start_time
+def _register_shutdown_handlers() -> None:
+    """Register shutdown handlers (idempotent - only registers once)."""
+    global _shutdown_registered
 
-    # Session tracking (always set, even in dev mode)
-    _session_id = str(uuid.uuid4())
-    _session_start_time = time.time()
-
-    if DEV_MODE:
-        print("Analytics: dev mode (events logged, not sent)", file=sys.stderr)
+    if _shutdown_registered:
         return
 
-    # Import Segment SDK
-    import segment.analytics as seg_analytics
+    _shutdown_registered = True
 
-    _analytics = seg_analytics
-    _analytics.write_key = SEGMENT_WRITE_KEY
-    _analytics.send = True
-    _analytics.debug = os.getenv("LOGLEVEL", "").upper() == "DEBUG"
-    _analytics.on_error = lambda error, items: None  # Silent errors
-
-    # Register shutdown handlers
+    # Register atexit handler (works in both dev mode and production)
     atexit.register(_on_shutdown)
 
     def signal_handler(sig: int, frame: Any) -> None:
@@ -306,17 +302,31 @@ def _do_init_analytics() -> None:
         # Signal handling may not work in all contexts (e.g., non-main thread)
         pass
 
-    # Identify user if traits changed
-    user_id = get_or_create_user_id()
+
+def _do_init_analytics() -> None:
+    """Initialize analytics (session tracking and identify)."""
+    global _session_id, _session_start_time
+
+    # Session tracking (always set, even in dev mode)
+    _session_id = str(uuid.uuid4())
+    _session_start_time = time.time()
+
+    # Always register shutdown handlers (including dev mode for testing)
+    _register_shutdown_handlers()
+
+    if DEV_MODE:
+        print("Analytics: dev mode (events logged, not sent)", file=sys.stderr)
+        return
+
     if _should_identify():
         try:
-            _analytics.identify(user_id, _get_traits())
+            _send_events([_build_identify_event(_get_traits())])
         except Exception:
             pass  # Never let analytics affect the server
 
 
 def init_analytics() -> None:
-    """Initialize Segment analytics.
+    """Initialize analytics.
 
     Prints status to stderr and sets up session tracking.
     Safe to call multiple times - will only initialize once.
@@ -329,42 +339,33 @@ def init_analytics() -> None:
     _init_attempted = True
 
     if not ANALYTICS_ENABLED:
-        print(
-            "Analytics: disabled (ZENML_MCP_ANALYTICS_ENABLED=false)", file=sys.stderr
-        )
+        print(f"Analytics: disabled ({_disabled_by_env_var}=true)", file=sys.stderr)
         return
 
     try:
         _do_init_analytics()
         if not DEV_MODE:
             print("Analytics: enabled", file=sys.stderr)
-    except ImportError as e:
-        print(f"Analytics: disabled (import error: {e})", file=sys.stderr)
-        _init_failed = True
     except Exception as e:
         print(f"Analytics: disabled (init error: {e})", file=sys.stderr)
         _init_failed = True
 
 
 def _ensure_initialized() -> bool:
-    """Ensure analytics is initialized, with lazy retry support.
+    """Ensure analytics is initialized.
 
     Returns True if analytics is ready to use.
     """
-    global _init_attempted, _init_failed
-
     if not ANALYTICS_ENABLED:
         return False
+
     if _init_failed:
         return False
-    if _analytics is not None or DEV_MODE:
-        return True
 
-    # Retry init if not attempted
     if not _init_attempted:
         init_analytics()
 
-    return (_analytics is not None or DEV_MODE) and not _init_failed
+    return not _init_failed
 
 
 def is_analytics_enabled() -> bool:
@@ -394,14 +395,12 @@ def track_event(event_name: str, properties: dict[str, Any] | None = None) -> No
     props["session_id"] = _session_id
     props["is_ci"] = is_ci_environment()
 
-    user_id = get_or_create_user_id()
-
     if DEV_MODE:
         print(f"[Analytics DEV] {event_name}: {props}", file=sys.stderr)
         return
 
     try:
-        _analytics.track(user_id, event_name, props)
+        _send_events([_build_track_event(event_name, props)])
     except Exception:
         pass  # Never let analytics affect the server
 
@@ -453,35 +452,68 @@ def track_server_started() -> None:
 
 
 def _on_shutdown() -> None:
-    """Handle server shutdown - send summary event and flush.
+    """Handle server shutdown - send summary event.
 
     Called via atexit or signal handlers.
+
+    IMPORTANT: This function never calls init_analytics() during shutdown.
     """
-    if not _ensure_initialized():
+    if not ANALYTICS_ENABLED:
         return
 
-    if _session_start_time:
-        uptime = int(time.time() - _session_start_time)
-        track_event(
-            "MCP Server Shutdown",
-            {
-                "uptime_seconds": uptime,
-                "total_tool_calls": _tool_call_count,
-                "unique_tools_used": len(_tools_used),
-            },
-        )
+    if _session_start_time is None:
+        return
 
-    # Flush any pending events
-    if _analytics and not DEV_MODE:
-        try:
-            _analytics.flush()
-        except Exception:
-            pass  # Best effort
+    uptime = int(time.time() - _session_start_time)
+    props = {
+        "uptime_seconds": uptime,
+        "total_tool_calls": _tool_call_count,
+        "unique_tools_used": len(_tools_used),
+        "session_id": _session_id,
+        "is_ci": is_ci_environment(),
+    }
+
+    if DEV_MODE:
+        print(f"[Analytics DEV] MCP Server Shutdown: {props}", file=sys.stderr)
+        return
+
+    try:
+        _send_events([_build_track_event("MCP Server Shutdown", props)])
+    except Exception:
+        pass  # Best effort - never affect shutdown
 
 
 # =============================================================================
 # Utility for extracting size argument from tool calls
 # =============================================================================
+
+
+def _coerce_to_int(value: Any) -> int | None:
+    """Coerce a value to int if possible.
+
+    Handles int, str (numeric), and float. Returns None for invalid values.
+    Also clamps to a reasonable range for analytics (1-10000).
+    """
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, int):
+            result = value
+        elif isinstance(value, str):
+            # Handle string numeric values (e.g., "10")
+            result = int(value)
+        elif isinstance(value, float):
+            result = int(value)
+        else:
+            return None
+
+        # Clamp to reasonable bounds for analytics
+        if result < 1 or result > 10000:
+            return None
+        return result
+    except (ValueError, TypeError):
+        return None
 
 
 def extract_size_from_call(
@@ -495,11 +527,9 @@ def extract_size_from_call(
         kwargs: Keyword arguments to the function
 
     Returns:
-        The size value if found in kwargs, otherwise None
+        The size value if found in kwargs (coerced to int), otherwise None
     """
     # For simplicity, we only check kwargs since most callers use keyword args
     # The MCP protocol typically passes arguments as kwargs
     size = kwargs.get("size")
-    if isinstance(size, int):
-        return size
-    return None
+    return _coerce_to_int(size)

@@ -6,7 +6,6 @@
 #     "zenml",
 #     "setuptools",
 #     "requests>=2.32.0",
-#     "segment-analytics-python>=2.3.0,<3.0",
 # ]
 # ///
 
@@ -50,9 +49,14 @@ logging.getLogger("zenml.client").setLevel(logging.WARNING)
 T = TypeVar("T")
 
 
-# Decorator for handling exceptions in tool functions
-def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
-    """Decorator to handle exceptions in tool functions and return a friendly error message."""
+# Decorator for handling exceptions in tool functions (with analytics tracking)
+def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
+    """Decorator for MCP tools - handles exceptions and tracks analytics.
+
+    Use this decorator for @mcp.tool() functions. It:
+    - Catches exceptions and returns friendly error messages
+    - Tracks tool usage via analytics (timing, success/failure, size param)
+    """
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
@@ -72,16 +76,35 @@ def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
             return cast(T, f"Error in {func.__name__}: {str(e)}")
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
+            size = analytics.extract_size_from_call(func.__name__, args, kwargs)
+            analytics.track_tool_call(
+                tool_name=func.__name__,
+                success=success,
+                duration_ms=duration_ms,
+                error_type=error_type,
+                size=size,
+            )
 
-            if analytics.should_track_function(func.__name__):
-                size = analytics.extract_size_from_call(func.__name__, args, kwargs)
-                analytics.track_tool_call(
-                    tool_name=func.__name__,
-                    success=success,
-                    duration_ms=duration_ms,
-                    error_type=error_type,
-                    size=size,
-                )
+    return wrapper
+
+
+# Decorator for handling exceptions in prompts/resources (no analytics)
+def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
+    """Decorator for prompts/resources - handles exceptions without analytics.
+
+    Use this decorator for @mcp.prompt() and @mcp.resource() functions.
+    It catches exceptions but does NOT track analytics (to avoid noise from
+    non-tool endpoints).
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> T:
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Print error to stderr for MCP to capture
+            print(f"Error in {func.__name__}: {str(e)}", file=sys.stderr)
+            return cast(T, f"Error in {func.__name__}: {str(e)}")
 
     return wrapper
 
@@ -116,9 +139,13 @@ except Exception as e:
     raise
 
 
+# Track if we've already reported client init failure (avoid spam)
+_client_init_failure_reported = False
+
+
 def get_zenml_client():
     """Get or initialize the ZenML client lazily."""
-    global zenml_client
+    global zenml_client, _client_init_failure_reported
     if zenml_client is None:
         logger.info("Lazy importing ZenML...")
         from zenml.client import Client
@@ -129,6 +156,15 @@ def get_zenml_client():
             logger.info("ZenML client initialized successfully")
         except Exception as e:
             logger.error(f"ZenML client initialization failed: {e}")
+            # Track client init failure (only report once per session)
+            if not _client_init_failure_reported:
+                _client_init_failure_reported = True
+                analytics.track_event(
+                    "Client Init Failed",
+                    {
+                        "error_type": type(e).__name__,
+                    },
+                )
             raise
     return zenml_client
 
@@ -209,7 +245,7 @@ def make_step_logs_request(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_step_logs(step_run_id: str) -> str:
     """Get the logs for a specific step run.
 
@@ -253,7 +289,7 @@ def get_step_logs(step_run_id: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_users(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -287,7 +323,7 @@ def list_users(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_user(name_id_or_prefix: str) -> str:
     """Get detailed information about a specific user.
 
@@ -299,7 +335,7 @@ def get_user(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_active_user() -> str:
     """Get the currently active user."""
     user = get_zenml_client().active_user
@@ -307,7 +343,7 @@ def get_active_user() -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_stack(name_id_or_prefix: str) -> str:
     """Get detailed information about a specific stack.
 
@@ -319,7 +355,7 @@ def get_stack(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def easter_egg() -> str:
     """Returns the ZenML MCP easter egg.
 
@@ -339,7 +375,7 @@ def easter_egg() -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_stacks(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -375,7 +411,7 @@ def list_stacks(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_pipelines(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -420,7 +456,7 @@ def get_latest_runs_status(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_pipeline_details(
     name_id_or_prefix: str,
     num_runs: int = 5,
@@ -436,7 +472,7 @@ def get_pipeline_details(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_service(name_id_or_prefix: str) -> str:
     """Get detailed information about a specific service.
 
@@ -448,7 +484,7 @@ def get_service(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_services(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -500,7 +536,7 @@ def list_services(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_stack_component(name_id_or_prefix: str) -> str:
     """Get detailed information about a specific stack component.
 
@@ -512,7 +548,7 @@ def get_stack_component(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_stack_components(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -552,7 +588,7 @@ def list_stack_components(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_flavor(name_id_or_prefix: str) -> str:
     """Get detailed information about a specific flavor.
 
@@ -564,7 +600,7 @@ def get_flavor(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_flavors(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -602,7 +638,7 @@ def list_flavors(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def trigger_pipeline(
     pipeline_name_or_id: str,
     template_id: str = None,
@@ -644,7 +680,7 @@ def trigger_pipeline(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_run_template(name_id_or_prefix: str) -> str:
     """Get a run template for a pipeline.
 
@@ -656,7 +692,7 @@ def get_run_template(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_run_templates(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -690,7 +726,7 @@ def list_run_templates(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_schedule(name_id_or_prefix: str) -> str:
     """Get a schedule for a pipeline.
 
@@ -702,7 +738,7 @@ def get_schedule(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_schedules(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -744,7 +780,7 @@ def list_schedules(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_pipeline_run(name_id_or_prefix: str) -> str:
     """Get a pipeline run by name, ID, or prefix.
 
@@ -756,7 +792,7 @@ def get_pipeline_run(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_pipeline_runs(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -814,7 +850,7 @@ def list_pipeline_runs(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_run_step(step_run_id: str) -> str:
     """Get a run step by name, ID, or prefix.
 
@@ -826,7 +862,7 @@ def get_run_step(step_run_id: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_run_steps(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -872,7 +908,7 @@ def list_run_steps(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_artifacts(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -908,7 +944,7 @@ def list_artifacts(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_secrets(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -942,7 +978,7 @@ def list_secrets(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_service_connector(name_id_or_prefix: str) -> str:
     """Get a service connector by name, ID, or prefix.
 
@@ -954,7 +990,7 @@ def get_service_connector(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_service_connectors(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -991,7 +1027,7 @@ def list_service_connectors(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_model(name_id_or_prefix: str) -> str:
     """Get a model by name, ID, or prefix.
 
@@ -1003,7 +1039,7 @@ def get_model(name_id_or_prefix: str) -> str:
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_models(
     sort_by: str = "desc:created",
     page: int = 1,
@@ -1040,7 +1076,7 @@ def list_models(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_model_version(
     model_name_or_id: str,
     model_version_name_or_number_or_id: str,
@@ -1059,7 +1095,7 @@ def get_model_version(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def list_model_versions(
     model_name_or_id: str,
     sort_by: str = "desc:created",
@@ -1107,7 +1143,7 @@ def list_model_versions(
 
 
 @mcp.tool()
-@handle_exceptions
+@handle_tool_exceptions
 def get_step_code(
     step_run_id: str,
 ) -> str:
