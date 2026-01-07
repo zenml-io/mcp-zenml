@@ -74,10 +74,30 @@ _sender_thread: Thread | None = None
 _sender_stop_event = Event()
 _sender_start_lock = Lock()
 
+_tool_stats_lock = Lock()
+_shutdown_lock = Lock()
+_shutdown_once = Event()
+
 
 # =============================================================================
 # Helper functions
 # =============================================================================
+
+
+def _get_config_dir() -> Path:
+    if platform.system() == "Windows":
+        appdata = os.getenv("APPDATA")
+        base_dir = Path(appdata) if appdata else (Path.home() / "AppData" / "Roaming")
+        return base_dir / "zenml-mcp"
+
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "zenml-mcp"
+
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return Path(xdg_config_home) / "zenml-mcp"
+
+    return Path.home() / ".config" / "zenml-mcp"
 
 
 def get_or_create_user_id() -> str:
@@ -98,11 +118,7 @@ def get_or_create_user_id() -> str:
         _user_id = env_id
         return _user_id
 
-    # Determine config directory based on platform
-    if platform.system() == "Windows":
-        config_dir = Path(os.getenv("APPDATA", "")) / "zenml-mcp"
-    else:
-        config_dir = Path.home() / ".config" / "zenml-mcp"
+    config_dir = _get_config_dir()
 
     id_file = config_dir / "anonymous_id"
 
@@ -121,33 +137,6 @@ def get_or_create_user_id() -> str:
         # Fallback: session-only ID
         _user_id = str(uuid.uuid4())
         return _user_id
-
-
-def get_server_domain_hash() -> str:
-    """Hash the ZenML server domain for anonymous tracking.
-
-    Only hashes the hostname portion of the URL (not port/credentials).
-    Returns first 16 characters of SHA256 hash.
-    Handles URLs with or without scheme (e.g., "localhost:8080" or "https://localhost:8080").
-    """
-    url = os.getenv("ZENML_STORE_URL", "")
-    if url:
-        try:
-            from urllib.parse import urlparse
-
-            # Normalize: if no scheme present, prepend https:// for proper parsing
-            normalized_url = url.strip()
-            if "://" not in normalized_url:
-                normalized_url = f"https://{normalized_url}"
-
-            parsed = urlparse(normalized_url)
-            # Use hostname (excludes port and credentials) for consistent hashing
-            hostname = parsed.hostname
-            if hostname:
-                return hashlib.sha256(hostname.lower().encode()).hexdigest()[:16]
-        except Exception:
-            pass
-    return "unknown"
 
 
 def get_server_version() -> str:
@@ -321,7 +310,6 @@ def _get_traits() -> dict[str, Any]:
         "python_version": platform.python_version(),
         "os": platform.system(),
         "is_docker": is_running_in_docker(),
-        "zenml_server_domain_hash": get_server_domain_hash(),
     }
 
 
@@ -333,10 +321,7 @@ def _get_traits_hash() -> str:
 
 def _should_identify() -> bool:
     """Check if we should send identify call (traits changed since last time)."""
-    if platform.system() == "Windows":
-        config_dir = Path(os.getenv("APPDATA", "")) / "zenml-mcp"
-    else:
-        config_dir = Path.home() / ".config" / "zenml-mcp"
+    config_dir = _get_config_dir()
 
     hash_file = config_dir / "traits_hash"
     current_hash = _get_traits_hash()
@@ -412,21 +397,25 @@ def init_analytics() -> None:
     """
     global _init_attempted, _init_failed
 
-    if _init_attempted:
-        return
-
-    _init_attempted = True
-
-    if not ANALYTICS_ENABLED:
-        print(f"Analytics: disabled ({_disabled_reason})", file=sys.stderr)
-        return
-
     try:
-        _do_init_analytics()
-        if not DEV_MODE:
-            print("Analytics: enabled", file=sys.stderr)
-    except Exception as e:
-        print(f"Analytics: disabled (init error: {e})", file=sys.stderr)
+        if _init_attempted:
+            return
+
+        _init_attempted = True
+
+        if not ANALYTICS_ENABLED:
+            print(f"Analytics: disabled ({_disabled_reason})", file=sys.stderr)
+            return
+
+        try:
+            _do_init_analytics()
+            if not DEV_MODE:
+                print("Analytics: enabled", file=sys.stderr)
+        except Exception as e:
+            print(f"Analytics: disabled (init error: {e})", file=sys.stderr)
+            _init_failed = True
+    except Exception:
+        _init_attempted = True
         _init_failed = True
 
 
@@ -467,18 +456,21 @@ def track_event(event_name: str, properties: dict[str, Any] | None = None) -> No
     This function is safe to call at any time - it will never raise exceptions
     or affect server functionality.
     """
-    if not _ensure_initialized():
+    try:
+        if not _ensure_initialized():
+            return
+
+        props = properties.copy() if properties else {}
+        props["session_id"] = _session_id
+        props["is_ci"] = is_ci_environment()
+
+        if DEV_MODE:
+            print(f"[Analytics DEV] {event_name}: {props}", file=sys.stderr)
+            return
+
+        _send_events([_build_track_event(event_name, props)])
+    except Exception:
         return
-
-    props = properties.copy() if properties else {}
-    props["session_id"] = _session_id
-    props["is_ci"] = is_ci_environment()
-
-    if DEV_MODE:
-        print(f"[Analytics DEV] {event_name}: {props}", file=sys.stderr)
-        return
-
-    _send_events([_build_track_event(event_name, props)])
 
 
 def track_tool_call(
@@ -487,6 +479,7 @@ def track_tool_call(
     duration_ms: int,
     error_type: str | None = None,
     size: int | None = None,
+    http_status_code: int | None = None,
 ) -> None:
     """Track a tool call with session stats.
 
@@ -496,35 +489,46 @@ def track_tool_call(
         duration_ms: Duration of the call in milliseconds
         error_type: Type of error if failed (e.g., "HTTPError")
         size: Size parameter if this was a list operation
+        http_status_code: HTTP status code if failed due to HTTPError
     """
-    global _tool_call_count
-    _tool_call_count += 1
-    _tools_used.add(tool_name)
+    try:
+        global _tool_call_count
 
-    properties: dict[str, Any] = {
-        "tool_name": tool_name,
-        "success": success,
-        "duration_ms": duration_ms,
-    }
-    if error_type:
-        properties["error_type"] = error_type
-    if size is not None:
-        properties["size"] = size
+        with _tool_stats_lock:
+            _tool_call_count += 1
+            _tools_used.add(tool_name)
 
-    track_event("Tool Called", properties)
+        properties: dict[str, Any] = {
+            "tool_name": tool_name,
+            "success": success,
+            "duration_ms": duration_ms,
+        }
+        if error_type:
+            properties["error_type"] = error_type
+        if size is not None:
+            properties["size"] = size
+        if http_status_code is not None:
+            properties["http_status_code"] = http_status_code
+
+        track_event("Tool Called", properties)
+    except Exception:
+        return
 
 
 def track_server_started() -> None:
     """Track server startup event with environment information."""
-    track_event(
-        "MCP Server Started",
-        {
-            "server_version": get_server_version(),
-            "python_version": platform.python_version(),
-            "os": platform.system(),
-            "is_docker": is_running_in_docker(),
-        },
-    )
+    try:
+        track_event(
+            "MCP Server Started",
+            {
+                "server_version": get_server_version(),
+                "python_version": platform.python_version(),
+                "os": platform.system(),
+                "is_docker": is_running_in_docker(),
+            },
+        )
+    except Exception:
+        return
 
 
 def _on_shutdown() -> None:
@@ -535,17 +539,26 @@ def _on_shutdown() -> None:
     IMPORTANT: This function never calls init_analytics() during shutdown.
     """
     try:
+        with _shutdown_lock:
+            if _shutdown_once.is_set():
+                return
+            _shutdown_once.set()
+
         if not ANALYTICS_ENABLED:
             return
 
         if _session_start_time is None:
             return
 
+        with _tool_stats_lock:
+            total_tool_calls = _tool_call_count
+            unique_tools_used = len(_tools_used)
+
         uptime = int(time.time() - _session_start_time)
         props = {
             "uptime_seconds": uptime,
-            "total_tool_calls": _tool_call_count,
-            "unique_tools_used": len(_tools_used),
+            "total_tool_calls": total_tool_calls,
+            "unique_tools_used": unique_tools_used,
             "session_id": _session_id,
             "is_ci": is_ci_environment(),
         }

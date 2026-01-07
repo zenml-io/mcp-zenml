@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `server/` – MCP server implementation. Main entry: `server/zenml_server.py`; analytics: `server/analytics.py`; treat `server/lib/` as vendored support code (avoid edits unless necessary).
+- `server/` – MCP server implementation. Main entry: `server/zenml_server.py`; analytics: `server/zenml_mcp_analytics.py`; treat `server/lib/` as vendored support code (avoid edits unless necessary).
 - `scripts/` – Developer utilities: `format.sh` (ruff) and `test_mcp_server.py` (smoke test).
 - `assets/` – Images and static assets.
 - Root files – `README.md`, `manifest.json`, `mcp-zenml.mcpb` (MCP bundle), CI in `.github/workflows/`.

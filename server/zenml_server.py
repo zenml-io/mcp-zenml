@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+from threading import Lock
 from typing import Any, Callable, Dict, TypeVar, cast
 
 import requests
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Configure minimal logging to stderr
 log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
-log_level = getattr(logging, log_level_name, logging.WARNING)
+log_level = max(getattr(logging, log_level_name, logging.WARNING), logging.WARNING)
 
 # Simple stderr logging configuration - explicitly use stderr to avoid JSON protocol issues
 logging.basicConfig(
@@ -38,8 +39,7 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 
-# Suppress all INFO level logging from all modules to prevent JSON protocol interference
-logging.getLogger().setLevel(logging.WARNING)
+# Never log below WARNING to prevent JSON protocol interference
 
 # Specifically suppress ZenML's internal logging to prevent JSON protocol issues
 logging.getLogger("zenml").setLevel(logging.WARNING)
@@ -65,9 +65,43 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
         start_time = time.perf_counter()
         success = True
         error_type: str | None = None
+        http_status_code: int | None = None
 
         try:
             return func(*args, **kwargs)
+        except requests.HTTPError as e:
+            success = False
+            error_type = type(e).__name__
+            http_status_code = (
+                e.response.status_code
+                if getattr(e, "response", None) is not None
+                else None
+            )
+
+            if http_status_code == 401:
+                message = "Authentication failed. Please check your API key."
+            elif http_status_code == 404 and func.__name__ == "get_step_logs":
+                message = (
+                    "Logs not found. Please check the step ID. "
+                    "Also note that if the step was run on a stack with a local "
+                    "or non-cloud-based artifact store then no logs will have been "
+                    "stored by ZenML."
+                )
+            elif http_status_code is not None:
+                message = f"Request failed (HTTP {http_status_code})."
+            else:
+                message = "Request failed."
+
+            if analytics.DEV_MODE:
+                message = f"{message} ({e})"
+
+            err_log = f"Error in {func.__name__}: {error_type}"
+            if http_status_code is not None:
+                err_log = f"{err_log} (HTTP {http_status_code})"
+            if analytics.DEV_MODE:
+                err_log = f"{err_log} - {e}"
+            print(err_log, file=sys.stderr)
+            return cast(T, message)
         except Exception as e:
             success = False
             error_type = type(e).__name__
@@ -82,14 +116,18 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
             return cast(T, message)
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
-            size = analytics.extract_size_from_call(func.__name__, args, kwargs)
-            analytics.track_tool_call(
-                tool_name=func.__name__,
-                success=success,
-                duration_ms=duration_ms,
-                error_type=error_type,
-                size=size,
-            )
+            try:
+                size = analytics.extract_size_from_call(func.__name__, args, kwargs)
+                analytics.track_tool_call(
+                    tool_name=func.__name__,
+                    success=success,
+                    duration_ms=duration_ms,
+                    error_type=error_type,
+                    size=size,
+                    http_status_code=http_status_code,
+                )
+            except Exception:
+                pass
 
     return wrapper
 
@@ -108,9 +146,11 @@ def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            # Print error to stderr for MCP to capture
-            print(f"Error in {func.__name__}: {str(e)}", file=sys.stderr)
-            return cast(T, f"Error in {func.__name__}: {str(e)}")
+            error_type = type(e).__name__
+            error_detail = str(e) if analytics.DEV_MODE else error_type
+            message = f"Error in {func.__name__}: {error_detail}"
+            print(message, file=sys.stderr)
+            return cast(T, message)
 
     return wrapper
 
@@ -147,12 +187,19 @@ except Exception as e:
 
 # Track if we've already reported client init failure (avoid spam)
 _client_init_failure_reported = False
+_zenml_client_init_lock = Lock()
 
 
 def get_zenml_client():
     """Get or initialize the ZenML client lazily."""
     global zenml_client, _client_init_failure_reported
-    if zenml_client is None:
+    if zenml_client is not None:
+        return zenml_client
+
+    with _zenml_client_init_lock:
+        if zenml_client is not None:
+            return zenml_client
+
         logger.info("Lazy importing ZenML...")
         from zenml.client import Client
 
@@ -172,6 +219,7 @@ def get_zenml_client():
                     },
                 )
             raise
+
     return zenml_client
 
 
@@ -269,30 +317,12 @@ def get_step_logs(step_run_id: str) -> str:
     if not api_key:
         raise ValueError("ZENML_STORE_API_KEY environment variable not set")
 
-    try:
-        # Generate a short-lived access token
-        access_token = get_access_token(server_url, api_key)
+    # Generate a short-lived access token
+    access_token = get_access_token(server_url, api_key)
 
-        # Get the logs using the access token
-        logs = make_step_logs_request(server_url, step_run_id, access_token)
-        return json.dumps(logs)
-
-    except requests.HTTPError as e:
-        if e.response.status_code == 401:
-            return "Authentication failed. Please check your API key."
-        elif e.response.status_code == 404:
-            return (
-                "Logs not found. Please check the step ID. "
-                "Also note that if the step was run on a stack with a local "
-                "or non-cloud-based artifact store then no logs will have been "
-                "stored by ZenML."
-            )
-        else:
-            return f"Failed to fetch logs: {e}"
-    except ValueError as e:
-        return f"Value error: {e}"
-    except Exception as e:
-        return f"An error occurred: {e}"
+    # Get the logs using the access token
+    logs = make_step_logs_request(server_url, step_run_id, access_token)
+    return json.dumps(logs)
 
 
 @mcp.tool()
@@ -302,9 +332,9 @@ def list_users(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    active: bool = None,
+    created: str | None = None,
+    updated: str | None = None,
+    active: bool | None = None,
 ) -> str:
     """List all users in the ZenML workspace.
 
@@ -388,9 +418,9 @@ def list_stacks(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
 ) -> str:
     """List all stacks in the ZenML workspace.
 
@@ -423,8 +453,8 @@ def list_pipelines(
     sort_by: str = "desc:created",
     page: int = 1,
     size: int = 10,
-    created: str = None,
-    updated: str = None,
+    created: str | None = None,
+    updated: str | None = None,
 ) -> str:
     """List all pipelines in the ZenML workspace.
 
@@ -497,15 +527,15 @@ def list_services(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    id: str = None,
-    created: str = None,
-    updated: str = None,
-    running: bool = None,
-    service_name: str = None,
-    pipeline_name: str = None,
-    pipeline_run_id: str = None,
-    pipeline_step_name: str = None,
-    model_version_id: str = None,
+    id: str | None = None,
+    created: str | None = None,
+    updated: str | None = None,
+    running: bool | None = None,
+    service_name: str | None = None,
+    pipeline_name: str | None = None,
+    pipeline_run_id: str | None = None,
+    pipeline_step_name: str | None = None,
+    model_version_id: str | None = None,
 ) -> str:
     """List all services in the ZenML workspace.
 
@@ -561,11 +591,11 @@ def list_stack_components(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    flavor: str = None,
-    stack_id: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    flavor: str | None = None,
+    stack_id: str | None = None,
 ) -> str:
     """List all stack components in the ZenML workspace.
 
@@ -613,11 +643,11 @@ def list_flavors(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    id: str = None,
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    integration: str = None,
+    id: str | None = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    integration: str | None = None,
 ) -> str:
     """List all flavors in the ZenML workspace.
 
@@ -648,8 +678,8 @@ def list_flavors(
 @handle_tool_exceptions
 def trigger_pipeline(
     pipeline_name_or_id: str,
-    template_id: str = None,
-    stack_name_or_id: str = None,
+    template_id: str | None = None,
+    stack_name_or_id: str | None = None,
 ) -> str:
     """Trigger a pipeline to run from the server.
 
@@ -704,10 +734,10 @@ def list_run_templates(
     sort_by: str = "desc:created",
     page: int = 1,
     size: int = 10,
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    tag: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    tag: str | None = None,
 ) -> str:
     """List all run templates in the ZenML workspace.
 
@@ -751,12 +781,12 @@ def list_schedules(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    pipeline_id: str = None,
-    orchestrator_id: str = None,
-    active: bool = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    pipeline_id: str | None = None,
+    orchestrator_id: str | None = None,
+    active: bool | None = None,
 ) -> str:
     """List all schedules in the ZenML workspace.
 
@@ -805,17 +835,17 @@ def list_pipeline_runs(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    pipeline_id: str = None,
-    pipeline_name: str = None,
-    stack_id: str = None,
-    status: str = None,
-    start_time: str = None,
-    end_time: str = None,
-    stack: str = None,
-    stack_component: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    pipeline_id: str | None = None,
+    pipeline_name: str | None = None,
+    stack_id: str | None = None,
+    status: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    stack: str | None = None,
+    stack_component: str | None = None,
 ) -> str:
     """List all pipeline runs in the ZenML workspace.
 
@@ -875,13 +905,13 @@ def list_run_steps(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    status: str = None,
-    start_time: str = None,
-    end_time: str = None,
-    pipeline_run_id: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    status: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    pipeline_run_id: str | None = None,
 ) -> str:
     """List all run steps in the ZenML workspace.
 
@@ -921,10 +951,10 @@ def list_artifacts(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    tag: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    tag: str | None = None,
 ) -> str:
     """List all artifacts in the ZenML workspace.
 
@@ -957,9 +987,9 @@ def list_secrets(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
 ) -> str:
     """List all secrets in the ZenML workspace.
 
@@ -1003,10 +1033,10 @@ def list_service_connectors(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    connector_type: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    connector_type: str | None = None,
 ) -> str:
     """List all service connectors in the ZenML workspace.
 
@@ -1052,10 +1082,10 @@ def list_models(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    tag: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    tag: str | None = None,
 ) -> str:
     """List all models in the ZenML workspace.
 
@@ -1109,12 +1139,12 @@ def list_model_versions(
     page: int = 1,
     size: int = 10,
     logical_operator: str = "and",
-    created: str = None,
-    updated: str = None,
-    name: str = None,
-    number: int = None,
-    stage: str = None,
-    tag: str = None,
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    number: int | None = None,
+    stage: str | None = None,
+    tag: str | None = None,
 ) -> str:
     """List all model versions for a model.
 

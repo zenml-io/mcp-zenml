@@ -103,7 +103,7 @@ The ZenML MCP Server collects anonymous usage analytics to help us improve the p
 **We track:**
 - Which tools are used and how often
 - Error rates and types (error type only, no messages)
-- Basic environment info (OS, Python version)
+- Basic environment info (OS, Python version, and whether running in Docker/CI)
 - Session duration and tool usage patterns
 
 **We do NOT collect:**
