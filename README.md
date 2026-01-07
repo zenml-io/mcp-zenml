@@ -96,6 +96,40 @@ The automated tests verify:
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
 
+## Privacy & Analytics
+
+The ZenML MCP Server collects anonymous usage analytics to help us improve the product.
+
+**We track:**
+- Which tools are used and how often
+- Error rates and types (error type only, no messages)
+- Basic environment info (OS, Python version)
+- Session duration and tool usage patterns
+
+**We do NOT collect:**
+- Your ZenML server URL or API key
+- Pipeline names, model names, or any business data
+- Error messages or stack traces
+- Any personally identifiable information
+
+**To disable analytics:**
+
+```bash
+# Option 1
+export ZENML_MCP_ANALYTICS_ENABLED=false
+
+# Option 2
+export ZENML_MCP_DISABLE_ANALYTICS=true
+```
+
+**For debugging/testing (logs events to stderr instead of sending):**
+
+```bash
+export ZENML_MCP_ANALYTICS_DEV=true
+```
+
+**For Docker users:** Set `ZENML_MCP_ANALYTICS_ID` to maintain a consistent anonymous ID across container restarts.
+
 ## Manual Setup
 
 ### Prerequisites

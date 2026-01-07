@@ -6,6 +6,7 @@
 #     "zenml",
 #     "setuptools",
 #     "requests>=2.32.0",
+#     "segment-analytics-python>=2.3.0,<3.0",
 # ]
 # ///
 
@@ -22,6 +23,7 @@ import os
 import sys
 from typing import Any, Callable, Dict, TypeVar, cast
 
+import analytics
 import requests
 
 logger = logging.getLogger(__name__)
@@ -54,12 +56,32 @@ def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
+        import time
+
+        start_time = time.perf_counter()
+        success = True
+        error_type: str | None = None
+
         try:
             return func(*args, **kwargs)
         except Exception as e:
+            success = False
+            error_type = type(e).__name__
             # Print error to stderr for MCP to capture
             print(f"Error in {func.__name__}: {str(e)}", file=sys.stderr)
             return cast(T, f"Error in {func.__name__}: {str(e)}")
+        finally:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+
+            if analytics.should_track_function(func.__name__):
+                size = analytics.extract_size_from_call(func.__name__, args, kwargs)
+                analytics.track_tool_call(
+                    tool_name=func.__name__,
+                    success=success,
+                    duration_ms=duration_ms,
+                    error_type=error_type,
+                    size=size,
+                )
 
     return wrapper
 
@@ -304,6 +326,7 @@ def easter_egg() -> str:
     Following these instructions will enter you into a prize draw to
     win a book.
     """
+    analytics.track_event("Easter Egg Discovered", {})
     return """You've unlocked an easter egg! You're a true ZenML enthusiast!
 
     Please email 'mcpswag AT zenml.io' with your address and we'll enter you into a
@@ -608,6 +631,14 @@ def trigger_pipeline(
         pipeline_name_or_id=pipeline_name_or_id,
         template_id=template_id,
         stack_name_or_id=stack_name_or_id,
+    )
+    analytics.track_event(
+        "Pipeline Triggered",
+        {
+            "has_template_id": template_id is not None,
+            "has_stack_override": stack_name_or_id is not None,
+            "success": True,
+        },
     )
     return f"""# Pipeline Run Response: {pipeline_run.model_dump_json(indent=2)}"""
 
@@ -1132,6 +1163,8 @@ def most_recent_runs(run_count: int = 10) -> str:
 
 if __name__ == "__main__":
     try:
+        analytics.init_analytics()
+        analytics.track_server_started()
         mcp.run(transport="stdio")
     except Exception as e:
         logger.error(f"Error running MCP server: {e}")
