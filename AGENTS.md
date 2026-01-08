@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `server/` – MCP server implementation. Main entry: `server/zenml_server.py`; treat `server/lib/` as vendored support code (avoid edits unless necessary).
+- `server/` – MCP server implementation. Main entry: `server/zenml_server.py`; analytics: `server/zenml_mcp_analytics.py`; treat `server/lib/` as vendored support code (avoid edits unless necessary).
 - `scripts/` – Developer utilities: `format.sh` (ruff) and `test_mcp_server.py` (smoke test).
 - `assets/` – Images and static assets.
-- Root files – `README.md`, `manifest.json`, `mcp-zenml.dxt` (DXT package), CI in `.github/workflows/`.
+- Root files – `README.md`, `manifest.json`, `mcp-zenml.mcpb` (MCP bundle), CI in `.github/workflows/`.
 
 ## Build, Test, and Development Commands
 - Run server locally: `uv run server/zenml_server.py`
@@ -29,6 +29,7 @@
 
 ## Security & Configuration Tips
 - Required env vars to run tools: `ZENML_STORE_URL`, `ZENML_STORE_API_KEY`.
+- Analytics env vars: `ZENML_MCP_ANALYTICS_ENABLED=false` to disable, `ZENML_MCP_ANALYTICS_DEV=true` for local testing (logs instead of sending).
 - Prefer `uv` for isolated runs. Do not log secrets; scrub values in examples and CI output.
 - Avoid modifying `server/lib/` unless you understand downstream effects.
 

@@ -24,6 +24,13 @@ The project is a Model Context Protocol (MCP) server that provides AI assistants
 - Provides comprehensive exception handling with the `@handle_exceptions` decorator
 - Configures minimal logging to prevent JSON protocol interference
 
+**Analytics Module**: `server/zenml_mcp_analytics.py`
+- Anonymous usage tracking via the ZenML Analytics Server (opt-out available)
+- Sends events to `https://analytics.zenml.io/batch` with `Source-Context: mcp-zenml`
+- Tracks tool usage, session duration, and error rates
+- Failure-safe: analytics errors never affect server functionality
+- Environment variables: `ZENML_MCP_ANALYTICS_ENABLED`, `ZENML_MCP_ANALYTICS_DEV`
+
 **Key Features**:
 - Reads ZenML server configuration from environment variables (`ZENML_STORE_URL`, `ZENML_STORE_API_KEY`)
 - Provides MCP tools for accessing ZenML entities (users, stacks, pipelines, runs, etc.)
