@@ -6,6 +6,7 @@ on:
     paths-ignore: ["assets/**"]
   push:
     branches: [main]
+  workflow_dispatch:  # Allow manual triggering
 concurrency:
   # New commit on branch cancels running workflows of the same branch
   group: ${{ github.workflow }}-${{ github.ref }}

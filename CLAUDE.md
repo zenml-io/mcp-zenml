@@ -12,6 +12,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Code Quality
 - **Format**: `bash scripts/format.sh`
 
+## Development Workflow
+
+**IMPORTANT: Always use feature branches and pull requests for changes.**
+
+1. **Create a feature branch** for any changes:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+2. **Make your changes** and ensure tests pass:
+   ```bash
+   uv run scripts/test_mcp_server.py server/zenml_server.py
+   docker build -t mcp-zenml:test .  # Verify Docker build works
+   ```
+
+3. **Create a pull request** - never commit directly to main:
+   ```bash
+   git push -u origin feature/your-feature-name
+   gh pr create --fill
+   ```
+
+4. **Wait for CI to pass** before merging - PR tests include:
+   - MCP smoke tests (Python)
+   - Docker build verification
+   - Format checks
+
+5. **After merge, trigger release** if needed (see Release Process below)
+
+**Why this matters**: Direct commits to main bypass CI checks and can result in broken releases (e.g., Docker images that fail to start). The PR workflow ensures all changes are validated before release.
+
 ## Architecture
 
 ### Core Components
@@ -78,8 +108,11 @@ gh workflow run release.yml --repo zenml-io/mcp-zenml -f version=X.Y.Z
 ```
 
 This triggers:
-1. **Release Orchestrator** (`release.yml`): Bumps version files, creates tag, builds `.mcpb` bundle
-2. **Release Docker** (`release-docker.yml`): Triggered by `v*.*.*` tag push, builds Docker image, publishes to MCP Registry
+1. **Pre-release Tests**: Runs smoke tests and Docker build verification as a gate
+2. **Release Orchestrator** (`release.yml`): Bumps version files, creates tag, builds `.mcpb` bundle
+3. **Release Docker** (`release-docker.yml`): Triggered by `v*.*.*` tag push, builds Docker image, publishes to MCP Registry
+
+**Note**: The release will fail if tests don't pass. This prevents releasing broken builds.
 
 ### Version Files
 
