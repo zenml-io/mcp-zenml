@@ -32,6 +32,8 @@ USER appuser
 
 # Copy only what we need to run the server in stdio mode
 COPY --chown=appuser:appuser server/zenml_server.py /app/server/zenml_server.py
+COPY --chown=appuser:appuser server/zenml_mcp_analytics.py /app/server/zenml_mcp_analytics.py
+COPY --chown=appuser:appuser VERSION /app/VERSION
 
 # OCI labels (will be enriched/overridden by CI metadata)
 LABEL org.opencontainers.image.title="ZenML MCP Server" \

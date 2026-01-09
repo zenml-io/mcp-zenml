@@ -45,3 +45,43 @@ jobs:
         run: |
           echo "Running MCP smoke test..."
           uv run scripts/test_mcp_server.py server/zenml_server.py
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          echo "Building Docker image to verify Dockerfile..."
+          docker build -t mcp-zenml:test .
+
+      - name: Verify Docker container starts correctly
+        run: |
+          echo "Verifying container starts without import errors..."
+          # Capture output from container startup (will timeout waiting for stdio, that's expected)
+          OUTPUT=$(timeout 5 docker run --rm mcp-zenml:test 2>&1 || true)
+          echo "Container output:"
+          echo "$OUTPUT"
+
+          # Check for common import/startup errors
+          if echo "$OUTPUT" | grep -q "ModuleNotFoundError"; then
+            echo "❌ FAILED: Container has missing module imports"
+            exit 1
+          fi
+          if echo "$OUTPUT" | grep -q "ImportError"; then
+            echo "❌ FAILED: Container has import errors"
+            exit 1
+          fi
+          if echo "$OUTPUT" | grep -q "Traceback"; then
+            echo "❌ FAILED: Container crashed with Python exception"
+            exit 1
+          fi
+
+          # Verify analytics message appears (indicates successful startup)
+          if echo "$OUTPUT" | grep -q "Analytics:"; then
+            echo "✅ Container started successfully (analytics initialized)"
+          else
+            echo "⚠️ Warning: Expected analytics status message not found"
+          fi
