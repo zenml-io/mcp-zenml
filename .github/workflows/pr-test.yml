@@ -47,6 +47,11 @@ jobs:
           echo "Running MCP smoke test..."
           uv run scripts/test_mcp_server.py server/zenml_server.py
 
+      - name: Run analytics pipeline test
+        run: |
+          echo "Running analytics pipeline test..."
+          uv run scripts/test_analytics.py --full-diagnostic
+
   docker-build:
     runs-on: ubuntu-latest
     steps:

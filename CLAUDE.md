@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Testing and Development
 - **Run smoke tests**: `uv run scripts/test_mcp_server.py server/zenml_server.py`
+- **Run analytics tests**: `uv run scripts/test_analytics.py --full-diagnostic`
 - **Format code**: `./scripts/format.sh` (uses ruff for linting and formatting)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
 
@@ -35,6 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 4. **Wait for CI to pass** before merging - PR tests include:
    - MCP smoke tests (Python)
+   - Analytics pipeline tests
    - Docker build verification
    - Format checks
 
