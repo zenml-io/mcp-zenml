@@ -87,6 +87,12 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
                     "or non-cloud-based artifact store then no logs will have been "
                     "stored by ZenML."
                 )
+            elif http_status_code == 404 and func.__name__ == "get_deployment_logs":
+                message = (
+                    "Deployment not found or logs unavailable. Please check the deployment "
+                    "name/ID. Note that log availability depends on the deployer type and "
+                    "infrastructure configuration."
+                )
             elif http_status_code is not None:
                 message = f"Request failed (HTTP {http_status_code})."
             else:
@@ -1065,6 +1071,116 @@ def list_deployments(
         project=project,
     )
     return deployments.model_dump_json()
+
+
+# Maximum size for deployment logs output (100KB)
+MAX_DEPLOYMENT_LOGS_SIZE = 100 * 1024
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_deployment_logs(
+    name_id_or_prefix: str,
+    project: str | None = None,
+    tail: int = 100,
+) -> str:
+    """Get logs for a specific deployment.
+
+    Retrieves logs from the deployment's underlying infrastructure. This is useful
+    for debugging deployment issues or monitoring deployment behavior.
+
+    Note: Log availability depends on the deployer plugin being installed and
+    the deployment infrastructure supporting log retrieval.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the deployment
+        project: Optional project scope (defaults to active project)
+        tail: Number of recent log lines to retrieve (default: 100, max recommended: 500)
+
+    Returns:
+        JSON object with 'logs' (string) and metadata about truncation if applicable
+    """
+    # Cap tail at a reasonable maximum to prevent excessive output
+    effective_tail = min(tail, 1000)
+
+    try:
+        # Get the log generator - ALWAYS use follow=False to prevent hanging
+        log_generator = get_zenml_client().get_deployment_logs(
+            name_id_or_prefix,
+            project=project,
+            follow=False,  # Critical: Never follow to avoid infinite stream
+            tail=effective_tail,
+        )
+
+        # Collect logs from generator with size limit
+        log_lines = []
+        total_size = 0
+        truncated = False
+
+        for line in log_generator:
+            line_size = len(line.encode("utf-8"))
+            if total_size + line_size > MAX_DEPLOYMENT_LOGS_SIZE:
+                truncated = True
+                break
+            log_lines.append(line)
+            total_size += line_size
+
+        logs_text = "\n".join(log_lines)
+
+        result = {
+            "logs": logs_text,
+            "line_count": len(log_lines),
+            "truncated": truncated,
+            "tail_requested": tail,
+            "tail_effective": effective_tail,
+        }
+
+        if truncated:
+            result["truncation_message"] = (
+                f"Output truncated at {MAX_DEPLOYMENT_LOGS_SIZE // 1024}KB. "
+                f"Use a smaller 'tail' value to see complete recent logs."
+            )
+
+        return json.dumps(result)
+
+    except ImportError as e:
+        # Handle missing deployer plugin (direct import failure)
+        return json.dumps(
+            {
+                "error": "deployer_plugin_not_installed",
+                "message": (
+                    f"The deployer plugin required to fetch logs is not installed: {e}. "
+                    "Please install the appropriate ZenML integration for your stack "
+                    "(e.g., `zenml integration install gcp` for GCP deployments), "
+                    "then restart the MCP server."
+                ),
+                "logs": None,
+            }
+        )
+    except Exception as e:
+        # Check if this is a deployer instantiation error (missing dependencies)
+        error_str = str(e)
+        if (
+            "could not be instantiated" in error_str
+            or "dependencies are not installed" in error_str
+        ):
+            return json.dumps(
+                {
+                    "error": "deployer_dependencies_missing",
+                    "message": (
+                        f"The deployer's dependencies are not installed: {error_str}\n\n"
+                        "To fix this:\n"
+                        "1. Check which stack/deployer was used for this deployment\n"
+                        "2. Install the required ZenML integration for that deployer:\n"
+                        "   `zenml integration install <integration-name>`\n"
+                        "3. Restart the MCP server\n\n"
+                        "Common deployer integrations: gcp, aws, azure, kubernetes, huggingface"
+                    ),
+                    "logs": None,
+                }
+            )
+        # Re-raise other exceptions to be handled by the decorator
+        raise
 
 
 @mcp.tool()
