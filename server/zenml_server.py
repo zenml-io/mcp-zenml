@@ -379,6 +379,75 @@ def get_active_user() -> str:
     return user.model_dump_json()
 
 
+# =============================================================================
+# Project Tools
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_active_project() -> str:
+    """Get the currently active project.
+
+    Projects are organizational containers for ZenML resources. Most SDK methods
+    are project-scoped, and this tool returns the default project context.
+    """
+    project = get_zenml_client().active_project
+    return project.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_project(name_id_or_prefix: str, hydrate: bool = True) -> str:
+    """Get detailed information about a specific project.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the project to retrieve
+        hydrate: Whether to hydrate the response with additional details
+    """
+    project = get_zenml_client().get_project(name_id_or_prefix, hydrate=hydrate)
+    return project.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def list_projects(
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    logical_operator: str = "and",
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    display_name: str | None = None,
+) -> str:
+    """List all projects in the ZenML workspace.
+
+    Returns JSON including pagination metadata (items, total, page, size).
+
+    Args:
+        sort_by: The field to sort the projects by
+        page: The page number to return
+        size: The number of projects to return
+        logical_operator: The logical operator to use for combining filters
+        created: Filter by creation date
+        updated: Filter by last update date
+        name: Filter by project name
+        display_name: Filter by project display name
+    """
+    projects = get_zenml_client().list_projects(
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        logical_operator=logical_operator,
+        created=created,
+        updated=updated,
+        name=name,
+        display_name=display_name,
+    )
+    return projects.model_dump_json()
+
+
 @mcp.tool()
 @handle_tool_exceptions
 def get_stack(name_id_or_prefix: str) -> str:
@@ -814,6 +883,190 @@ def list_run_templates(
     return f"{deprecation_notice}\n\n{templates_json}"
 
 
+# =============================================================================
+# Snapshot Tools (Modern replacement for Run Templates)
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_snapshot(
+    name_id_or_prefix: str,
+    pipeline_name_or_id: str | None = None,
+    project: str | None = None,
+    include_config_schema: bool | None = None,
+    hydrate: bool = True,
+) -> str:
+    """Get detailed information about a specific snapshot.
+
+    Snapshots are frozen pipeline configurations that link pipeline + stack + build
+    + schedule + tags together. They represent "what exactly ran/is deployed" and
+    are the modern replacement for Run Templates.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the snapshot to retrieve
+        pipeline_name_or_id: Optional pipeline context to narrow the search
+        project: Optional project scope (defaults to active project)
+        include_config_schema: Whether to include the config schema in the response
+            (can produce large payloads)
+        hydrate: Whether to hydrate the response with additional details
+    """
+    snapshot = get_zenml_client().get_snapshot(
+        name_id_or_prefix,
+        pipeline_name_or_id=pipeline_name_or_id,
+        project=project,
+        include_config_schema=include_config_schema,
+        hydrate=hydrate,
+    )
+    return snapshot.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def list_snapshots(
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    logical_operator: str = "and",
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    pipeline: str | None = None,
+    runnable: bool | None = None,
+    deployable: bool | None = None,
+    deployed: bool | None = None,
+    tag: str | None = None,
+    project: str | None = None,
+    named_only: bool | None = True,
+) -> str:
+    """List all snapshots in the ZenML workspace.
+
+    Snapshots are frozen pipeline configurations that replace the deprecated
+    Run Templates. Use `runnable=True` to find snapshots that can be triggered.
+
+    Returns JSON including pagination metadata (items, total, page, size).
+
+    Args:
+        sort_by: The field to sort the snapshots by
+        page: The page number to return
+        size: The number of snapshots to return
+        logical_operator: The logical operator to use for combining filters
+        created: Filter by creation date
+        updated: Filter by last update date
+        name: Filter by snapshot name
+        pipeline: Filter by pipeline name or ID
+        runnable: Filter to only runnable snapshots (can be triggered)
+        deployable: Filter to only deployable snapshots
+        deployed: Filter to only currently deployed snapshots
+        tag: Filter by tag
+        project: Optional project scope (defaults to active project)
+        named_only: Only return named snapshots (default True to avoid internal ones)
+    """
+    snapshots = get_zenml_client().list_snapshots(
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        logical_operator=logical_operator,
+        created=created,
+        updated=updated,
+        name=name,
+        pipeline=pipeline,
+        runnable=runnable,
+        deployable=deployable,
+        deployed=deployed,
+        tag=tag,
+        project=project,
+        named_only=named_only,
+    )
+    return snapshots.model_dump_json()
+
+
+# =============================================================================
+# Deployment Tools
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_deployment(
+    name_id_or_prefix: str,
+    project: str | None = None,
+    hydrate: bool = True,
+) -> str:
+    """Get detailed information about a specific deployment.
+
+    Deployments represent the runtime state of what's currently serving/provisioned,
+    including status, URL, and metadata. They tie back to snapshots.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the deployment to retrieve
+        project: Optional project scope (defaults to active project)
+        hydrate: Whether to hydrate the response with additional details
+    """
+    deployment = get_zenml_client().get_deployment(
+        name_id_or_prefix,
+        project=project,
+        hydrate=hydrate,
+    )
+    return deployment.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def list_deployments(
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    logical_operator: str = "and",
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    status: str | None = None,
+    url: str | None = None,
+    pipeline: str | None = None,
+    snapshot_id: str | None = None,
+    tag: str | None = None,
+    project: str | None = None,
+) -> str:
+    """List all deployments in the ZenML workspace.
+
+    Deployments show what's currently serving/provisioned with runtime status.
+
+    Returns JSON including pagination metadata (items, total, page, size).
+
+    Args:
+        sort_by: The field to sort the deployments by
+        page: The page number to return
+        size: The number of deployments to return
+        logical_operator: The logical operator to use for combining filters
+        created: Filter by creation date
+        updated: Filter by last update date
+        name: Filter by deployment name
+        status: Filter by deployment status (e.g., "running", "error")
+        url: Filter by deployment URL
+        pipeline: Filter by pipeline name or ID
+        snapshot_id: Filter by source snapshot ID
+        tag: Filter by tag
+        project: Optional project scope (defaults to active project)
+    """
+    deployments = get_zenml_client().list_deployments(
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        logical_operator=logical_operator,
+        created=created,
+        updated=updated,
+        name=name,
+        status=status,
+        url=url,
+        pipeline=pipeline,
+        snapshot_id=snapshot_id,
+        tag=tag,
+        project=project,
+    )
+    return deployments.model_dump_json()
+
+
 @mcp.tool()
 @handle_tool_exceptions
 def get_schedule(name_id_or_prefix: str) -> str:
@@ -1243,6 +1496,153 @@ def get_step_code(
     """
     step_code = get_zenml_client().get_run_step(step_run_id).source_code
     return f"""{step_code}"""
+
+
+# =============================================================================
+# Tag Tools
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_tag(tag_name_or_id: str, hydrate: bool = True) -> str:
+    """Get detailed information about a specific tag.
+
+    Tags are cross-cutting metadata labels for discovery (prod, staging, latest,
+    candidate, etc.). Many ZenML entities can be tagged.
+
+    Args:
+        tag_name_or_id: The name or ID of the tag to retrieve
+        hydrate: Whether to hydrate the response with additional details
+    """
+    tag = get_zenml_client().get_tag(tag_name_or_id, hydrate=hydrate)
+    return tag.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def list_tags(
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    logical_operator: str = "and",
+    created: str | None = None,
+    updated: str | None = None,
+    name: str | None = None,
+    exclusive: bool | None = None,
+    resource_type: str | None = None,
+) -> str:
+    """List all tags in the ZenML workspace.
+
+    Tags enable queries like "show me all prod deployments" and help organize
+    resources. Exclusive tags can only be applied once per entity.
+
+    Returns JSON including pagination metadata (items, total, page, size).
+
+    Args:
+        sort_by: The field to sort the tags by
+        page: The page number to return
+        size: The number of tags to return
+        logical_operator: The logical operator to use for combining filters
+        created: Filter by creation date
+        updated: Filter by last update date
+        name: Filter by tag name
+        exclusive: Filter by exclusive tags (can only be applied once per entity)
+        resource_type: Filter by resource type the tag applies to
+    """
+    tags = get_zenml_client().list_tags(
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        logical_operator=logical_operator,
+        created=created,
+        updated=updated,
+        name=name,
+        exclusive=exclusive,
+        resource_type=resource_type,
+    )
+    return tags.model_dump_json()
+
+
+# =============================================================================
+# Build Tools
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def get_build(
+    id_or_prefix: str,
+    project: str | None = None,
+    hydrate: bool = True,
+) -> str:
+    """Get detailed information about a specific pipeline build.
+
+    Builds contain image info, code embedding, and stack checksums that explain
+    reproducibility and infrastructure setup for pipeline runs.
+
+    Args:
+        id_or_prefix: The ID or prefix of the build to retrieve
+        project: Optional project scope (defaults to active project)
+        hydrate: Whether to hydrate the response with additional details
+    """
+    build = get_zenml_client().get_build(
+        id_or_prefix,
+        project=project,
+        hydrate=hydrate,
+    )
+    return build.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def list_builds(
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    logical_operator: str = "and",
+    created: str | None = None,
+    updated: str | None = None,
+    pipeline_id: str | None = None,
+    stack_id: str | None = None,
+    is_local: bool | None = None,
+    contains_code: bool | None = None,
+    project: str | None = None,
+) -> str:
+    """List all pipeline builds in the ZenML workspace.
+
+    Builds explain reproducibility (container image/code) and can help debug
+    infrastructure issues.
+
+    Returns JSON including pagination metadata (items, total, page, size).
+
+    Args:
+        sort_by: The field to sort the builds by
+        page: The page number to return
+        size: The number of builds to return
+        logical_operator: The logical operator to use for combining filters
+        created: Filter by creation date
+        updated: Filter by last update date
+        pipeline_id: Filter by pipeline ID
+        stack_id: Filter by stack ID
+        is_local: Filter by local builds (not runnable from server)
+        contains_code: Filter by builds that contain embedded code
+        project: Optional project scope (defaults to active project)
+    """
+    builds = get_zenml_client().list_builds(
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        logical_operator=logical_operator,
+        created=created,
+        updated=updated,
+        pipeline_id=pipeline_id,
+        stack_id=stack_id,
+        is_local=is_local,
+        contains_code=contains_code,
+        project=project,
+    )
+    return builds.model_dump_json()
 
 
 @mcp.prompt()
