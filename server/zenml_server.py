@@ -678,42 +678,75 @@ def list_flavors(
 @handle_tool_exceptions
 def trigger_pipeline(
     pipeline_name_or_id: str,
-    template_id: str | None = None,
+    snapshot_name_or_id: str | None = None,
     stack_name_or_id: str | None = None,
+    template_id: str | None = None,
 ) -> str:
     """Trigger a pipeline to run from the server.
 
+    Args:
+        pipeline_name_or_id: The name or ID of the pipeline to trigger
+        snapshot_name_or_id: The name or ID of a specific snapshot to run (preferred)
+        stack_name_or_id: Optional stack override for the run
+        template_id: ⚠️ DEPRECATED - Use `snapshot_name_or_id` instead.
+            The ID of a run template to use. Run Templates are deprecated
+            and will be removed in a future version.
+
     Usage examples:
-        * Run the latest runnable template for a pipeline:
+        * Run the latest runnable snapshot for a pipeline:
         ```python
         trigger_pipeline(pipeline_name_or_id=<NAME>)
         ```
-        * Run the latest runnable template for a pipeline on a specific stack:
+        * Run the latest runnable snapshot for a pipeline on a specific stack:
         ```python
         trigger_pipeline(
             pipeline_name_or_id=<NAME>,
             stack_name_or_id=<STACK_NAME_OR_ID>
         )
         ```
-        * Run a specific template:
+        * Run a specific snapshot (RECOMMENDED):
         ```python
-        trigger_pipeline(template_id=<ID>)
+        trigger_pipeline(
+            pipeline_name_or_id=<NAME>,
+            snapshot_name_or_id=<SNAPSHOT_NAME_OR_ID>
+        )
+        ```
+        * Run a specific template (DEPRECATED - use snapshot_name_or_id instead):
+        ```python
+        trigger_pipeline(pipeline_name_or_id=<NAME>, template_id=<ID>)
         ```
     """
-    pipeline_run = get_zenml_client().trigger_pipeline(
-        pipeline_name_or_id=pipeline_name_or_id,
-        template_id=template_id,
-        stack_name_or_id=stack_name_or_id,
-    )
+    # Build kwargs for SDK call, preferring snapshot_name_or_id over deprecated template_id
+    trigger_kwargs: Dict[str, Any] = {
+        "pipeline_name_or_id": pipeline_name_or_id,
+        "stack_name_or_id": stack_name_or_id,
+    }
+
+    deprecation_warning = ""
+    if snapshot_name_or_id is not None:
+        trigger_kwargs["snapshot_name_or_id"] = snapshot_name_or_id
+    elif template_id is not None:
+        # Fall back to template_id for backward compatibility, but warn
+        trigger_kwargs["template_id"] = template_id
+        deprecation_warning = (
+            "⚠️ DEPRECATION WARNING: The `template_id` parameter is deprecated. "
+            "Please use `snapshot_name_or_id` instead. Run Templates are being "
+            "phased out in favor of Snapshots.\n\n"
+        )
+
+    pipeline_run = get_zenml_client().trigger_pipeline(**trigger_kwargs)
     analytics.track_event(
         "Pipeline Triggered",
         {
+            "has_snapshot_id": snapshot_name_or_id is not None,
             "has_template_id": template_id is not None,
             "has_stack_override": stack_name_or_id is not None,
+            "used_deprecated_template": template_id is not None
+            and snapshot_name_or_id is None,
             "success": True,
         },
     )
-    return f"""# Pipeline Run Response: {pipeline_run.model_dump_json(indent=2)}"""
+    return f"""{deprecation_warning}# Pipeline Run Response: {pipeline_run.model_dump_json(indent=2)}"""
 
 
 @mcp.tool()
@@ -721,11 +754,20 @@ def trigger_pipeline(
 def get_run_template(name_id_or_prefix: str) -> str:
     """Get a run template for a pipeline.
 
+    ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `get_snapshot` instead.
+    Snapshots are the modern replacement for run templates and provide the same
+    functionality with better integration into the ZenML ecosystem.
+
     Args:
         name_id_or_prefix: The name, ID or prefix of the run template to retrieve
     """
     run_template = get_zenml_client().get_run_template(name_id_or_prefix)
-    return run_template.model_dump_json()
+    deprecation_notice = (
+        "⚠️ DEPRECATION NOTICE: Run Templates are deprecated in ZenML. "
+        "Please use `get_snapshot` instead. Run Templates internally reference "
+        "Snapshots via `source_snapshot_id` and will be removed in a future version."
+    )
+    return f"{deprecation_notice}\n\n{run_template.model_dump_json()}"
 
 
 @mcp.tool()
@@ -740,6 +782,10 @@ def list_run_templates(
     tag: str | None = None,
 ) -> str:
     """List all run templates in the ZenML workspace.
+
+    ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `list_snapshots` instead.
+    Snapshots are the modern replacement for run templates. To find runnable
+    snapshots, use `list_snapshots(runnable=True)`.
 
     Args:
         sort_by: The field to sort the run templates by
@@ -759,7 +805,13 @@ def list_run_templates(
         name=name,
         tag=tag,
     )
-    return f"""{[run_template.model_dump_json() for run_template in run_templates]}"""
+    deprecation_notice = (
+        "⚠️ DEPRECATION NOTICE: Run Templates are deprecated in ZenML. "
+        "Please use `list_snapshots` instead. For runnable configurations, "
+        "use `list_snapshots(runnable=True)`. Run Templates will be removed in a future version."
+    )
+    templates_json = [run_template.model_dump_json() for run_template in run_templates]
+    return f"{deprecation_notice}\n\n{templates_json}"
 
 
 @mcp.tool()
