@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.1",
   "name": "mcp-zenml",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "MCP server to connect an MCP client with your ZenML MLOps and LLMOps pipelines",
   "long_description": "The server provides MCP tools to access core read functionality from the ZenML server, delivering live information about users, stacks, pipelines, pipeline runs, pipeline steps, services, stack components, flavors, pipeline run templates, schedules, artifacts (metadata about data artifacts, not the data itself), service connectors, step code, and step logs (if the step was run on a cloud-based stack), while also enabling you to trigger new pipeline runs when a run template is present.",
   "author": {
@@ -71,6 +71,18 @@
       "description": "Get the currently active user."
     },
     {
+      "name": "get_active_project",
+      "description": "Get the currently active project."
+    },
+    {
+      "name": "get_project",
+      "description": "Get detailed information about a specific project."
+    },
+    {
+      "name": "list_projects",
+      "description": "List all projects in the ZenML workspace."
+    },
+    {
       "name": "get_stack",
       "description": "Get detailed information about a specific stack."
     },
@@ -125,6 +137,26 @@
     {
       "name": "list_run_templates",
       "description": "List all run templates in the ZenML workspace."
+    },
+    {
+      "name": "get_snapshot",
+      "description": "Get detailed information about a specific snapshot."
+    },
+    {
+      "name": "list_snapshots",
+      "description": "List all snapshots in the ZenML workspace."
+    },
+    {
+      "name": "get_deployment",
+      "description": "Get detailed information about a specific deployment."
+    },
+    {
+      "name": "list_deployments",
+      "description": "List all deployments in the ZenML workspace."
+    },
+    {
+      "name": "get_deployment_logs",
+      "description": "Get logs for a specific deployment."
     },
     {
       "name": "get_schedule",
@@ -185,6 +217,22 @@
     {
       "name": "get_step_code",
       "description": "Get the code for a step."
+    },
+    {
+      "name": "get_tag",
+      "description": "Get detailed information about a specific tag."
+    },
+    {
+      "name": "list_tags",
+      "description": "List all tags in the ZenML workspace."
+    },
+    {
+      "name": "get_build",
+      "description": "Get detailed information about a specific pipeline build."
+    },
+    {
+      "name": "list_builds",
+      "description": "List all pipeline builds in the ZenML workspace."
     }
   ],
   "prompts": [
