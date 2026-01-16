@@ -33,26 +33,131 @@ For more information, see the [ZenML website](https://zenml.io) and [our documen
 The server provides MCP tools to access core read functionality from the ZenML
 server, providing a way to get live information about:
 
-- Users
-- Stacks
-- Pipelines
-- Pipeline runs
-- Pipeline steps
-- Services
-- Stack components
-- Flavors
-- Pipeline run templates
-- Schedules
-- Artifacts (metadata about data artifacts, not the data itself)
-- Service Connectors
-- Step code
-- Step logs (if the step was run on a cloud-based stack)
+### Core Entities
+- **Users** - user accounts and permissions
+- **Stacks** - infrastructure configurations
+- **Stack Components** - individual stack building blocks
+- **Flavors** - available component types
+- **Service Connectors** - cloud authentication
 
-It also allows you to trigger new pipeline runs (if a run template is present).
+### Pipeline Execution
+- **Pipelines** - pipeline definitions
+- **Pipeline Runs** - execution history and status
+- **Pipeline Steps** - individual step details, code, and logs
+- **Schedules** - automated run schedules
+- **Artifacts** - metadata about data artifacts (not the data itself)
+
+### Deployment & Serving
+- **Snapshots** - frozen pipeline configurations (the "what to run/serve" artifact)
+- **Deployments** - runtime serving instances with status, URL, and logs
+- **Services** - model serving endpoints
+
+### Organization & Discovery
+- **Projects** - organizational containers for ZenML resources
+- **Tags** - cross-cutting metadata labels for discovery
+- **Builds** - pipeline build artifacts with image and code info
+
+### Models
+- **Models** - ML model registry entries
+- **Model Versions** - versioned model artifacts
+
+### Deprecated (migration recommended)
+- ~~Pipeline run templates~~ → use **Snapshots** instead (see [Migration Guide](#migration-run-templates--snapshots))
+
+The server also allows you to **trigger new pipeline runs** using snapshots (preferred) or run templates (deprecated).
 
 *Note: We're continuously improving this integration based on user feedback.
 Please join our [Slack community](https://zenml.io/slack) to share your experience
 and help us make it even better!*
+
+## Available Tools
+
+The MCP server exposes the following tools, grouped by category:
+
+### Pipeline Execution (New in v1.2)
+| Tool | Description |
+|------|-------------|
+| `get_snapshot` | Get a frozen pipeline configuration by name/ID |
+| `list_snapshots` | List snapshots with filters (runnable, deployable, deployed, tag) |
+| `get_deployment` | Get a deployment's runtime status and URL |
+| `list_deployments` | List deployments with filters (status, pipeline, tag) |
+| `get_deployment_logs` | Get bounded logs from a deployment (tail=100 default, max 1000) |
+| `trigger_pipeline` | Trigger a pipeline run (prefer `snapshot_name_or_id` parameter) |
+
+### Organization (New in v1.2)
+| Tool | Description |
+|------|-------------|
+| `get_active_project` | Get the currently active project |
+| `get_project` | Get project details by name/ID |
+| `list_projects` | List all projects |
+| `get_tag` | Get tag details (exclusive, colors) |
+| `list_tags` | List tags with filters (resource_type) |
+| `get_build` | Get build details (image, code embedding) |
+| `list_builds` | List builds with filters (is_local, contains_code) |
+
+### Core Entities
+| Tool | Description |
+|------|-------------|
+| `get_user`, `list_users`, `get_active_user` | User management |
+| `get_stack`, `list_stacks` | Stack configurations |
+| `get_stack_component`, `list_stack_components` | Stack components |
+| `get_flavor`, `list_flavors` | Component flavors |
+| `get_service_connector`, `list_service_connectors` | Cloud connectors |
+| `get_pipeline_run`, `list_pipeline_runs` | Pipeline runs |
+| `get_run_step`, `list_run_steps` | Step details |
+| `get_step_logs`, `get_step_code` | Step logs and source code |
+| `list_pipelines`, `get_pipeline_details` | Pipeline definitions |
+| `get_schedule`, `list_schedules` | Schedules |
+| `list_artifacts` | Artifact metadata |
+| `list_secrets` | Secret names (not values) |
+| `get_service`, `list_services` | Model services |
+| `get_model`, `list_models` | Model registry |
+| `get_model_version`, `list_model_versions` | Model versions |
+
+### Analysis Tools
+| Tool | Description |
+|------|-------------|
+| `stack_components_analysis` | Analyze stack component usage |
+| `recent_runs_analysis` | Analyze recent pipeline runs |
+| `most_recent_runs` | Get N most recent runs |
+
+### Deprecated Tools
+| Tool | Replacement |
+|------|-------------|
+| `get_run_template` | Use `get_snapshot` instead |
+| `list_run_templates` | Use `list_snapshots` instead |
+| `trigger_pipeline(template_id=...)` | Use `trigger_pipeline(snapshot_name_or_id=...)` |
+
+## Migration: Run Templates → Snapshots
+
+**Why the change?** ZenML evolved its "runnable pipeline artifact" concept. Run Templates are now deprecated wrappers that internally just point to Snapshots. New code should use Snapshots directly.
+
+### Quick Migration Guide
+
+| Old Pattern (Templates) | New Pattern (Snapshots) |
+|------------------------|------------------------|
+| `list_run_templates()` | `list_snapshots(runnable=True, named_only=True)` |
+| `get_run_template(name)` | `get_snapshot(name, include_config_schema=True)` |
+| `trigger_pipeline(template_id=...)` | `trigger_pipeline(snapshot_name_or_id=...)` |
+
+### Example Workflow (Snapshot-First)
+
+```
+1. Discover project context:
+   → get_active_project()
+
+2. Find runnable snapshots:
+   → list_snapshots(runnable=True, named_only=True)
+
+3. Trigger a run:
+   → trigger_pipeline(pipeline_name_or_id="my-pipeline", snapshot_name_or_id="my-snapshot")
+
+4. Check deployments:
+   → list_deployments(status="running")
+   → get_deployment_logs(name_id_or_prefix="my-deployment", tail=100)
+```
+
+**Note:** `get_deployment_logs` returns bounded output (default 100 lines, max 1000, capped at 100KB) and requires the appropriate deployer integration to be installed.
 
 ## Quick Setup via Dashboard (Recommended)
 
@@ -92,9 +197,26 @@ This project includes automated testing to ensure the MCP server remains functio
 
 The automated tests verify:
 - MCP protocol connection and handshake
-- Server initialization and tool discovery  
+- Server initialization and tool discovery
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
+
+## Debugging with MCP Inspector
+
+For interactive debugging, use the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) — a web-based tool that lets you test MCP tools in real-time:
+
+```bash
+# Using .env.local (recommended for development)
+cp .env.local.example .env.local  # Then edit with your credentials
+source .env.local && npx @modelcontextprotocol/inspector \
+  -e ZENML_STORE_URL=$ZENML_STORE_URL \
+  -e ZENML_STORE_API_KEY=$ZENML_STORE_API_KEY \
+  -- uv run server/zenml_server.py
+```
+
+This opens a web UI with your credentials pre-filled — just click **Connect** and use the **Tools** tab to test any tool interactively.
+
+See [CLAUDE.md](CLAUDE.md#debugging-with-mcp-inspector) for more detailed debugging instructions.
 
 ## Privacy & Analytics
 

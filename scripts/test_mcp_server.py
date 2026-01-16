@@ -129,12 +129,24 @@ class MCPSmokeTest:
         return results
 
     async def _test_basic_tools(self, session: ClientSession, results: Dict[str, Any]):
-        """Test basic tools that are likely to be safe to call."""
+        """Test basic tools that are likely to be safe to call.
+
+        Safe tools are read-only, don't require entity IDs, and should return
+        empty pages (not errors) when no data exists.
+        """
         safe_tools_to_test = [
+            # Original safe tools
             "list_users",
             "list_stacks",
             "list_pipelines",
             "get_server_info",
+            # Additional safe read-only tools
+            "get_active_project",
+            "list_projects",
+            "list_snapshots",
+            "list_deployments",
+            "list_tags",
+            "list_builds",
         ]
 
         available_tools = {tool["name"] for tool in results["tools"]}

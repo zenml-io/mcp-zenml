@@ -178,6 +178,16 @@ def is_ci_environment() -> bool:
     return any(os.getenv(var) for var in ci_env_vars)
 
 
+def is_test_run_environment() -> bool:
+    """Check if this is a test run (events should be filterable in Segment).
+
+    Set ZENML_MCP_ANALYTICS_TEST_RUN=true in CI to mark module-emitted
+    events as test events. This allows filtering them out in analytics.
+    """
+    value = os.getenv("ZENML_MCP_ANALYTICS_TEST_RUN", "").lower()
+    return value in ("true", "1", "yes")
+
+
 def _close_http_client() -> None:
     global _http_client
     if _http_client is None:
@@ -463,6 +473,9 @@ def track_event(event_name: str, properties: dict[str, Any] | None = None) -> No
         props = properties.copy() if properties else {}
         props["session_id"] = _session_id
         props["is_ci"] = is_ci_environment()
+        # Preserve caller-provided test_run, or inject if env var is set
+        if "test_run" not in props and is_test_run_environment():
+            props["test_run"] = True
 
         if DEV_MODE:
             print(f"[Analytics DEV] {event_name}: {props}", file=sys.stderr)
