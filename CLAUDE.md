@@ -81,6 +81,40 @@ The server requires:
 - **Manual testing**: Use the test script to verify MCP protocol functionality
 - **CI/CD**: Uses UV with caching for fast dependency installation
 
+### Debugging with MCP Inspector
+
+The [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) is an interactive debugging tool for testing MCP servers. It provides a web UI to call tools, inspect responses, and debug issues.
+
+**Quick start:**
+
+```bash
+npx @modelcontextprotocol/inspector uv run server/zenml_server.py
+```
+
+This opens a web UI (typically at `http://localhost:6274`). In the UI:
+
+1. Expand **"Environment Variables"** and add:
+   - `ZENML_STORE_URL` = your ZenML server URL
+   - `ZENML_STORE_API_KEY` = your API key
+2. Click **"Connect"**
+3. Use the **Tools** tab to test individual tools interactively
+
+**One-liner with environment variables pre-set:**
+
+```bash
+ZENML_STORE_URL="https://your-server.zenml.io" \
+ZENML_STORE_API_KEY="ZENKEY_..." \
+npx @modelcontextprotocol/inspector uv run server/zenml_server.py
+```
+
+Note: Even with env vars set in the shell, you still need to add them in the Inspector UI before connecting (the Inspector spawns your server as a subprocess with its own environment).
+
+**What you can test:**
+- **Tools tab**: Call any MCP tool and see JSON request/response
+- **Resources tab**: Browse exposed resources (none currently)
+- **Prompts tab**: View prompt templates (none currently)
+- **History**: See all previous tool calls in the session
+
 ### Project Structure
 
 - `server/` - Main MCP server implementation

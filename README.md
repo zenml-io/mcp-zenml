@@ -92,9 +92,24 @@ This project includes automated testing to ensure the MCP server remains functio
 
 The automated tests verify:
 - MCP protocol connection and handshake
-- Server initialization and tool discovery  
+- Server initialization and tool discovery
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
+
+## Debugging with MCP Inspector
+
+For interactive debugging, use the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) — a web-based tool that lets you test MCP tools in real-time:
+
+```bash
+npx @modelcontextprotocol/inspector uv run server/zenml_server.py
+```
+
+This opens a web UI where you can:
+1. Add your `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` under **Environment Variables**
+2. Click **Connect** to start the server
+3. Use the **Tools** tab to call any tool and inspect the JSON request/response
+
+See [CLAUDE.md](CLAUDE.md#debugging-with-mcp-inspector) for more detailed debugging instructions.
 
 ## Privacy & Analytics
 
