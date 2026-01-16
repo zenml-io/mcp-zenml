@@ -45,6 +45,15 @@ ANALYTICS_SOURCE_CONTEXT = "mcp-zenml"
 TIMEOUT_S = 10.0
 
 
+def is_ci_environment() -> bool:
+    """Check if running in a CI environment."""
+    ci_env_vars = [
+        "CI", "GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI",
+        "TRAVIS", "JENKINS_URL", "BUILDKITE", "AZURE_PIPELINES"
+    ]
+    return any(os.getenv(var) for var in ci_env_vars)
+
+
 def get_server_version() -> str:
     """Get the server version from VERSION file."""
     version_file = Path(__file__).parent.parent / "VERSION"
@@ -64,7 +73,7 @@ def build_test_event(event_name: str, debug: bool = True) -> dict:
         "event": event_name,
         "properties": {
             "session_id": session_id,
-            "is_ci": False,
+            "is_ci": is_ci_environment(),
             "test_run": True,
             "timestamp": time.time(),
             "server_version": get_server_version(),
