@@ -64,8 +64,59 @@ The project is a Model Context Protocol (MCP) server that provides AI assistants
 **Key Features**:
 - Reads ZenML server configuration from environment variables (`ZENML_STORE_URL`, `ZENML_STORE_API_KEY`)
 - Provides MCP tools for accessing ZenML entities (users, stacks, pipelines, runs, etc.)
-- Supports triggering new pipeline runs via run templates
+- Supports triggering new pipeline runs via snapshots (preferred) or run templates (deprecated)
 - Includes automated CI/CD testing with GitHub Actions
+
+### Domain Model: Snapshots vs Run Templates
+
+**Historical context:** ZenML underwent a significant evolution in its "runnable pipeline artifact" concepts:
+
+- **2024-07-22**: Run Templates introduced, pointing to "pipeline deployments"
+- **2025-07-22**: Pipeline Deployments renamed to **Snapshots**; Run Templates now reference snapshots via `source_snapshot_id`
+- **Current**: Run Template API marked `deprecated=True`; SDK methods emit deprecation warnings
+
+**What this means:**
+- **Snapshots** = The core "frozen pipeline configuration" artifact (immutable, runnable, deployable)
+- **Run Templates** = A legacy wrapper that just references a snapshot (effectively a named pointer)
+
+**For contributors:**
+- New development should be snapshot-first
+- Run template tools (`get_run_template`, `list_run_templates`) are kept for backward compatibility but include deprecation warnings
+- `trigger_pipeline` supports both `snapshot_name_or_id` (preferred) and `template_id` (deprecated)
+
+### MCP Tool Taxonomy
+
+Tools are organized by entity type in `server/zenml_server.py`:
+
+| Category | Tools | Notes |
+|----------|-------|-------|
+| **Projects** | `get_active_project`, `get_project`, `list_projects` | New in v1.2 |
+| **Snapshots** | `get_snapshot`, `list_snapshots` | Replaces run templates |
+| **Deployments** | `get_deployment`, `list_deployments`, `get_deployment_logs` | New in v1.2 |
+| **Tags** | `get_tag`, `list_tags` | New in v1.2 |
+| **Builds** | `get_build`, `list_builds` | New in v1.2 |
+| **Users** | `get_user`, `list_users`, `get_active_user` | |
+| **Stacks** | `get_stack`, `list_stacks` | |
+| **Components** | `get_stack_component`, `list_stack_components` | |
+| **Flavors** | `get_flavor`, `list_flavors` | |
+| **Pipelines** | `list_pipelines`, `get_pipeline_details` | |
+| **Runs** | `get_pipeline_run`, `list_pipeline_runs` | |
+| **Steps** | `get_run_step`, `list_run_steps`, `get_step_logs`, `get_step_code` | |
+| **Schedules** | `get_schedule`, `list_schedules` | |
+| **Services** | `get_service`, `list_services` | |
+| **Connectors** | `get_service_connector`, `list_service_connectors` | |
+| **Models** | `get_model`, `list_models`, `get_model_version`, `list_model_versions` | |
+| **Artifacts** | `list_artifacts` | |
+| **Secrets** | `list_secrets` | Names only |
+| **Analysis** | `stack_components_analysis`, `recent_runs_analysis`, `most_recent_runs` | |
+| **Execution** | `trigger_pipeline` | Prefer `snapshot_name_or_id` |
+| **Deprecated** | `get_run_template`, `list_run_templates` | Use snapshot tools instead |
+
+**When adding new tools:**
+1. Add the tool to `server/zenml_server.py` following existing patterns
+2. Update README.md tool inventory
+3. If the tool is safe (read-only, no required IDs), add to `scripts/test_mcp_server.py` `safe_tools_to_test`
+4. Run smoke tests: `uv run scripts/test_mcp_server.py server/zenml_server.py`
 
 ### Environment Setup
 
