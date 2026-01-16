@@ -101,13 +101,15 @@ The automated tests verify:
 For interactive debugging, use the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) — a web-based tool that lets you test MCP tools in real-time:
 
 ```bash
-npx @modelcontextprotocol/inspector uv run server/zenml_server.py
+# Using .env.local (recommended for development)
+cp .env.local.example .env.local  # Then edit with your credentials
+source .env.local && npx @modelcontextprotocol/inspector \
+  -e ZENML_STORE_URL=$ZENML_STORE_URL \
+  -e ZENML_STORE_API_KEY=$ZENML_STORE_API_KEY \
+  -- uv run server/zenml_server.py
 ```
 
-This opens a web UI where you can:
-1. Add your `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` under **Environment Variables**
-2. Click **Connect** to start the server
-3. Use the **Tools** tab to call any tool and inspect the JSON request/response
+This opens a web UI with your credentials pre-filled — just click **Connect** and use the **Tools** tab to test any tool interactively.
 
 See [CLAUDE.md](CLAUDE.md#debugging-with-mcp-inspector) for more detailed debugging instructions.
 

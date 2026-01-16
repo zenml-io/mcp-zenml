@@ -85,29 +85,45 @@ The server requires:
 
 The [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) is an interactive debugging tool for testing MCP servers. It provides a web UI to call tools, inspect responses, and debug issues.
 
-**Quick start:**
+**Quick start (using .env.local):**
+
+1. Copy the example file and add your credentials:
+   ```bash
+   cp .env.local.example .env.local
+   # Edit .env.local with your ZENML_STORE_URL and ZENML_STORE_API_KEY
+   ```
+
+2. Run the inspector with credentials loaded from `.env.local`:
+   ```bash
+   source .env.local && npx @modelcontextprotocol/inspector \
+     -e ZENML_STORE_URL=$ZENML_STORE_URL \
+     -e ZENML_STORE_API_KEY=$ZENML_STORE_API_KEY \
+     -- uv run server/zenml_server.py
+   ```
+
+This opens a web UI (typically at `http://localhost:6274`) with your credentials pre-filled. Just click **"Connect"** and start testing!
+
+**Alternative: inline credentials (for one-off testing):**
+
+```bash
+npx @modelcontextprotocol/inspector \
+  -e ZENML_STORE_URL=https://your-server.zenml.io \
+  -e ZENML_STORE_API_KEY=ZENKEY_... \
+  -- uv run server/zenml_server.py
+```
+
+**Key syntax notes:**
+- `-e key=value` flags pass environment variables to the server subprocess
+- Place `-e` flags **before** the command (`uv`)
+- Use `--` to separate inspector flags from server arguments
+
+**Without pre-filled env vars:**
 
 ```bash
 npx @modelcontextprotocol/inspector uv run server/zenml_server.py
 ```
 
-This opens a web UI (typically at `http://localhost:6274`). In the UI:
-
-1. Expand **"Environment Variables"** and add:
-   - `ZENML_STORE_URL` = your ZenML server URL
-   - `ZENML_STORE_API_KEY` = your API key
-2. Click **"Connect"**
-3. Use the **Tools** tab to test individual tools interactively
-
-**One-liner with environment variables pre-set:**
-
-```bash
-ZENML_STORE_URL="https://your-server.zenml.io" \
-ZENML_STORE_API_KEY="ZENKEY_..." \
-npx @modelcontextprotocol/inspector uv run server/zenml_server.py
-```
-
-Note: Even with env vars set in the shell, you still need to add them in the Inspector UI before connecting (the Inspector spawns your server as a subprocess with its own environment).
+Then manually add `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` in the UI under **Environment Variables** before clicking **Connect**.
 
 **What you can test:**
 - **Tools tab**: Call any MCP tool and see JSON request/response
