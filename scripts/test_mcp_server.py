@@ -140,8 +140,8 @@ class MCPSmokeTest:
             "list_stacks",
             "list_pipelines",
             "get_server_info",
-            # New safe tools (Phase 1 - v1.2)
-            "get_active_project",  # Parallel to get_active_user
+            # Additional safe read-only tools
+            "get_active_project",
             "list_projects",
             "list_snapshots",
             "list_deployments",
