@@ -1,0 +1,54 @@
+# pyproject.toml
+# Configuration for development tools (ty, ruff, etc.)
+#
+# Note: Runtime dependencies are specified via inline script metadata (PEP 723)
+# in server/zenml_server.py and scripts/*.py files. This allows `uv run` to
+# automatically install deps. Do NOT add dependencies here - it will break
+# the existing workflow.
+
+[project]
+name = "mcp-zenml"
+version = "1.2.0"
+description = "MCP server for ZenML API access"
+requires-python = ">=3.12"
+
+[tool.ty]
+# Type checker configuration
+# Documentation: https://docs.astral.sh/ty/
+
+[tool.ty.environment]
+# Python version to target
+python-version = "3.12"
+
+# Add server/ as a root for first-party module discovery
+# This allows `import zenml_mcp_analytics` to resolve correctly
+extra-paths = ["server"]
+
+[tool.ty.src]
+# Include patterns for type checking
+include = ["server/**/*.py", "scripts/**/*.py"]
+
+# Exclude patterns
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    ".git",
+]
+
+[tool.ty.rules]
+# Rule configuration
+# Default: most rules are "error", some are "warn", some are "ignore"
+# See: https://docs.astral.sh/ty/reference/rules/
+
+# Ignore unresolved imports for third-party libraries.
+# This project uses PEP 723 inline script metadata for dependencies,
+# which are installed on-the-fly by `uv run`. ty runs in isolation
+# and doesn't see these deps, so we ignore import errors for them.
+unresolved-import = "ignore"
+
+[tool.ty.terminal]
+# Output format: "full" or "concise"
+output-format = "full"
+
+# Treat warnings as errors in CI (can be overridden with --error-on-warning)
+error-on-warning = false

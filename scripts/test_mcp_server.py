@@ -9,10 +9,67 @@
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, TypedDict, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+
+class ToolInfo(TypedDict):
+    """Type definition for tool information."""
+
+    name: str
+    description: str | None
+
+
+class ResourceInfo(TypedDict):
+    """Type definition for resource information."""
+
+    uri: str
+    name: str
+    description: str | None
+
+
+class PromptInfo(TypedDict):
+    """Type definition for prompt information."""
+
+    name: str
+    description: str | None
+
+
+class ToolTestResult(TypedDict, total=False):
+    """Type definition for tool test result."""
+
+    success: bool
+    content_length: int
+    error: str
+
+
+class SmokeTestResults(TypedDict):
+    """Type definition for smoke test results."""
+
+    connection: bool
+    initialization: bool
+    tools: list[ToolInfo]
+    resources: list[ResourceInfo]
+    prompts: list[PromptInfo]
+    tool_test_results: dict[str, ToolTestResult]
+    errors: list[str]
+
+
+def _make_tool_info(name: str, description: str | None) -> ToolInfo:
+    """Create a ToolInfo TypedDict from values."""
+    return {"name": name, "description": description}
+
+
+def _make_resource_info(uri: Any, name: str, description: str | None) -> ResourceInfo:
+    """Create a ResourceInfo TypedDict from values."""
+    return {"uri": str(uri), "name": name, "description": description}
+
+
+def _make_prompt_info(name: str, description: str | None) -> PromptInfo:
+    """Create a PromptInfo TypedDict from values."""
+    return {"name": name, "description": description}
 
 
 class MCPSmokeTest:
@@ -24,9 +81,9 @@ class MCPSmokeTest:
             args=["run", str(self.server_path)],
         )
 
-    async def run_smoke_test(self) -> Dict[str, Any]:
+    async def run_smoke_test(self) -> SmokeTestResults:
         """Run a comprehensive smoke test of the MCP server."""
-        results = {
+        results: SmokeTestResults = {
             "connection": False,
             "initialization": False,
             "tools": [],
@@ -61,7 +118,7 @@ class MCPSmokeTest:
                     )
                     if tools_result.tools:
                         results["tools"] = [
-                            {"name": tool.name, "description": tool.description}
+                            _make_tool_info(tool.name, tool.description)
                             for tool in tools_result.tools
                         ]
                         print(f"✅ Found {len(tools_result.tools)} tools:")
@@ -79,11 +136,7 @@ class MCPSmokeTest:
                         )
                         if resources_result.resources:
                             results["resources"] = [
-                                {
-                                    "uri": res.uri,
-                                    "name": res.name,
-                                    "description": res.description,
-                                }
+                                _make_resource_info(res.uri, res.name, res.description)
                                 for res in resources_result.resources
                             ]
                             print(
@@ -107,7 +160,7 @@ class MCPSmokeTest:
                         )
                         if prompts_result.prompts:
                             results["prompts"] = [
-                                {"name": prompt.name, "description": prompt.description}
+                                _make_prompt_info(prompt.name, prompt.description)
                                 for prompt in prompts_result.prompts
                             ]
                             print(f"✅ Found {len(prompts_result.prompts)} prompts:")
@@ -128,7 +181,9 @@ class MCPSmokeTest:
 
         return results
 
-    async def _test_basic_tools(self, session: ClientSession, results: Dict[str, Any]):
+    async def _test_basic_tools(
+        self, session: ClientSession, results: SmokeTestResults
+    ) -> None:
         """Test basic tools that are likely to be safe to call.
 
         Safe tools are read-only, don't require entity IDs, and should return
@@ -162,24 +217,23 @@ class MCPSmokeTest:
                         session.call_tool(tool_name, {}), timeout=30.0
                     )
                     print(f"🔄 Tool {tool_name} returned result")
-                    results["tool_test_results"][tool_name] = {
-                        "success": True,
-                        "content_length": len(str(result.content))
-                        if result.content
-                        else 0,
-                    }
+                    content_length = len(str(result.content)) if result.content else 0
+                    results["tool_test_results"][tool_name] = cast(
+                        ToolTestResult,
+                        {"success": True, "content_length": content_length},
+                    )
                     print(f"✅ Tool {tool_name} executed successfully")
                 except Exception as e:
                     error_msg = f"Tool {tool_name} failed: {e}"
                     print(f"❌ {error_msg}")
-                    results["tool_test_results"][tool_name] = {
-                        "success": False,
-                        "error": str(e),
-                    }
+                    results["tool_test_results"][tool_name] = cast(
+                        ToolTestResult,
+                        {"success": False, "error": str(e)},
+                    )
             else:
                 print(f"ℹ️  Tool {tool_name} not available in server")
 
-    def print_summary(self, results: Dict[str, Any]):
+    def print_summary(self, results: SmokeTestResults) -> None:
         """Print a summary of the smoke test results."""
         print("\n" + "=" * 50)
         print("🔍 SMOKE TEST SUMMARY")
