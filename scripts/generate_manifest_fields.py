@@ -27,7 +27,7 @@ def _decorator_name(node: ast.AST) -> Optional[str]:
     parts: List[str] = []
     while isinstance(target, ast.Attribute):
         parts.append(target.attr)
-        target = target.value  # type: ignore[assignment]
+        target = target.value
     if isinstance(target, ast.Name):
         parts.append(target.id)
     parts.reverse()
