@@ -21,7 +21,7 @@ import logging
 import os
 import sys
 from threading import Lock
-from typing import Any, Callable, Dict, TypeVar, cast
+from typing import Any, Dict, ParamSpec, TypeVar, cast
 
 import requests
 import zenml_mcp_analytics as analytics
@@ -45,18 +45,25 @@ logging.basicConfig(
 logging.getLogger("zenml").setLevel(logging.WARNING)
 logging.getLogger("zenml.client").setLevel(logging.WARNING)
 
-# Type variable for function return type
-T = TypeVar("T")
+# Type variables for decorator signatures
+P = ParamSpec("P")  # Captures function parameters
+T = TypeVar("T")  # Captures return type
+
+# Type alias for functions (callables with __name__ attribute)
+# Using ParamSpec preserves the original function's parameter types
+from collections.abc import Callable
 
 
 # Decorator for handling exceptions in tool functions (with analytics tracking)
-def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
+def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     """Decorator for MCP tools - handles exceptions and tracks analytics.
 
     Use this decorator for @mcp.tool() functions. It:
     - Catches exceptions and returns friendly error messages
     - Tracks tool usage via analytics (timing, success/failure, size param)
     """
+    # Capture function name at decoration time (avoids type checker issues with __name__)
+    func_name = func.__name__  # type: ignore[attr-defined]
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
@@ -80,14 +87,14 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
 
             if http_status_code == 401:
                 message = "Authentication failed. Please check your API key."
-            elif http_status_code == 404 and func.__name__ == "get_step_logs":
+            elif http_status_code == 404 and func_name == "get_step_logs":
                 message = (
                     "Logs not found. Please check the step ID. "
                     "Also note that if the step was run on a stack with a local "
                     "or non-cloud-based artifact store then no logs will have been "
                     "stored by ZenML."
                 )
-            elif http_status_code == 404 and func.__name__ == "get_deployment_logs":
+            elif http_status_code == 404 and func_name == "get_deployment_logs":
                 message = (
                     "Deployment not found or logs unavailable. Please check the deployment "
                     "name/ID. Note that log availability depends on the deployer type and "
@@ -101,7 +108,7 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
             if analytics.DEV_MODE:
                 message = f"{message} ({e})"
 
-            err_log = f"Error in {func.__name__}: {error_type}"
+            err_log = f"Error in {func_name}: {error_type}"
             if http_status_code is not None:
                 err_log = f"{err_log} (HTTP {http_status_code})"
             if analytics.DEV_MODE:
@@ -117,15 +124,15 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
             else:
                 error_detail = error_type
 
-            message = f"Error in {func.__name__}: {error_detail}"
+            message = f"Error in {func_name}: {error_detail}"
             print(message, file=sys.stderr)
             return cast(T, message)
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             try:
-                size = analytics.extract_size_from_call(func.__name__, args, kwargs)
+                size = analytics.extract_size_from_call(func_name, args, kwargs)
                 analytics.track_tool_call(
-                    tool_name=func.__name__,
+                    tool_name=func_name,
                     success=success,
                     duration_ms=duration_ms,
                     error_type=error_type,
@@ -139,13 +146,15 @@ def handle_tool_exceptions(func: Callable[..., T]) -> Callable[..., T]:
 
 
 # Decorator for handling exceptions in prompts/resources (no analytics)
-def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
+def handle_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     """Decorator for prompts/resources - handles exceptions without analytics.
 
     Use this decorator for @mcp.prompt() and @mcp.resource() functions.
     It catches exceptions but does NOT track analytics (to avoid noise from
     non-tool endpoints).
     """
+    # Capture function name at decoration time (avoids type checker issues with __name__)
+    func_name = func.__name__  # type: ignore[attr-defined]
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
@@ -154,7 +163,7 @@ def handle_exceptions(func: Callable[..., T]) -> Callable[..., T]:
         except Exception as e:
             error_type = type(e).__name__
             error_detail = str(e) if analytics.DEV_MODE else error_type
-            message = f"Error in {func.__name__}: {error_detail}"
+            message = f"Error in {func_name}: {error_detail}"
             print(message, file=sys.stderr)
             return cast(T, message)
 

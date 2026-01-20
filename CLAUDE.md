@@ -7,11 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Testing and Development
 - **Run smoke tests**: `uv run scripts/test_mcp_server.py server/zenml_server.py`
 - **Run analytics tests**: `uv run scripts/test_analytics.py --full-diagnostic`
-- **Format code**: `./scripts/format.sh` (uses ruff for linting and formatting)
+- **Format code**: `./scripts/format.sh` (uses ruff for linting/formatting + ty for type checking)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
+- **Type check only**: `uvx ty check` (runs type checking without formatting)
 
 ### Code Quality
-- **Format**: `bash scripts/format.sh`
+- **Format + Type Check**: `bash scripts/format.sh` (runs ruff + ty)
+- **Type Check Only**: `uvx ty check` (uses configuration from `pyproject.toml`)
 
 ## Development Workflow
 
@@ -38,7 +40,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - MCP smoke tests (Python)
    - Analytics pipeline tests
    - Docker build verification
-   - Format checks
+   - Type checking (ty)
+   - Security linting (zizmor)
 
 5. **After merge, trigger release** if needed (see Release Process below)
 
@@ -192,6 +195,29 @@ Then manually add `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` in the UI under **
 
 - Root files include configuration for Desktop Extensions (DXT) support
 
+### Type Checking with ty
+
+The project uses [ty](https://docs.astral.sh/ty/) for static type checking - an extremely fast Python type checker from Astral (creators of uv and ruff).
+
+**Configuration**: `pyproject.toml` under `[tool.ty]`
+- Python version: 3.12
+- Extra paths: `server/` (allows `import zenml_mcp_analytics` to resolve)
+- Include patterns: `server/**/*.py`, `scripts/**/*.py`
+- Third-party imports: Ignored (since deps are installed on-the-fly via PEP 723)
+
+**Running type checks**:
+```bash
+uvx ty check                    # Basic check
+uvx ty check --output-format=github  # For CI (annotations)
+bash scripts/format.sh          # Runs ruff + ty together
+```
+
+**Suppressing false positives**: Use `# type: ignore[rule-name]` or `# ty: ignore[rule-name]` comments when needed (prefer rule-specific suppressions).
+
+**CI Integration**: Type checking runs as a separate job in PR tests (`.github/workflows/pr-test.yml`).
+
+**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. The `unresolved-import = "ignore"` setting handles this. First-party imports (like `zenml_mcp_analytics`) are still checked.
+
 ### Important Implementation Details
 
 - **Logging**: Configured to use stderr and suppress ZenML internal logging to prevent JSON protocol conflicts
@@ -199,6 +225,7 @@ Then manually add `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` in the UI under **
 - **Lazy Loading**: ZenML client initialized only when needed to improve startup performance
 - **Environment Variables**: Server configuration via `ZENML_STORE_URL` and
   `ZENML_STORE_API_KEY`
+- **Type Hints**: All public functions have type hints; type checking enforced in CI
 
 ## Release Process
 
@@ -219,10 +246,11 @@ This triggers:
 
 ### Version Files
 
-Three files must stay in sync (handled by `scripts/bump_version.py`):
+Four files must stay in sync (handled by `scripts/bump_version.py`):
 - `VERSION` - Source of truth
 - `manifest.json` - DXT/MCPB manifest
 - `server.json` - MCP Registry server definition
+- `pyproject.toml` - Project configuration (if present)
 
 ### Debugging MCP Registry Schema Failures
 

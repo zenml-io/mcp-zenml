@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION"
 MANIFEST_JSON = ROOT / "manifest.json"
 SERVER_JSON = ROOT / "server.json"
+PYPROJECT_TOML = ROOT / "pyproject.toml"
 
 # Valid SemVer regex allowing optional prerelease/build metadata
 # Example matches: 1.2.3, 1.2.3-rc.1, 1.2.3+build, 1.2.3-rc.1+build.5
@@ -114,6 +115,27 @@ def _update_server_versions(version: str) -> None:
     _dump_json(SERVER_JSON, server)
 
 
+def _update_pyproject_version(version: str) -> None:
+    """Update the version in pyproject.toml if it exists."""
+    if not PYPROJECT_TOML.exists():
+        return  # pyproject.toml is optional
+
+    content = PYPROJECT_TOML.read_text(encoding="utf-8")
+
+    # Match version = "X.Y.Z" in [project] section
+    # This regex handles the version field in the [project] table
+    new_content = re.sub(
+        r'^(version\s*=\s*")[^"]*(")',
+        rf"\g<1>{version}\g<2>",
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+    if new_content != content:
+        PYPROJECT_TOML.write_text(new_content, encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate SemVer and propagate version to VERSION, manifest.json, and server.json"
@@ -135,8 +157,11 @@ def main() -> int:
 
     _update_manifest_version(ver)
     _update_server_versions(ver)
+    _update_pyproject_version(ver)
 
-    print(f"Version set to {ver} in VERSION, manifest.json, and server.json")
+    print(
+        f"Version set to {ver} in VERSION, manifest.json, server.json, and pyproject.toml"
+    )
     return 0
 
 

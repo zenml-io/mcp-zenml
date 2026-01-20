@@ -54,8 +54,14 @@ TIMEOUT_S = 10.0
 def is_ci_environment() -> bool:
     """Check if running in a CI environment."""
     ci_env_vars = [
-        "CI", "GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI",
-        "TRAVIS", "JENKINS_URL", "BUILDKITE", "AZURE_PIPELINES"
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "JENKINS_URL",
+        "BUILDKITE",
+        "AZURE_PIPELINES",
     ]
     return any(os.getenv(var) for var in ci_env_vars)
 
