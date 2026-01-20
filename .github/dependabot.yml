@@ -1,0 +1,18 @@
+# Dependabot configuration for automated dependency updates
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # Keep GitHub Actions pinned to SHA hashes updated
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Group all action updates into a single PR to reduce noise
+      all-actions:
+        patterns:
+          - '*'
+    # Prevent Dependabot from flooding the repo with PRs
+    cooldown:
+      default-days: 7

@@ -19,13 +19,15 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # Run tests first as a gate before releasing
   test-gate:
     name: Pre-release Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       ZENML_DISABLE_RICH_LOGGING: "1"
       ZENML_LOGGING_COLORS_DISABLED: "true"
@@ -37,15 +39,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -67,40 +71,50 @@ jobs:
     name: Orchestrate Release
     runs-on: ubuntu-latest
     needs: test-gate  # Only release if tests pass
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository (with PAT)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           token: ${{ secrets.GH_RELEASE_PAT }}
+          persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
-          enable-cache: true
+          enable-cache: false
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
+          cache: ""
 
-      - name: Configure Git user
+      - name: Configure Git user and auth
         run: |
           git config user.name "release-bot"
           git config user.email "actions@users.noreply.github.com"
+          # Re-add auth for push since persist-credentials is disabled
+          git remote set-url origin "https://x-access-token:${GH_RELEASE_PAT}@github.com/${{ github.repository }}.git"
+        env:
+          GH_RELEASE_PAT: ${{ secrets.GH_RELEASE_PAT }}
 
       - name: Bump version (SemVer)
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            python scripts/bump_version.py --version "${{ inputs.version }}"
+          if [ -n "${INPUTS_VERSION}" ]; then
+            python scripts/bump_version.py --version "${INPUTS_VERSION}"
           else
             python scripts/bump_version.py
           fi
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Regenerate manifest fields
         run: python scripts/generate_manifest_fields.py
@@ -115,35 +129,42 @@ jobs:
       - name: Resolve version
         id: resolve_version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          if [ -n "${INPUTS_VERSION}" ]; then
+            echo "value=${INPUTS_VERSION}" >> "$GITHUB_OUTPUT"
           else
-            echo "value=${{ steps.read_version.outputs.value }}" >> "$GITHUB_OUTPUT"
+            echo "value=${STEPS_READ_VERSION_OUTPUTS_VALUE}" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          STEPS_READ_VERSION_OUTPUTS_VALUE: ${{ steps.read_version.outputs.value }}
 
       - name: Commit and push changes
         if: ${{ inputs.dry_run != true }}
         run: |
           set -e
           git add VERSION manifest.json server.json mcp-zenml.mcpb
-          git commit -m "chore(release): v${{ steps.resolve_version.outputs.value }}" || echo "No changes to commit"
+          git commit -m "chore(release): v${STEPS_RESOLVE_VERSION_OUTPUTS_VALUE}" || echo "No changes to commit"
           git push origin HEAD:main
+        env:
+          STEPS_RESOLVE_VERSION_OUTPUTS_VALUE: ${{ steps.resolve_version.outputs.value }}
 
       - name: Create and push annotated tag
         if: ${{ inputs.dry_run != true }}
         run: |
           set -e
-          TAG="v${{ steps.resolve_version.outputs.value }}"
+          TAG="v${STEPS_RESOLVE_VERSION_OUTPUTS_VALUE}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists locally."
           else
             git tag -a "$TAG" -m "Release $TAG" || true
           fi
           git push origin "$TAG" || true
+        env:
+          STEPS_RESOLVE_VERSION_OUTPUTS_VALUE: ${{ steps.resolve_version.outputs.value }}
 
       - name: Create/Update GitHub Release (attach MCP bundle)
         if: always()
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           token: ${{ secrets.GH_RELEASE_PAT }}
           tag_name: v${{ steps.resolve_version.outputs.value }}
