@@ -1,0 +1,14 @@
+# Zizmor GitHub Actions security linter configuration
+# https://docs.zizmor.sh/configuration/
+#
+# Only add ignores for verified false positives where the source is trusted.
+# Prefer fixing issues over ignoring them.
+
+rules:
+  # Cache-poisoning false positives: setup-node enables caching by default,
+  # but we explicitly disable it with `cache: ""`. Zizmor's static analysis
+  # doesn't evaluate runtime values.
+  cache-poisoning:
+    ignore:
+      - release-docker.yml:81  # setup-node with cache: "" (disabled)
+      - release.yml:95         # setup-node with cache: "" (disabled)
