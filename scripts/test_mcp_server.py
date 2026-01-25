@@ -202,6 +202,9 @@ class MCPSmokeTest:
             "list_deployments",
             "list_tags",
             "list_builds",
+            # Artifact tools
+            "get_artifact_version",
+            "list_artifact_versions",
         ]
 
         available_tools = {tool["name"] for tool in results["tools"]}
