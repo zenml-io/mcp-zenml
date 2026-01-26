@@ -46,9 +46,13 @@ logging.basicConfig(
 
 # Never log below WARNING to prevent JSON protocol interference
 
-# Specifically suppress ZenML's internal logging to prevent JSON protocol issues
-logging.getLogger("zenml").setLevel(logging.WARNING)
-logging.getLogger("zenml.client").setLevel(logging.WARNING)
+# Suppress ZenML's internal logging to prevent JSON protocol issues
+# Must use ERROR level (not WARNING) to suppress "Setting the global active stack" message
+# Also clear any handlers ZenML may have added that write to stdout
+zenml_logger = logging.getLogger("zenml")
+zenml_logger.handlers.clear()  # Remove any stdout handlers ZenML may have added
+zenml_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
+logging.getLogger("zenml.client").setLevel(logging.ERROR)
 
 # Suppress MCP/FastMCP logging to prevent stdout pollution (breaks JSON-RPC protocol)
 logging.getLogger("mcp").setLevel(logging.WARNING)
