@@ -20,11 +20,16 @@ import json
 import logging
 import os
 import sys
+import warnings
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast
 
 import requests
 import zenml_mcp_analytics as analytics
+
+# Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
+# E.g., "Setting the global active stack to default"
+warnings.filterwarnings("ignore", module=r"^zenml(\.|$)")
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +38,39 @@ log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
 log_level = max(getattr(logging, log_level_name, logging.WARNING), logging.WARNING)
 
 # Simple stderr logging configuration - explicitly use stderr to avoid JSON protocol issues
+# force=True ensures this config applies even if logging was already configured by imports
 logging.basicConfig(
     level=log_level,
     format="%(levelname)s: %(message)s",
     stream=sys.stderr,
+    force=True,
 )
 
 # Never log below WARNING to prevent JSON protocol interference
 
-# Specifically suppress ZenML's internal logging to prevent JSON protocol issues
-logging.getLogger("zenml").setLevel(logging.WARNING)
-logging.getLogger("zenml.client").setLevel(logging.WARNING)
+# Suppress ZenML's internal logging to prevent JSON protocol issues
+# Must use ERROR level (not WARNING) to suppress "Setting the global active stack" message
+# Also clear any handlers ZenML may have added that write to stdout
+zenml_logger = logging.getLogger("zenml")
+# Properly close and remove handlers to avoid resource leaks
+for handler in list(zenml_logger.handlers):
+    zenml_logger.removeHandler(handler)
+    try:
+        handler.close()
+    except Exception:
+        pass
+zenml_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
+logging.getLogger("zenml.client").setLevel(logging.ERROR)
+
+# Suppress MCP/FastMCP logging to prevent stdout pollution (breaks JSON-RPC protocol)
+logging.getLogger("mcp").setLevel(logging.WARNING)
+logging.getLogger("mcp.server").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+
+# Suppress urllib3/requests retry warnings that leak to stdout
+# E.g., "Retrying (Retry(total=9...)) after connection broken by 'RemoteDisconnected'"
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+logging.getLogger("requests").setLevel(logging.ERROR)
 
 # Type variables for decorator signatures
 P = ParamSpec("P")  # Captures function parameters
@@ -119,7 +146,8 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             success = False
             error_type = type(e).__name__
 
-            if analytics.DEV_MODE:
+            # Always show details for ImportError/RuntimeError since they indicate setup/config issues
+            if analytics.DEV_MODE or isinstance(e, (ImportError, RuntimeError)):
                 error_detail = str(e)
             else:
                 error_detail = error_type
@@ -184,13 +212,13 @@ this data to the user in a more readable format (e.g. a table).
 """
 
 try:
-    logger.info("Importing MCP dependencies...")
+    logger.debug("Importing MCP dependencies...")
     from mcp.server.fastmcp import FastMCP
 
     # Initialize FastMCP server
-    logger.info("Initializing FastMCP server...")
+    logger.debug("Initializing FastMCP server...")
     mcp = FastMCP(name="zenml", instructions=INSTRUCTIONS)
-    logger.info("FastMCP server initialized successfully")
+    logger.debug("FastMCP server initialized successfully")
 
     # ZenML client will be initialized lazily
     zenml_client = None
@@ -215,13 +243,13 @@ def get_zenml_client():
         if zenml_client is not None:
             return zenml_client
 
-        logger.info("Lazy importing ZenML...")
+        logger.debug("Lazy importing ZenML...")
         from zenml.client import Client
 
-        logger.info("Initializing ZenML client...")
+        logger.debug("Initializing ZenML client...")
         try:
             zenml_client = Client()
-            logger.info("ZenML client initialized successfully")
+            logger.debug("ZenML client initialized successfully")
         except Exception as e:
             logger.error(f"ZenML client initialization failed: {e}")
             # Track client init failure (only report once per session)
@@ -259,7 +287,7 @@ def get_access_token(server_url: str, api_key: str) -> str:
     # Construct the login URL
     url = f"{server_url}/api/v1/login"
 
-    logger.info("Generating access token")
+    logger.debug("Generating access token")
 
     # Make the request to get an access token
     response = requests.post(
@@ -305,7 +333,7 @@ def make_step_logs_request(
     # Prepare headers with the access token
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    logger.info(f"Fetching logs for step {step_id}")
+    logger.debug(f"Fetching logs for step {step_id}")
 
     # Make the request
     response = requests.get(url, headers=headers, timeout=(3.05, 30))

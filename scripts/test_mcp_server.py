@@ -7,6 +7,7 @@
 # ]
 # ///
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -101,6 +102,10 @@ def _detect_tool_error(tool_name: str, text: str) -> str | None:
     them as error message strings (not MCP protocol errors). This function detects
     those patterns so we can properly fail the test.
 
+    Args:
+        tool_name: The name of the tool being tested (used for precise error matching)
+        text: The text content returned by the tool
+
     Returns:
         None if the output looks like success, or an error reason string if it
         matches known error patterns.
@@ -108,7 +113,19 @@ def _detect_tool_error(tool_name: str, text: str) -> str | None:
     if not text:
         return None
 
-    # Error patterns from handle_tool_exceptions in zenml_server.py
+    # Normalize: strip leading whitespace that could bypass startswith()
+    normalized = text.lstrip()
+
+    # Check for generic exception pattern first (most specific match using tool_name)
+    # This catches non-HTTP exceptions like ValueError, client init failures, etc.
+    if normalized.startswith(f"Error in {tool_name}:"):
+        return normalized[:100] + ("..." if len(normalized) > 100 else "")
+
+    # Fallback: catch any "Error in " pattern (in case of tool name mismatch)
+    if normalized.startswith("Error in "):
+        return normalized[:100] + ("..." if len(normalized) > 100 else "")
+
+    # HTTP error patterns from handle_tool_exceptions in zenml_server.py
     error_patterns = [
         "Authentication failed",  # HTTP 401
         "Request failed",  # HTTPError (various status codes)
@@ -117,9 +134,9 @@ def _detect_tool_error(tool_name: str, text: str) -> str | None:
     ]
 
     for pattern in error_patterns:
-        if text.startswith(pattern):
+        if normalized.startswith(pattern):
             # Return first 100 chars as the error reason
-            return text[:100] + ("..." if len(text) > 100 else "")
+            return normalized[:100] + ("..." if len(normalized) > 100 else "")
 
     return None
 
@@ -128,9 +145,12 @@ class MCPSmokeTest:
     def __init__(self, server_path: str):
         """Initialize the smoke test with the server path."""
         self.server_path = Path(server_path)
+        # Explicitly pass environment variables to the subprocess
+        # This ensures ZENML_STORE_URL, ZENML_STORE_API_KEY, etc. are available
         self.server_params = StdioServerParameters(
             command="uv",
             args=["run", str(self.server_path)],
+            env=dict(os.environ),  # Pass all env vars to subprocess
         )
 
     async def run_smoke_test(self) -> SmokeTestResults:
