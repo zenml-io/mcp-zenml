@@ -185,7 +185,7 @@ this data to the user in a more readable format (e.g. a table).
 
 try:
     logger.info("Importing MCP dependencies...")
-    from fastmcp import FastMCP
+    from mcp.server.fastmcp import FastMCP
 
     # Initialize FastMCP server
     logger.info("Initializing FastMCP server...")
