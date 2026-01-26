@@ -29,7 +29,7 @@ import zenml_mcp_analytics as analytics
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
-warnings.filterwarnings("ignore", module="zenml")
+warnings.filterwarnings("ignore", module=r"^zenml(\.|$)")
 
 logger = logging.getLogger(__name__)
 

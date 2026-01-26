@@ -117,6 +117,7 @@ jobs:
             
             - **ZenML Store URL:** ${process.env.ZENML_STORE_URL ? 'Set (from secrets)' : 'Not set'}
             - **ZenML API Key:** ${process.env.ZENML_STORE_API_KEY ? 'Set (from secrets)' : 'Not set'}
+            - **Active Project ID:** ${process.env.ZENML_ACTIVE_PROJECT_ID ? 'Set (from secrets)' : 'Not set'}
             
             @strickvl @htahir1 Please investigate this failure.
                 `,
