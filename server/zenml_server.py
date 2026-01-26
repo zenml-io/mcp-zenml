@@ -1871,8 +1871,8 @@ def most_recent_runs(run_count: int = 10) -> str:
 
 if __name__ == "__main__":
     try:
-        # analytics.init_analytics()
-        # analytics.track_server_started()
-        mcp.run()
+        analytics.init_analytics()
+        analytics.track_server_started()
+        mcp.run(transport="stdio")
     except Exception as e:
         logger.error(f"Error running MCP server: {e}")
