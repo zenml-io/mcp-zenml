@@ -189,13 +189,13 @@ this data to the user in a more readable format (e.g. a table).
 """
 
 try:
-    logger.info("Importing MCP dependencies...")
+    logger.debug("Importing MCP dependencies...")
     from mcp.server.fastmcp import FastMCP
 
     # Initialize FastMCP server
-    logger.info("Initializing FastMCP server...")
+    logger.debug("Initializing FastMCP server...")
     mcp = FastMCP(name="zenml", instructions=INSTRUCTIONS)
-    logger.info("FastMCP server initialized successfully")
+    logger.debug("FastMCP server initialized successfully")
 
     # ZenML client will be initialized lazily
     zenml_client = None
@@ -220,13 +220,13 @@ def get_zenml_client():
         if zenml_client is not None:
             return zenml_client
 
-        logger.info("Lazy importing ZenML...")
+        logger.debug("Lazy importing ZenML...")
         from zenml.client import Client
 
-        logger.info("Initializing ZenML client...")
+        logger.debug("Initializing ZenML client...")
         try:
             zenml_client = Client()
-            logger.info("ZenML client initialized successfully")
+            logger.debug("ZenML client initialized successfully")
         except Exception as e:
             logger.error(f"ZenML client initialization failed: {e}")
             # Track client init failure (only report once per session)
@@ -264,7 +264,7 @@ def get_access_token(server_url: str, api_key: str) -> str:
     # Construct the login URL
     url = f"{server_url}/api/v1/login"
 
-    logger.info("Generating access token")
+    logger.debug("Generating access token")
 
     # Make the request to get an access token
     response = requests.post(
@@ -310,7 +310,7 @@ def make_step_logs_request(
     # Prepare headers with the access token
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    logger.info(f"Fetching logs for step {step_id}")
+    logger.debug(f"Fetching logs for step {step_id}")
 
     # Make the request
     response = requests.get(url, headers=headers, timeout=(3.05, 30))
