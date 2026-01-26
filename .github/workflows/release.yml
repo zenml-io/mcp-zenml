@@ -92,6 +92,8 @@ jobs:
         with:
           enable-cache: false
 
+      # Node.js used only for running scripts, not npm packages - no caching needed
+      # zizmor: ignore[cache-poisoning]
       - name: Set up Node.js 20
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
