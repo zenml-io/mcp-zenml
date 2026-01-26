@@ -38,10 +38,12 @@ log_level_name = os.environ.get("LOGLEVEL", "WARNING").upper()
 log_level = max(getattr(logging, log_level_name, logging.WARNING), logging.WARNING)
 
 # Simple stderr logging configuration - explicitly use stderr to avoid JSON protocol issues
+# force=True ensures this config applies even if logging was already configured by imports
 logging.basicConfig(
     level=log_level,
     format="%(levelname)s: %(message)s",
     stream=sys.stderr,
+    force=True,
 )
 
 # Never log below WARNING to prevent JSON protocol interference
@@ -50,7 +52,13 @@ logging.basicConfig(
 # Must use ERROR level (not WARNING) to suppress "Setting the global active stack" message
 # Also clear any handlers ZenML may have added that write to stdout
 zenml_logger = logging.getLogger("zenml")
-zenml_logger.handlers.clear()  # Remove any stdout handlers ZenML may have added
+# Properly close and remove handlers to avoid resource leaks
+for handler in list(zenml_logger.handlers):
+    zenml_logger.removeHandler(handler)
+    try:
+        handler.close()
+    except Exception:
+        pass
 zenml_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
 logging.getLogger("zenml.client").setLevel(logging.ERROR)
 
