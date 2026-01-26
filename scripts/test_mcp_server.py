@@ -72,6 +72,58 @@ def _make_prompt_info(name: str, description: str | None) -> PromptInfo:
     return {"name": name, "description": description}
 
 
+def _extract_call_tool_text(result: Any) -> str:
+    """Flatten MCP call_tool result content into text for error detection.
+
+    MCP tool results have a .content attribute that contains a list of content
+    items (typically TextContent with a .text attribute). This function extracts
+    and joins all text pieces into a single string for inspection.
+    """
+    if not hasattr(result, "content") or not result.content:
+        return ""
+
+    text_parts: list[str] = []
+    for item in result.content:
+        # Try to get .text attribute (TextContent)
+        if hasattr(item, "text"):
+            text_parts.append(item.text)
+        else:
+            # Fallback to string representation
+            text_parts.append(str(item))
+
+    return "\n".join(text_parts)
+
+
+def _detect_tool_error(tool_name: str, text: str) -> str | None:
+    """Detect if tool output looks like an error string from handle_tool_exceptions.
+
+    The server's @handle_tool_exceptions decorator catches exceptions and returns
+    them as error message strings (not MCP protocol errors). This function detects
+    those patterns so we can properly fail the test.
+
+    Returns:
+        None if the output looks like success, or an error reason string if it
+        matches known error patterns.
+    """
+    if not text:
+        return None
+
+    # Error patterns from handle_tool_exceptions in zenml_server.py
+    error_patterns = [
+        "Authentication failed",  # HTTP 401
+        "Request failed",  # HTTPError (various status codes)
+        "Logs not found",  # 404 for get_step_logs
+        "Deployment not found or logs unavailable",  # 404 for get_deployment_logs
+    ]
+
+    for pattern in error_patterns:
+        if text.startswith(pattern):
+            # Return first 100 chars as the error reason
+            return text[:100] + ("..." if len(text) > 100 else "")
+
+    return None
+
+
 class MCPSmokeTest:
     def __init__(self, server_path: str):
         """Initialize the smoke test with the server path."""
@@ -190,18 +242,20 @@ class MCPSmokeTest:
         empty pages (not errors) when no data exists.
         """
         safe_tools_to_test = [
-            # Original safe tools
+            # Safe tools: read-only, no required parameters, return empty pages when no data
             "list_users",
             "list_stacks",
             "list_pipelines",
-            "get_server_info",
-            # Additional safe read-only tools
             "get_active_project",
+            "get_active_user",
             "list_projects",
             "list_snapshots",
             "list_deployments",
             "list_tags",
             "list_builds",
+            "list_artifacts",
+            # Note: Do NOT add tools that require parameters (e.g., get_artifact_version,
+            # list_artifact_versions) since this test calls tools with empty args {}
         ]
 
         available_tools = {tool["name"] for tool in results["tools"]}
@@ -217,19 +271,36 @@ class MCPSmokeTest:
                         session.call_tool(tool_name, {}), timeout=30.0
                     )
                     print(f"🔄 Tool {tool_name} returned result")
-                    content_length = len(str(result.content)) if result.content else 0
-                    results["tool_test_results"][tool_name] = cast(
-                        ToolTestResult,
-                        {"success": True, "content_length": content_length},
-                    )
-                    print(f"✅ Tool {tool_name} executed successfully")
+
+                    # Extract text content and check for error patterns
+                    text_content = _extract_call_tool_text(result)
+                    error_reason = _detect_tool_error(tool_name, text_content)
+
+                    if error_reason:
+                        # Tool returned an error string (from handle_tool_exceptions)
+                        error_msg = f"Tool {tool_name} returned error: {error_reason}"
+                        print(f"❌ {error_msg}")
+                        results["tool_test_results"][tool_name] = cast(
+                            ToolTestResult,
+                            {"success": False, "error": error_reason},
+                        )
+                        results["errors"].append(error_msg)
+                    else:
+                        # Tool executed successfully with valid content
+                        content_length = len(text_content)
+                        results["tool_test_results"][tool_name] = cast(
+                            ToolTestResult,
+                            {"success": True, "content_length": content_length},
+                        )
+                        print(f"✅ Tool {tool_name} executed successfully")
                 except Exception as e:
-                    error_msg = f"Tool {tool_name} failed: {e}"
+                    error_msg = f"Tool {tool_name} failed with exception: {e}"
                     print(f"❌ {error_msg}")
                     results["tool_test_results"][tool_name] = cast(
                         ToolTestResult,
                         {"success": False, "error": str(e)},
                     )
+                    results["errors"].append(error_msg)
             else:
                 print(f"ℹ️  Tool {tool_name} not available in server")
 
@@ -247,22 +318,28 @@ class MCPSmokeTest:
         print(f"Resources found: {len(results['resources'])}")
         print(f"Prompts found: {len(results['prompts'])}")
 
+        # Tool test results
+        tool_tests_passed = True
         if results["tool_test_results"]:
             successful_tests = sum(
-                1 for r in results["tool_test_results"].values() if r["success"]
+                1 for r in results["tool_test_results"].values() if r.get("success")
             )
             total_tests = len(results["tool_test_results"])
-            print(f"Tool tests: {successful_tests}/{total_tests} passed")
+            tool_tests_passed = successful_tests == total_tests
+            status = "✅ PASS" if tool_tests_passed else "❌ FAIL"
+            print(f"Tool tests: {successful_tests}/{total_tests} passed {status}")
 
         if results["errors"]:
-            print(f"Errors: {len(results['errors'])}")
+            print(f"\nErrors ({len(results['errors'])}):")
             for error in results["errors"]:
                 print(f"  - {error}")
 
+        # Overall status now includes tool test results
         overall_status = (
             results["connection"]
             and results["initialization"]
             and len(results["tools"]) > 0
+            and tool_tests_passed
         )
         print(f"\nOverall: {'✅ PASS' if overall_status else '❌ FAIL'}")
 
@@ -285,8 +362,22 @@ async def main():
     results = await smoke_test.run_smoke_test()
     smoke_test.print_summary(results)
 
-    # Exit with appropriate code
-    if results["connection"] and results["initialization"]:
+    # Exit with appropriate code - now includes tool test failures
+    # Check if all tool tests passed (or no tools were tested)
+    tool_tests_ok = (
+        all(r.get("success") for r in results["tool_test_results"].values())
+        if results["tool_test_results"]
+        else True
+    )
+
+    overall_success = (
+        results["connection"]
+        and results["initialization"]
+        and len(results["tools"]) > 0
+        and tool_tests_ok
+    )
+
+    if overall_success:
         sys.exit(0)
     else:
         sys.exit(1)
