@@ -7,6 +7,7 @@
 # ]
 # ///
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -144,9 +145,12 @@ class MCPSmokeTest:
     def __init__(self, server_path: str):
         """Initialize the smoke test with the server path."""
         self.server_path = Path(server_path)
+        # Explicitly pass environment variables to the subprocess
+        # This ensures ZENML_STORE_URL, ZENML_STORE_API_KEY, etc. are available
         self.server_params = StdioServerParameters(
             command="uv",
             args=["run", str(self.server_path)],
+            env=dict(os.environ),  # Pass all env vars to subprocess
         )
 
     async def run_smoke_test(self) -> SmokeTestResults:
