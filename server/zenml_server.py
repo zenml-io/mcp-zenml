@@ -45,6 +45,11 @@ logging.basicConfig(
 logging.getLogger("zenml").setLevel(logging.WARNING)
 logging.getLogger("zenml.client").setLevel(logging.WARNING)
 
+# Suppress MCP/FastMCP logging to prevent stdout pollution (breaks JSON-RPC protocol)
+logging.getLogger("mcp").setLevel(logging.WARNING)
+logging.getLogger("mcp.server").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+
 # Type variables for decorator signatures
 P = ParamSpec("P")  # Captures function parameters
 T = TypeVar("T")  # Captures return type
