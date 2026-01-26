@@ -47,6 +47,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Why this matters**: Direct commits to main bypass CI checks and can result in broken releases (e.g., Docker images that fail to start). The PR workflow ensures all changes are validated before release.
 
+### PR and Commit Style
+
+- **PR titles**: Use plain English titles without conventional commit prefixes (e.g., "Improve error detection in smoke test" not "fix: improve error detection in smoke test")
+- **Commit messages**: Can use conventional commits for the commit history, but PR titles should be human-readable
+
 ## Architecture
 
 ### Core Components
