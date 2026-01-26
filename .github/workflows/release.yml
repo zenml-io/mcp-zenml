@@ -93,8 +93,7 @@ jobs:
           enable-cache: false
 
       - name: Set up Node.js 20
-        # zizmor: ignore[cache-poisoning] only used for scripts, no npm packages
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 # zizmor: ignore[cache-poisoning]
         with:
           node-version: "20"
 
