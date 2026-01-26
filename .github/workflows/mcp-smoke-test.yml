@@ -47,10 +47,9 @@ jobs:
         run: |
           echo "Running MCP smoke test..."
           uv run scripts/test_mcp_server.py server/zenml_server.py
-        continue-on-error: true
-      
+
       - name: Create issue on failure
-        if: steps.smoke-test.outcome == 'failure'
+        if: always() && steps.smoke-test.outcome == 'failure'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v7
         with:
           script: |
@@ -125,7 +124,7 @@ jobs:
             }
       
       - name: Send Discord notification on failure
-        if: steps.smoke-test.outcome == 'failure'
+        if: always() && steps.smoke-test.outcome == 'failure'
         uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708 # v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
