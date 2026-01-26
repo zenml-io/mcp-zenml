@@ -59,6 +59,11 @@ logging.getLogger("mcp").setLevel(logging.WARNING)
 logging.getLogger("mcp.server").setLevel(logging.WARNING)
 logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
 
+# Suppress urllib3/requests retry warnings that leak to stdout
+# E.g., "Retrying (Retry(total=9...)) after connection broken by 'RemoteDisconnected'"
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+logging.getLogger("requests").setLevel(logging.ERROR)
+
 # Type variables for decorator signatures
 P = ParamSpec("P")  # Captures function parameters
 T = TypeVar("T")  # Captures return type
