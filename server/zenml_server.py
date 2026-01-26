@@ -20,11 +20,16 @@ import json
 import logging
 import os
 import sys
+import warnings
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast
 
 import requests
 import zenml_mcp_analytics as analytics
+
+# Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
+# E.g., "Setting the global active stack to default"
+warnings.filterwarnings("ignore", module="zenml")
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +129,8 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             success = False
             error_type = type(e).__name__
 
-            # Always show details for ImportError since it indicates setup/config issues
-            if analytics.DEV_MODE or isinstance(e, ImportError):
+            # Always show details for ImportError/RuntimeError since they indicate setup/config issues
+            if analytics.DEV_MODE or isinstance(e, (ImportError, RuntimeError)):
                 error_detail = str(e)
             else:
                 error_detail = error_type
