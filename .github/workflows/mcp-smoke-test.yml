@@ -24,6 +24,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       ZENML_STORE_URL: ${{ secrets.ZENML_STORE_URL }}
       ZENML_STORE_API_KEY: ${{ secrets.ZENML_STORE_API_KEY }}
+      ZENML_PROJECT: ${{ secrets.ZENML_PROJECT }}
     
     steps:
       - name: Checkout repository
