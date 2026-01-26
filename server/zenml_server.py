@@ -124,7 +124,8 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             success = False
             error_type = type(e).__name__
 
-            if analytics.DEV_MODE:
+            # Always show details for ImportError since it indicates setup/config issues
+            if analytics.DEV_MODE or isinstance(e, ImportError):
                 error_detail = str(e)
             else:
                 error_detail = error_type
