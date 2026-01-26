@@ -1412,6 +1412,64 @@ def list_artifacts(
 
 @mcp.tool()
 @handle_tool_exceptions
+def get_artifact_version(
+    name_id_or_prefix: str,
+    version: str | None = None,
+) -> str:
+    """Get detailed information about a specific artifact version.
+
+    Args:
+        name_id_or_prefix: The name, ID or prefix of the artifact
+        version: Optional specific version (defaults to latest)
+    """
+    artifact = get_zenml_client().get_artifact_version(
+        name_id_or_prefix=name_id_or_prefix,
+        version=version,
+    )
+
+    return artifact.model_dump_json()
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def list_artifact_versions(
+    artifact_name_or_id: str,
+    sort_by: str = "desc:created",
+    page: int = 1,
+    size: int = 10,
+    logical_operator: str = "and",
+    created: str | None = None,
+    updated: str | None = None,
+    tag: str | None = None,
+) -> str:
+    """List all versions of a specific artifact.
+
+    Args:
+        artifact_name_or_id: The name or ID of the artifact
+        sort_by: The field to sort the versions by
+        page: The page number to return
+        size: The number of versions to return
+        logical_operator: The logical operator to use
+        created: The creation date filter
+        updated: The last update date filter
+        tag: The tag filter
+    """
+
+    versions = get_zenml_client().list_artifact_versions(
+        artifact=artifact_name_or_id,
+        sort_by=sort_by,
+        page=page,
+        size=size,
+        logical_operator=logical_operator,
+        created=created,
+        updated=updated,
+        tag=tag,
+    )
+    return f"""{[version.model_dump_json() for version in versions]}"""
+
+
+@mcp.tool()
+@handle_tool_exceptions
 def list_secrets(
     sort_by: str = "desc:created",
     page: int = 1,

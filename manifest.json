@@ -187,6 +187,14 @@
       "description": "List all artifacts in the ZenML workspace."
     },
     {
+      "name": "get_artifact_version",
+      "description": "Get detailed information about a specific artifact version."
+    },
+    {
+      "name": "list_artifact_versions",
+      "description": "List all versions of a specific artifact."
+    },
+    {
       "name": "list_secrets",
       "description": "List all secrets in the ZenML workspace."
     },
