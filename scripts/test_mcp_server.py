@@ -7,6 +7,7 @@
 # ]
 # ///
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -73,59 +74,75 @@ def _make_prompt_info(name: str, description: str | None) -> PromptInfo:
     return {"name": name, "description": description}
 
 
-def _extract_call_tool_text(result: Any) -> str:
-    """Flatten MCP call_tool result content into text for error detection.
+def _extract_call_tool_output(result: Any) -> tuple[str, Any]:
+    """Extract output from an MCP call_tool result, supporting both structured and text.
 
-    MCP tool results have a .content attribute that contains a list of content
-    items (typically TextContent with a .text attribute). This function extracts
-    and joins all text pieces into a single string for inspection.
+    Returns (kind, payload) where:
+    - kind: "structured" if structuredContent is present, "text" otherwise
+    - payload: dict for structured, str for text
     """
+    # Check for structured content first (new MCP structured output)
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return ("structured", structured)
+
+    # Fall back to text content extraction
     if not hasattr(result, "content") or not result.content:
-        return ""
+        return ("text", "")
 
     text_parts: list[str] = []
     for item in result.content:
-        # Try to get .text attribute (TextContent)
         if hasattr(item, "text"):
             text_parts.append(item.text)
         else:
-            # Fallback to string representation
             text_parts.append(str(item))
 
-    return "\n".join(text_parts)
+    return ("text", "\n".join(text_parts))
 
 
-def _detect_tool_error(tool_name: str, text: str) -> str | None:
-    """Detect if tool output looks like an error string from handle_tool_exceptions.
+def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
+    """Detect if tool output represents an error.
 
-    The server's @handle_tool_exceptions decorator catches exceptions and returns
-    them as error message strings (not MCP protocol errors). This function detects
-    those patterns so we can properly fail the test.
+    Handles both structured error envelopes ({"error": {...}}) from structured
+    tools and legacy error string patterns from text-only tools.
 
     Args:
-        tool_name: The name of the tool being tested (used for precise error matching)
-        text: The text content returned by the tool
+        tool_name: The name of the tool being tested
+        kind: "structured" or "text" (from _extract_call_tool_output)
+        payload: dict for structured, str for text
 
     Returns:
-        None if the output looks like success, or an error reason string if it
-        matches known error patterns.
+        None if the output looks like success, or an error reason string.
     """
+    # Check structured error envelope (from handle_tool_exceptions for structured tools)
+    if kind == "structured" and isinstance(payload, dict) and "error" in payload:
+        error_info = payload["error"]
+        if isinstance(error_info, dict):
+            message = error_info.get("message", "Unknown structured error")
+        else:
+            message = str(error_info)
+        return message[:100] + ("..." if len(message) > 100 else "")
+
+    # For structured results without "error" key, it's a success
+    if kind == "structured":
+        return None
+
+    # Legacy text-based error detection (for text-only tools like easter_egg, get_step_code)
+    text = payload if isinstance(payload, str) else str(payload)
     if not text:
         return None
 
-    # Normalize: strip leading whitespace that could bypass startswith()
     normalized = text.lstrip()
 
-    # Check for generic exception pattern first (most specific match using tool_name)
-    # This catches non-HTTP exceptions like ValueError, client init failures, etc.
+    # Check for generic exception pattern (most specific match using tool_name)
     if normalized.startswith(f"Error in {tool_name}:"):
         return normalized[:100] + ("..." if len(normalized) > 100 else "")
 
-    # Fallback: catch any "Error in " pattern (in case of tool name mismatch)
+    # Fallback: catch any "Error in " pattern
     if normalized.startswith("Error in "):
         return normalized[:100] + ("..." if len(normalized) > 100 else "")
 
-    # HTTP error patterns from handle_tool_exceptions in zenml_server.py
+    # HTTP error patterns from handle_tool_exceptions
     error_patterns = [
         "Authentication failed",  # HTTP 401
         "Request failed",  # HTTPError (various status codes)
@@ -135,7 +152,6 @@ def _detect_tool_error(tool_name: str, text: str) -> str | None:
 
     for pattern in error_patterns:
         if normalized.startswith(pattern):
-            # Return first 100 chars as the error reason
             return normalized[:100] + ("..." if len(normalized) > 100 else "")
 
     return None
@@ -292,12 +308,22 @@ class MCPSmokeTest:
                     )
                     print(f"🔄 Tool {tool_name} returned result")
 
-                    # Extract text content and check for error patterns
-                    text_content = _extract_call_tool_text(result)
-                    error_reason = _detect_tool_error(tool_name, text_content)
+                    # Check MCP-level isError flag first
+                    if getattr(result, "isError", False):
+                        error_msg = f"Tool {tool_name} returned isError=True"
+                        print(f"❌ {error_msg}")
+                        results["tool_test_results"][tool_name] = cast(
+                            ToolTestResult,
+                            {"success": False, "error": error_msg},
+                        )
+                        results["errors"].append(error_msg)
+                        continue
+
+                    # Extract output (structured or text) and check for errors
+                    kind, payload = _extract_call_tool_output(result)
+                    error_reason = _detect_tool_error(tool_name, kind, payload)
 
                     if error_reason:
-                        # Tool returned an error string (from handle_tool_exceptions)
                         error_msg = f"Tool {tool_name} returned error: {error_reason}"
                         print(f"❌ {error_msg}")
                         results["tool_test_results"][tool_name] = cast(
@@ -306,13 +332,19 @@ class MCPSmokeTest:
                         )
                         results["errors"].append(error_msg)
                     else:
-                        # Tool executed successfully with valid content
-                        content_length = len(text_content)
+                        # Tool executed successfully - compute content length
+                        if kind == "structured":
+                            content_length = len(json.dumps(payload))
+                            print(
+                                f"✅ Tool {tool_name} returned structured output ({content_length} bytes)"
+                            )
+                        else:
+                            content_length = len(payload)
+                            print(f"✅ Tool {tool_name} executed successfully")
                         results["tool_test_results"][tool_name] = cast(
                             ToolTestResult,
                             {"success": True, "content_length": content_length},
                         )
-                        print(f"✅ Tool {tool_name} executed successfully")
                 except Exception as e:
                     error_msg = f"Tool {tool_name} failed with exception: {e}"
                     print(f"❌ {error_msg}")
