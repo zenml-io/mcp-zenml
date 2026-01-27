@@ -100,11 +100,28 @@ def _extract_call_tool_output(result: Any) -> tuple[str, Any]:
     return ("text", "\n".join(text_parts))
 
 
+def _is_structured_error_envelope(payload: Any) -> bool:
+    """Check if a payload matches the canonical structured error envelope shape.
+
+    The envelope is: {"error": {"tool": str, "message": str, "type": str, ...}}
+    Validates the full shape to avoid false positives from legitimate "error" fields.
+    """
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    required = {"tool", "message", "type"}
+    if not required <= set(error.keys()):
+        return False
+    return all(isinstance(error[k], str) for k in required)
+
+
 def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
     """Detect if tool output represents an error.
 
-    Handles both structured error envelopes ({"error": {...}}) from structured
-    tools and legacy error string patterns from text-only tools.
+    Handles both structured error envelopes ({"error": {"tool", "message", "type"}})
+    from structured tools and legacy error string patterns from text-only tools.
 
     Args:
         tool_name: The name of the tool being tested
@@ -114,13 +131,9 @@ def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
     Returns:
         None if the output looks like success, or an error reason string.
     """
-    # Check structured error envelope (from handle_tool_exceptions for structured tools)
-    if kind == "structured" and isinstance(payload, dict) and "error" in payload:
-        error_info = payload["error"]
-        if isinstance(error_info, dict):
-            message = error_info.get("message", "Unknown structured error")
-        else:
-            message = str(error_info)
+    # Check structured error envelope (full shape validation)
+    if kind == "structured" and _is_structured_error_envelope(payload):
+        message = payload["error"]["message"]
         return message[:100] + ("..." if len(message) > 100 else "")
 
     # For structured results without "error" key, it's a success

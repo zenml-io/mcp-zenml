@@ -86,7 +86,27 @@ def _is_text_tool(func: Callable[..., Any]) -> bool:
         hints = get_type_hints(func)
         return hints.get("return") is str
     except Exception:
-        return True  # Default to text if we can't determine
+        return False  # Default to structured — only 2 tools (easter_egg, get_step_code) are text
+
+
+def _is_structured_error_envelope(payload: Any) -> bool:
+    """Check if a payload matches the structured error envelope shape.
+
+    The canonical envelope produced by _make_error_result() is:
+        {"error": {"tool": str, "message": str, "type": str, "http_status_code"?: int}}
+
+    This validates the full shape to avoid false positives when a successful
+    tool result legitimately contains an "error" key (e.g. failed-run metadata).
+    """
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    required = {"tool", "message", "type"}
+    if not required <= set(error.keys()):
+        return False
+    return all(isinstance(error[k], str) for k in required)
 
 
 def _make_error_result(
@@ -130,10 +150,11 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
 
         try:
             result = func(*args, **kwargs)
-            # Detect structured error returns (tools returning {"error": ...})
-            if isinstance(result, dict) and "error" in result:
+            # Detect structured error envelopes (full shape validation to avoid
+            # false positives from legitimate "error" fields in successful results)
+            if _is_structured_error_envelope(result):
                 success = False
-                error_type = "ToolReturnedError"
+                error_type = cast(dict[str, Any], result)["error"]["type"]
             return result
         except requests.HTTPError as e:
             success = False
