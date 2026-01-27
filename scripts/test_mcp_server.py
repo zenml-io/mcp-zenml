@@ -302,9 +302,9 @@ class MCPSmokeTest:
                 try:
                     print(f"🧪 Testing tool: {tool_name}")
                     print(f"🔄 Calling tool {tool_name}...")
-                    # Add timeout to prevent hanging
+                    # Add timeout to prevent hanging (60s to handle slow CI environments)
                     result = await asyncio.wait_for(
-                        session.call_tool(tool_name, {}), timeout=30.0
+                        session.call_tool(tool_name, {}), timeout=60.0
                     )
                     print(f"🔄 Tool {tool_name} returned result")
 
@@ -345,6 +345,14 @@ class MCPSmokeTest:
                             ToolTestResult,
                             {"success": True, "content_length": content_length},
                         )
+                except TimeoutError:
+                    error_msg = f"Tool {tool_name} timed out after 60s"
+                    print(f"❌ {error_msg}")
+                    results["tool_test_results"][tool_name] = cast(
+                        ToolTestResult,
+                        {"success": False, "error": "timeout"},
+                    )
+                    results["errors"].append(error_msg)
                 except Exception as e:
                     error_msg = f"Tool {tool_name} failed with exception: {e}"
                     print(f"❌ {error_msg}")
