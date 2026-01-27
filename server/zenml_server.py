@@ -16,13 +16,12 @@ except ImportError:
     pass
 
 import functools
-import json
 import logging
 import os
 import sys
 import warnings
 from threading import Lock
-from typing import Any, Dict, ParamSpec, TypeVar, cast
+from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
 
 import requests
 import zenml_mcp_analytics as analytics
@@ -81,6 +80,52 @@ T = TypeVar("T")  # Captures return type
 from collections.abc import Callable
 
 
+def _is_text_tool(func: Callable[..., Any]) -> bool:
+    """Check if a tool function returns str (text-only) vs structured output."""
+    try:
+        hints = get_type_hints(func)
+        return hints.get("return") is str
+    except Exception:
+        return False  # Default to structured — only 2 tools (easter_egg, get_step_code) are text
+
+
+def _is_structured_error_envelope(payload: Any) -> bool:
+    """Check if a payload matches the structured error envelope shape.
+
+    The canonical envelope produced by _make_error_result() is:
+        {"error": {"tool": str, "message": str, "type": str, "http_status_code"?: int}}
+
+    This validates the full shape to avoid false positives when a successful
+    tool result legitimately contains an "error" key (e.g. failed-run metadata).
+    """
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    required = {"tool", "message", "type"}
+    if not required <= set(error.keys()):
+        return False
+    return all(isinstance(error[k], str) for k in required)
+
+
+def _make_error_result(
+    tool_name: str,
+    message: str,
+    error_type: str,
+    http_status_code: int | None = None,
+) -> dict[str, Any]:
+    """Build a structured error envelope for non-text tools."""
+    error: dict[str, Any] = {
+        "tool": tool_name,
+        "message": message,
+        "type": error_type,
+    }
+    if http_status_code is not None:
+        error["http_status_code"] = http_status_code
+    return {"error": error}
+
+
 # Decorator for handling exceptions in tool functions (with analytics tracking)
 def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     """Decorator for MCP tools - handles exceptions and tracks analytics.
@@ -88,9 +133,11 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     Use this decorator for @mcp.tool() functions. It:
     - Catches exceptions and returns friendly error messages
     - Tracks tool usage via analytics (timing, success/failure, size param)
+    - Returns structured error dicts for structured tools, strings for text tools
     """
-    # Capture function name at decoration time (avoids type checker issues with __name__)
+    # Capture function name and return type at decoration time
     func_name = func.__name__  # type: ignore[attr-defined]
+    text_tool = _is_text_tool(func)
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
@@ -102,7 +149,13 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
         http_status_code: int | None = None
 
         try:
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+            # Detect structured error envelopes (full shape validation to avoid
+            # false positives from legitimate "error" fields in successful results)
+            if _is_structured_error_envelope(result):
+                success = False
+                error_type = cast(dict[str, Any], result)["error"]["type"]
+            return result
         except requests.HTTPError as e:
             success = False
             error_type = type(e).__name__
@@ -141,7 +194,15 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             if analytics.DEV_MODE:
                 err_log = f"{err_log} - {e}"
             print(err_log, file=sys.stderr)
-            return cast(T, message)
+
+            if text_tool:
+                return cast(T, message)
+            return cast(
+                T,
+                _make_error_result(
+                    func_name, message, error_type or "HTTPError", http_status_code
+                ),
+            )
         except Exception as e:
             success = False
             error_type = type(e).__name__
@@ -154,7 +215,12 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
 
             message = f"Error in {func_name}: {error_detail}"
             print(message, file=sys.stderr)
-            return cast(T, message)
+
+            if text_tool:
+                return cast(T, message)
+            return cast(
+                T, _make_error_result(func_name, message, error_type or "Exception")
+            )
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             try:
@@ -207,8 +273,9 @@ and sort the results you're getting back. (By default, you generally will just
 get a handful of recent results back, but you might want to get more, iterate
 through the pages and so on.)
 
-Since a lot of the data comes back in JSON format, you might want to present
-this data to the user in a more readable format (e.g. a table).
+Most tools return structured JSON data. You should present this data to the
+user in a more readable format (e.g. a table or summary) rather than showing
+raw JSON.
 """
 
 try:
@@ -344,7 +411,7 @@ def make_step_logs_request(
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_step_logs(step_run_id: str) -> str:
+def get_step_logs(step_run_id: str) -> dict[str, Any]:
     """Get the logs for a specific step run.
 
     Args:
@@ -364,8 +431,7 @@ def get_step_logs(step_run_id: str) -> str:
     access_token = get_access_token(server_url, api_key)
 
     # Get the logs using the access token
-    logs = make_step_logs_request(server_url, step_run_id, access_token)
-    return json.dumps(logs)
+    return make_step_logs_request(server_url, step_run_id, access_token)
 
 
 @mcp.tool()
@@ -378,7 +444,7 @@ def list_users(
     created: str | None = None,
     updated: str | None = None,
     active: bool | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all users in the ZenML workspace.
 
     Args:
@@ -399,27 +465,27 @@ def list_users(
         updated=updated,
         active=active,
     )
-    return f"""{[user.model_dump_json() for user in users]}"""
+    return users.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_user(name_id_or_prefix: str) -> str:
+def get_user(name_id_or_prefix: str) -> dict[str, Any]:
     """Get detailed information about a specific user.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the user to retrieve
     """
     user = get_zenml_client().get_user(name_id_or_prefix)
-    return user.model_dump_json()
+    return user.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_active_user() -> str:
+def get_active_user() -> dict[str, Any]:
     """Get the currently active user."""
     user = get_zenml_client().active_user
-    return user.model_dump_json()
+    return user.model_dump(mode="json")
 
 
 # =============================================================================
@@ -429,19 +495,19 @@ def get_active_user() -> str:
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_active_project() -> str:
+def get_active_project() -> dict[str, Any]:
     """Get the currently active project.
 
     Projects are organizational containers for ZenML resources. Most SDK methods
     are project-scoped, and this tool returns the default project context.
     """
     project = get_zenml_client().active_project
-    return project.model_dump_json()
+    return project.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_project(name_id_or_prefix: str, hydrate: bool = True) -> str:
+def get_project(name_id_or_prefix: str, hydrate: bool = True) -> dict[str, Any]:
     """Get detailed information about a specific project.
 
     Args:
@@ -449,7 +515,7 @@ def get_project(name_id_or_prefix: str, hydrate: bool = True) -> str:
         hydrate: Whether to hydrate the response with additional details
     """
     project = get_zenml_client().get_project(name_id_or_prefix, hydrate=hydrate)
-    return project.model_dump_json()
+    return project.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -463,7 +529,7 @@ def list_projects(
     updated: str | None = None,
     name: str | None = None,
     display_name: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all projects in the ZenML workspace.
 
     Returns JSON including pagination metadata (items, total, page, size).
@@ -488,19 +554,19 @@ def list_projects(
         name=name,
         display_name=display_name,
     )
-    return projects.model_dump_json()
+    return projects.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_stack(name_id_or_prefix: str) -> str:
+def get_stack(name_id_or_prefix: str) -> dict[str, Any]:
     """Get detailed information about a specific stack.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack to retrieve
     """
     stack = get_zenml_client().get_stack(name_id_or_prefix)
-    return stack.model_dump_json()
+    return stack.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -533,7 +599,7 @@ def list_stacks(
     created: str | None = None,
     updated: str | None = None,
     name: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all stacks in the ZenML workspace.
 
     By default, the stacks are sorted by creation date in descending order.
@@ -556,7 +622,7 @@ def list_stacks(
         updated=updated,
         name=name,
     )
-    return f"""{[stack.model_dump_json() for stack in stacks]}"""
+    return stacks.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -567,7 +633,7 @@ def list_pipelines(
     size: int = 10,
     created: str | None = None,
     updated: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all pipelines in the ZenML workspace.
 
     By default, the pipelines are sorted by creation date in descending order.
@@ -586,22 +652,21 @@ def list_pipelines(
         created=created,
         updated=updated,
     )
-    return f"""{[pipeline.model_dump_json() for pipeline in pipelines]}"""
+    return pipelines.model_dump(mode="json")
 
 
-def get_latest_runs_status(
+def _get_latest_runs_status(
     pipeline_response,  # PipelineResponse - imported lazily
     num_runs: int = 5,
-) -> str:
-    """Get the status of the latest run of a pipeline.
+) -> list[str]:
+    """Get the status of the latest runs of a pipeline.
 
     Args:
         pipeline_response: The pipeline response to get the latest runs from
         num_runs: The number of runs to get the status of
     """
     latest_runs = pipeline_response.runs[:num_runs]
-    statuses = [run.status for run in latest_runs]
-    return f"""{[status for status in statuses]}"""
+    return [str(run.status) for run in latest_runs]
 
 
 @mcp.tool()
@@ -609,7 +674,7 @@ def get_latest_runs_status(
 def get_pipeline_details(
     name_id_or_prefix: str,
     num_runs: int = 5,
-) -> str:
+) -> dict[str, Any]:
     """Get detailed information about a specific pipeline.
 
     Args:
@@ -617,19 +682,23 @@ def get_pipeline_details(
         num_runs: The number of runs to get the status of
     """
     pipeline = get_zenml_client().get_pipeline(name_id_or_prefix)
-    return f"""Pipeline: {pipeline.model_dump_json()}\n\nStatus of latest {num_runs} runs: {get_latest_runs_status(pipeline, num_runs)}"""
+    return {
+        "pipeline": pipeline.model_dump(mode="json"),
+        "latest_runs_status": _get_latest_runs_status(pipeline, num_runs),
+        "num_runs": num_runs,
+    }
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_service(name_id_or_prefix: str) -> str:
+def get_service(name_id_or_prefix: str) -> dict[str, Any]:
     """Get detailed information about a specific service.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the service to retrieve
     """
     service = get_zenml_client().get_service(name_id_or_prefix)
-    return service.model_dump_json()
+    return service.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -648,7 +717,7 @@ def list_services(
     pipeline_run_id: str | None = None,
     pipeline_step_name: str | None = None,
     model_version_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all services in the ZenML workspace.
 
     Args:
@@ -681,19 +750,19 @@ def list_services(
         pipeline_step_name=pipeline_step_name,
         model_version_id=model_version_id,
     )
-    return f"""{[service.model_dump_json() for service in services]}"""
+    return services.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_stack_component(name_id_or_prefix: str) -> str:
+def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
     """Get detailed information about a specific stack component.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack component to retrieve
     """
     stack_component = get_zenml_client().get_stack_component(name_id_or_prefix)
-    return stack_component.model_dump_json()
+    return stack_component.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -708,7 +777,7 @@ def list_stack_components(
     name: str | None = None,
     flavor: str | None = None,
     stack_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all stack components in the ZenML workspace.
 
     Args:
@@ -733,19 +802,19 @@ def list_stack_components(
         flavor=flavor,
         stack_id=stack_id,
     )
-    return f"""{[component.model_dump_json() for component in stack_components]}"""
+    return stack_components.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_flavor(name_id_or_prefix: str) -> str:
+def get_flavor(name_id_or_prefix: str) -> dict[str, Any]:
     """Get detailed information about a specific flavor.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the flavor to retrieve
     """
     flavor = get_zenml_client().get_flavor(name_id_or_prefix)
-    return flavor.model_dump_json()
+    return flavor.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -760,7 +829,7 @@ def list_flavors(
     updated: str | None = None,
     name: str | None = None,
     integration: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all flavors in the ZenML workspace.
 
     Args:
@@ -783,7 +852,7 @@ def list_flavors(
         name=name,
         integration=integration,
     )
-    return f"""{[flavor.model_dump_json() for flavor in flavors]}"""
+    return flavors.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -793,7 +862,7 @@ def trigger_pipeline(
     snapshot_name_or_id: str | None = None,
     stack_name_or_id: str | None = None,
     template_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Trigger a pipeline to run from the server.
 
     Args:
@@ -834,16 +903,18 @@ def trigger_pipeline(
         "stack_name_or_id": stack_name_or_id,
     }
 
-    deprecation_warning = ""
+    deprecation_warning: str | None = None
+    used_deprecated_template = False
     if snapshot_name_or_id is not None:
         trigger_kwargs["snapshot_name_or_id"] = snapshot_name_or_id
     elif template_id is not None:
         # Fall back to template_id for backward compatibility, but warn
         trigger_kwargs["template_id"] = template_id
+        used_deprecated_template = True
         deprecation_warning = (
-            "⚠️ DEPRECATION WARNING: The `template_id` parameter is deprecated. "
+            "The `template_id` parameter is deprecated. "
             "Please use `snapshot_name_or_id` instead. Run Templates are being "
-            "phased out in favor of Snapshots.\n\n"
+            "phased out in favor of Snapshots."
         )
 
     pipeline_run = get_zenml_client().trigger_pipeline(**trigger_kwargs)
@@ -853,17 +924,21 @@ def trigger_pipeline(
             "has_snapshot_id": snapshot_name_or_id is not None,
             "has_template_id": template_id is not None,
             "has_stack_override": stack_name_or_id is not None,
-            "used_deprecated_template": template_id is not None
-            and snapshot_name_or_id is None,
+            "used_deprecated_template": used_deprecated_template,
             "success": True,
         },
     )
-    return f"""{deprecation_warning}# Pipeline Run Response: {pipeline_run.model_dump_json(indent=2)}"""
+    result: dict[str, Any] = {
+        "pipeline_run": pipeline_run.model_dump(mode="json"),
+    }
+    if deprecation_warning:
+        result["deprecation_warning"] = deprecation_warning
+    return result
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_run_template(name_id_or_prefix: str) -> str:
+def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a run template for a pipeline.
 
     ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `get_snapshot` instead.
@@ -874,12 +949,14 @@ def get_run_template(name_id_or_prefix: str) -> str:
         name_id_or_prefix: The name, ID or prefix of the run template to retrieve
     """
     run_template = get_zenml_client().get_run_template(name_id_or_prefix)
-    deprecation_notice = (
-        "⚠️ DEPRECATION NOTICE: Run Templates are deprecated in ZenML. "
-        "Please use `get_snapshot` instead. Run Templates internally reference "
-        "Snapshots via `source_snapshot_id` and will be removed in a future version."
-    )
-    return f"{deprecation_notice}\n\n{run_template.model_dump_json()}"
+    return {
+        "deprecation_notice": (
+            "Run Templates are deprecated in ZenML. "
+            "Please use `get_snapshot` instead. Run Templates internally reference "
+            "Snapshots via `source_snapshot_id` and will be removed in a future version."
+        ),
+        "run_template": run_template.model_dump(mode="json"),
+    }
 
 
 @mcp.tool()
@@ -892,7 +969,7 @@ def list_run_templates(
     updated: str | None = None,
     name: str | None = None,
     tag: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
     ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `list_snapshots` instead.
@@ -917,13 +994,14 @@ def list_run_templates(
         name=name,
         tag=tag,
     )
-    deprecation_notice = (
-        "⚠️ DEPRECATION NOTICE: Run Templates are deprecated in ZenML. "
-        "Please use `list_snapshots` instead. For runnable configurations, "
-        "use `list_snapshots(runnable=True)`. Run Templates will be removed in a future version."
-    )
-    templates_json = [run_template.model_dump_json() for run_template in run_templates]
-    return f"{deprecation_notice}\n\n{templates_json}"
+    return {
+        "deprecation_notice": (
+            "Run Templates are deprecated in ZenML. "
+            "Please use `list_snapshots` instead. For runnable configurations, "
+            "use `list_snapshots(runnable=True)`. Run Templates will be removed in a future version."
+        ),
+        "run_templates": run_templates.model_dump(mode="json"),
+    }
 
 
 # =============================================================================
@@ -939,7 +1017,7 @@ def get_snapshot(
     project: str | None = None,
     include_config_schema: bool | None = None,
     hydrate: bool = True,
-) -> str:
+) -> dict[str, Any]:
     """Get detailed information about a specific snapshot.
 
     Snapshots are frozen pipeline configurations that link pipeline + stack + build
@@ -961,7 +1039,7 @@ def get_snapshot(
         include_config_schema=include_config_schema,
         hydrate=hydrate,
     )
-    return snapshot.model_dump_json()
+    return snapshot.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -981,7 +1059,7 @@ def list_snapshots(
     tag: str | None = None,
     project: str | None = None,
     named_only: bool | None = True,
-) -> str:
+) -> dict[str, Any]:
     """List all snapshots in the ZenML workspace.
 
     Snapshots are frozen pipeline configurations that replace the deprecated
@@ -1021,7 +1099,7 @@ def list_snapshots(
         project=project,
         named_only=named_only,
     )
-    return snapshots.model_dump_json()
+    return snapshots.model_dump(mode="json")
 
 
 # =============================================================================
@@ -1035,7 +1113,7 @@ def get_deployment(
     name_id_or_prefix: str,
     project: str | None = None,
     hydrate: bool = True,
-) -> str:
+) -> dict[str, Any]:
     """Get detailed information about a specific deployment.
 
     Deployments represent the runtime state of what's currently serving/provisioned,
@@ -1051,7 +1129,7 @@ def get_deployment(
         project=project,
         hydrate=hydrate,
     )
-    return deployment.model_dump_json()
+    return deployment.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1070,7 +1148,7 @@ def list_deployments(
     snapshot_id: str | None = None,
     tag: str | None = None,
     project: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all deployments in the ZenML workspace.
 
     Deployments show what's currently serving/provisioned with runtime status.
@@ -1107,7 +1185,7 @@ def list_deployments(
         tag=tag,
         project=project,
     )
-    return deployments.model_dump_json()
+    return deployments.model_dump(mode="json")
 
 
 # Maximum size for deployment logs output (100KB)
@@ -1120,7 +1198,7 @@ def get_deployment_logs(
     name_id_or_prefix: str,
     project: str | None = None,
     tail: int = 100,
-) -> str:
+) -> dict[str, Any]:
     """Get logs for a specific deployment.
 
     Retrieves logs from the deployment's underlying infrastructure. This is useful
@@ -1135,7 +1213,7 @@ def get_deployment_logs(
         tail: Number of recent log lines to retrieve (default: 100, max recommended: 500)
 
     Returns:
-        JSON object with 'logs' (string) and metadata about truncation if applicable
+        Dict with 'logs' (string) and metadata about truncation if applicable
     """
     # Cap tail at a reasonable maximum to prevent excessive output
     effective_tail = min(tail, 1000)
@@ -1164,7 +1242,7 @@ def get_deployment_logs(
 
         logs_text = "\n".join(log_lines)
 
-        result = {
+        result: dict[str, Any] = {
             "logs": logs_text,
             "line_count": len(log_lines),
             "truncated": truncated,
@@ -1178,22 +1256,23 @@ def get_deployment_logs(
                 f"Use a smaller 'tail' value to see complete recent logs."
             )
 
-        return json.dumps(result)
+        return result
 
     except ImportError as e:
         # Handle missing deployer plugin (direct import failure)
-        return json.dumps(
-            {
-                "error": "deployer_plugin_not_installed",
+        return {
+            "error": {
+                "tool": "get_deployment_logs",
+                "type": "deployer_plugin_not_installed",
                 "message": (
                     f"The deployer plugin required to fetch logs is not installed: {e}. "
                     "Please install the appropriate ZenML integration for your stack "
                     "(e.g., `zenml integration install gcp` for GCP deployments), "
                     "then restart the MCP server."
                 ),
-                "logs": None,
-            }
-        )
+            },
+            "logs": None,
+        }
     except Exception as e:
         # Check if this is a deployer instantiation error (missing dependencies)
         error_str = str(e)
@@ -1201,9 +1280,10 @@ def get_deployment_logs(
             "could not be instantiated" in error_str
             or "dependencies are not installed" in error_str
         ):
-            return json.dumps(
-                {
-                    "error": "deployer_dependencies_missing",
+            return {
+                "error": {
+                    "tool": "get_deployment_logs",
+                    "type": "deployer_dependencies_missing",
                     "message": (
                         f"The deployer's dependencies are not installed: {error_str}\n\n"
                         "To fix this:\n"
@@ -1213,23 +1293,23 @@ def get_deployment_logs(
                         "3. Restart the MCP server\n\n"
                         "Common deployer integrations: gcp, aws, azure, kubernetes, huggingface"
                     ),
-                    "logs": None,
-                }
-            )
+                },
+                "logs": None,
+            }
         # Re-raise other exceptions to be handled by the decorator
         raise
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_schedule(name_id_or_prefix: str) -> str:
+def get_schedule(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a schedule for a pipeline.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the schedule to retrieve
     """
     schedule = get_zenml_client().get_schedule(name_id_or_prefix)
-    return schedule.model_dump_json()
+    return schedule.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1245,7 +1325,7 @@ def list_schedules(
     pipeline_id: str | None = None,
     orchestrator_id: str | None = None,
     active: bool | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all schedules in the ZenML workspace.
 
     Args:
@@ -1271,19 +1351,19 @@ def list_schedules(
         orchestrator_id=orchestrator_id,
         active=active,
     )
-    return f"""{[schedule.model_dump_json() for schedule in schedules]}"""
+    return schedules.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_pipeline_run(name_id_or_prefix: str) -> str:
+def get_pipeline_run(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a pipeline run by name, ID, or prefix.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the pipeline run to retrieve
     """
     pipeline_run = get_zenml_client().get_pipeline_run(name_id_or_prefix)
-    return pipeline_run.model_dump_json()
+    return pipeline_run.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1304,7 +1384,7 @@ def list_pipeline_runs(
     end_time: str | None = None,
     stack: str | None = None,
     stack_component: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all pipeline runs in the ZenML workspace.
 
     Args:
@@ -1341,19 +1421,19 @@ def list_pipeline_runs(
         stack=stack,
         stack_component=stack_component,
     )
-    return f"""{[pipeline_run.model_dump_json() for pipeline_run in pipeline_runs]}"""
+    return pipeline_runs.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_run_step(step_run_id: str) -> str:
+def get_run_step(step_run_id: str) -> dict[str, Any]:
     """Get a run step by name, ID, or prefix.
 
     Args:
         step_run_id: The ID of the run step to retrieve
     """
     run_step = get_zenml_client().get_run_step(step_run_id)
-    return run_step.model_dump_json()
+    return run_step.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1370,7 +1450,7 @@ def list_run_steps(
     start_time: str | None = None,
     end_time: str | None = None,
     pipeline_run_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all run steps in the ZenML workspace.
 
     Args:
@@ -1399,7 +1479,7 @@ def list_run_steps(
         end_time=end_time,
         pipeline_run_id=pipeline_run_id,
     )
-    return f"""{[run_step.model_dump_json() for run_step in run_steps]}"""
+    return run_steps.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1413,7 +1493,7 @@ def list_artifacts(
     updated: str | None = None,
     name: str | None = None,
     tag: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all artifacts in the ZenML workspace.
 
     Args:
@@ -1435,7 +1515,7 @@ def list_artifacts(
         name=name,
         tag=tag,
     )
-    return f"""{[artifact.model_dump_json() for artifact in artifacts]}"""
+    return artifacts.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1443,7 +1523,7 @@ def list_artifacts(
 def get_artifact_version(
     name_id_or_prefix: str,
     version: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Get detailed information about a specific artifact version.
 
     Args:
@@ -1454,8 +1534,7 @@ def get_artifact_version(
         name_id_or_prefix=name_id_or_prefix,
         version=version,
     )
-
-    return artifact.model_dump_json()
+    return artifact.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1469,7 +1548,7 @@ def list_artifact_versions(
     created: str | None = None,
     updated: str | None = None,
     tag: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all versions of a specific artifact.
 
     Args:
@@ -1482,7 +1561,6 @@ def list_artifact_versions(
         updated: The last update date filter
         tag: The tag filter
     """
-
     versions = get_zenml_client().list_artifact_versions(
         artifact=artifact_name_or_id,
         sort_by=sort_by,
@@ -1493,7 +1571,7 @@ def list_artifact_versions(
         updated=updated,
         tag=tag,
     )
-    return f"""{[version.model_dump_json() for version in versions]}"""
+    return versions.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1506,7 +1584,7 @@ def list_secrets(
     created: str | None = None,
     updated: str | None = None,
     name: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all secrets in the ZenML workspace.
 
     Args:
@@ -1527,19 +1605,19 @@ def list_secrets(
         updated=updated,
         name=name,
     )
-    return f"""{[secret.model_dump_json() for secret in secrets]}"""
+    return secrets.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_service_connector(name_id_or_prefix: str) -> str:
+def get_service_connector(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a service connector by name, ID, or prefix.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the service connector to retrieve
     """
     service_connector = get_zenml_client().get_service_connector(name_id_or_prefix)
-    return service_connector.model_dump_json()
+    return service_connector.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1553,7 +1631,7 @@ def list_service_connectors(
     updated: str | None = None,
     name: str | None = None,
     connector_type: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all service connectors in the ZenML workspace.
 
     Args:
@@ -1576,19 +1654,19 @@ def list_service_connectors(
         name=name,
         connector_type=connector_type,
     )
-    return f"""{[service_connector.model_dump_json() for service_connector in service_connectors]}"""
+    return service_connectors.model_dump(mode="json")
 
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_model(name_id_or_prefix: str) -> str:
+def get_model(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a model by name, ID, or prefix.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the model to retrieve
     """
     model = get_zenml_client().get_model(name_id_or_prefix)
-    return model.model_dump_json()
+    return model.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1602,7 +1680,7 @@ def list_models(
     updated: str | None = None,
     name: str | None = None,
     tag: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all models in the ZenML workspace.
 
     Args:
@@ -1625,7 +1703,7 @@ def list_models(
         name=name,
         tag=tag,
     )
-    return f"""{[model.model_dump_json() for model in models]}"""
+    return models.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1633,7 +1711,7 @@ def list_models(
 def get_model_version(
     model_name_or_id: str,
     model_version_name_or_number_or_id: str,
-) -> str:
+) -> dict[str, Any]:
     """Get a model version by name, ID, or prefix.
 
     Args:
@@ -1644,7 +1722,7 @@ def get_model_version(
         model_name_or_id,
         model_version_name_or_number_or_id,
     )
-    return model_version.model_dump_json()
+    return model_version.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1661,7 +1739,7 @@ def list_model_versions(
     number: int | None = None,
     stage: str | None = None,
     tag: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all model versions for a model.
 
     Args:
@@ -1690,9 +1768,7 @@ def list_model_versions(
         stage=stage,
         tag=tag,
     )
-    return (
-        f"""{[model_version.model_dump_json() for model_version in model_versions]}"""
-    )
+    return model_versions.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1716,7 +1792,7 @@ def get_step_code(
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_tag(tag_name_or_id: str, hydrate: bool = True) -> str:
+def get_tag(tag_name_or_id: str, hydrate: bool = True) -> dict[str, Any]:
     """Get detailed information about a specific tag.
 
     Tags are cross-cutting metadata labels for discovery (prod, staging, latest,
@@ -1727,7 +1803,7 @@ def get_tag(tag_name_or_id: str, hydrate: bool = True) -> str:
         hydrate: Whether to hydrate the response with additional details
     """
     tag = get_zenml_client().get_tag(tag_name_or_id, hydrate=hydrate)
-    return tag.model_dump_json()
+    return tag.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1742,7 +1818,7 @@ def list_tags(
     name: str | None = None,
     exclusive: bool | None = None,
     resource_type: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all tags in the ZenML workspace.
 
     Tags enable queries like "show me all prod deployments" and help organize
@@ -1772,7 +1848,7 @@ def list_tags(
         exclusive=exclusive,
         resource_type=resource_type,
     )
-    return tags.model_dump_json()
+    return tags.model_dump(mode="json")
 
 
 # =============================================================================
@@ -1786,7 +1862,7 @@ def get_build(
     id_or_prefix: str,
     project: str | None = None,
     hydrate: bool = True,
-) -> str:
+) -> dict[str, Any]:
     """Get detailed information about a specific pipeline build.
 
     Builds contain image info, code embedding, and stack checksums that explain
@@ -1802,7 +1878,7 @@ def get_build(
         project=project,
         hydrate=hydrate,
     )
-    return build.model_dump_json()
+    return build.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -1819,7 +1895,7 @@ def list_builds(
     is_local: bool | None = None,
     contains_code: bool | None = None,
     project: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """List all pipeline builds in the ZenML workspace.
 
     Builds explain reproducibility (container image/code) and can help debug
@@ -1853,7 +1929,7 @@ def list_builds(
         contains_code=contains_code,
         project=project,
     )
-    return builds.model_dump_json()
+    return builds.model_dump(mode="json")
 
 
 @mcp.prompt()
