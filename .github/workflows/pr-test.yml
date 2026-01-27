@@ -47,9 +47,14 @@ jobs:
           enable-cache: true
 
       - name: Run MCP smoke test
+        if: env.ZENML_STORE_URL != ''
         run: |
           echo "Running MCP smoke test..."
           uv run scripts/test_mcp_server.py server/zenml_server.py
+
+      - name: Skip MCP smoke test (no credentials)
+        if: env.ZENML_STORE_URL == ''
+        run: echo "⚠️ Skipping MCP smoke test — ZenML credentials not available (expected for Dependabot PRs)"
 
       - name: Run analytics pipeline test
         run: |
