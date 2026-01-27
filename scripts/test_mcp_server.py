@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
@@ -74,6 +75,24 @@ def _make_prompt_info(name: str, description: str | None) -> PromptInfo:
     return {"name": name, "description": description}
 
 
+def _get_mcp_field(obj: Any, *names: str, default: Any = None) -> Any:
+    """Read a field from an MCP result object, trying multiple name variants.
+
+    Handles both camelCase (structuredContent, isError) and snake_case
+    (structured_content, is_error) field names across MCP client versions.
+    """
+    if isinstance(obj, Mapping):
+        for n in names:
+            if n in obj and obj[n] is not None:
+                return obj[n]
+        return default
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            return v
+    return default
+
+
 def _extract_call_tool_output(result: Any) -> tuple[str, Any]:
     """Extract output from an MCP call_tool result, supporting both structured and text.
 
@@ -82,7 +101,7 @@ def _extract_call_tool_output(result: Any) -> tuple[str, Any]:
     - payload: dict for structured, str for text
     """
     # Check for structured content first (new MCP structured output)
-    structured = getattr(result, "structuredContent", None)
+    structured = _get_mcp_field(result, "structuredContent", "structured_content")
     if structured is not None:
         return ("structured", structured)
 
@@ -321,8 +340,11 @@ class MCPSmokeTest:
                     )
                     print(f"🔄 Tool {tool_name} returned result")
 
-                    # Check MCP-level isError flag first
-                    if getattr(result, "isError", False):
+                    # Check MCP-level isError flag first (support both camelCase and snake_case)
+                    is_error = _get_mcp_field(
+                        result, "isError", "is_error", default=False
+                    )
+                    if is_error:
                         error_msg = f"Tool {tool_name} returned isError=True"
                         print(f"❌ {error_msg}")
                         results["tool_test_results"][tool_name] = cast(

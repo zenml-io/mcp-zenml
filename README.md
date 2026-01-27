@@ -261,6 +261,9 @@ you can sign up for a free trial at [ZenML Pro](https://cloud.zenml.io) and we'l
 
 > **Tip:** Once you have a ZenML server, check out the [MCP Settings page](#quick-setup-via-dashboard-recommended) in your dashboard for the easiest setup experience.
 
+> **Compatibility:** This MCP server is tested with and recommended for **ZenML >= 0.93.0**.
+> If you are running an older ZenML version, please use an [earlier release](https://github.com/zenml-io/mcp-zenml/releases) of this MCP server.
+
 You will also (probably) need to have `uv` installed locally. For more information, see
 the [`uv` documentation](https://docs.astral.sh/uv/getting-started/installation/).
 We recommend installation via their installer script or via `brew` if using a

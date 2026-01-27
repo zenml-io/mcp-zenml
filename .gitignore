@@ -95,9 +95,8 @@ ipython_config.py
 #Pipfile.lock
 
 # UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
+#   This project uses PEP 723 inline script metadata for dependencies (not pyproject.toml),
+#   so uv.lock serves no purpose and is ignored.
 uv.lock
 
 # poetry
