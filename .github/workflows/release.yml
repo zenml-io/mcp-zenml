@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
@@ -77,7 +77,7 @@ jobs:
 
     steps:
       - name: Checkout repository (with PAT)
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           token: ${{ secrets.GH_RELEASE_PAT }}
           persist-credentials: false
@@ -93,7 +93,7 @@ jobs:
           enable-cache: false
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 # zizmor: ignore[cache-poisoning]
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v4 # zizmor: ignore[cache-poisoning]
         with:
           node-version: "20"
 
