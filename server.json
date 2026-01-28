@@ -6,11 +6,11 @@
     "url": "https://github.com/zenml-io/mcp-zenml",
     "source": "github"
   },
-  "version": "1.4.0",
+  "version": "1.5.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "docker.io/zenmldocker/mcp-zenml:1.4.0",
+      "identifier": "docker.io/zenmldocker/mcp-zenml:1.5.0",
       "transport": {
         "type": "stdio"
       },
