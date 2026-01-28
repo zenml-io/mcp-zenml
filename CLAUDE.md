@@ -192,9 +192,48 @@ Then manually add `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` in the UI under **
 - **Prompts tab**: View prompt templates (none currently)
 - **History**: See all previous tool calls in the session
 
+### Testing MCP Apps with Docker + Cloudflare Tunnel
+
+MCP Apps (interactive HTML UIs rendered in sandboxed iframes) require Streamable HTTP transport and a publicly reachable URL. Use Docker + Cloudflare tunnel for local testing.
+
+> **Note:** As of late January 2026, Claude Desktop and Claude.ai do **not** render MCP Apps (the tool calls work, but the interactive iframe UI does not appear). MCP Apps currently work with third-party clients that support the MCP Apps specification. This testing workflow is primarily useful for development validation.
+
+**1. Build the Docker image:**
+```bash
+docker build --no-cache -t mcp-zenml:test .
+```
+
+**2. Run the container:**
+```bash
+docker run --rm -d --name mcp-zenml-test -p 8001:8001 \
+  -e ZENML_STORE_URL=https://your-server.zenml.io \
+  -e ZENML_STORE_API_KEY=ZENKEY_... \
+  -e ZENML_ACTIVE_PROJECT_ID=your-project-id \
+  mcp-zenml:test --transport streamable-http --host 0.0.0.0 --port 8001 --disable-dns-rebinding-protection
+```
+
+**3. Start a Cloudflare tunnel:**
+```bash
+npx cloudflared tunnel --url http://localhost:8001
+```
+This prints a public URL like `https://random-words.trycloudflare.com`.
+
+**4. Connect from an MCP client:**
+- Add the tunnel URL with `/mcp` path as a Streamable HTTP MCP server: `https://random-words.trycloudflare.com/mcp`
+- Ask the assistant to use the app (e.g., "open the run activity chart")
+- If the app UI does not render (blank/no iframe), this is typically a client capability limitation rather than a server issue
+
+**Gotchas:**
+- **`ZENML_ACTIVE_PROJECT_ID` is required** — without it, tools like `list_pipeline_runs` fail with "No project is currently set as active"
+- **Port 8000 may be in use** — the MCP Inspector or other services often occupy 8000; use 8001+ for Docker
+- **Tunnel URL changes on restart** — each `npx cloudflared tunnel` invocation gets a new random URL; update your MCP client configuration accordingly
+- **Container logs are essential** — run `docker logs mcp-zenml-test` to see server errors (they won't appear in the browser/iframe)
+- The Dockerfile copies `server/ui/` automatically, so new MCP App HTML files are included in the build
+
 ### Project Structure
 
 - `server/` - Main MCP server implementation
+  - `server/ui/` - MCP App HTML files (self-contained single-file apps)
 - `scripts/` - Development and testing utilities
 - `assets/` - Project assets and images
 

@@ -322,6 +322,8 @@ class MCPSmokeTest:
             "list_tags",
             "list_builds",
             "list_artifacts",
+            "open_pipeline_run_dashboard",
+            "open_run_activity_chart",
             # Note: Do NOT add tools that require parameters (e.g., get_artifact_version,
             # list_artifact_versions) since this test calls tools with empty args {}
         ]
