@@ -199,6 +199,12 @@ The MCP Settings page lets you generate a Personal Access Token (PAT) with a sin
 > server tools bidirectionally. See the [official announcement](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/)
 > for full details.
 
+<p align="center">
+  <img src="assets/apps-example-1.png" alt="Pipeline Runs Dashboard" width="48%">
+  &nbsp;
+  <img src="assets/apps-example-2.png" alt="Run Activity Chart" width="48%">
+</p>
+
 This server includes two experimental MCP Apps:
 
 | App | Tool | Description |
