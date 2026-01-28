@@ -579,8 +579,7 @@
     // State
     // =================================================================
     let state = {
-      allRuns: [],        // full pre-fetched dataset (unfiltered)
-      runs: [],           // current page (after local filter/pagination)
+      runs: [],           // current page from server
       total: 0,
       page: 1,
       size: 25,
@@ -619,6 +618,7 @@
     function formatDate(dateStr) {
       if (!dateStr) return "—";
       const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return "—";
       const now = new Date();
       const diff = now - d;
 
@@ -667,6 +667,15 @@
       const div = document.createElement("div");
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
     }
 
     /** Pick the first non-empty string from candidates. */
@@ -839,6 +848,7 @@
 
     /** Fetch a page of runs from the server with current filters. */
     async function refreshRuns() {
+      state.error = null;
       state.loading = true;
       state.expandedRunId = null;
       state.selectedStepId = null;
@@ -856,8 +866,19 @@
 
       const data = await callServerToolSafe("list_pipeline_runs", params);
 
-      if (data?.items) {
-        state.allRuns = data.items;
+      if (data == null) {
+        state.error = serverToolCallsEnabled
+          ? "Could not load pipeline runs. The request timed out or returned an error."
+          : "Could not load pipeline runs. Your MCP host may not support callServerTool yet.";
+        state.runs = [];
+        state.total = 0;
+        state.loading = false;
+        updateTitle();
+        render();
+        return;
+      }
+
+      if (data.items) {
         state.runs = data.items;
         state.total = data.total ?? data.items.length;
       }
@@ -898,7 +919,7 @@
           <div class="error-box">${escapeHtml(state.error)}</div>
           <div class="state-container">
             <div>Could not load pipeline runs.</div>
-            <button class="btn btn-primary" style="margin-top:12px" onclick="window.__refresh()">Retry</button>
+            <button class="btn btn-primary retry-btn" style="margin-top:12px">Retry</button>
           </div>`;
         paginationEl.style.display = "none";
         summaryBar.style.display = "none";
@@ -935,7 +956,7 @@
         rows += `
           <tr>
             <td>
-              <button class="expand-btn ${isExpanded ? "expanded" : ""}" data-run-id="${rd.id}" title="Expand steps">
+              <button class="expand-btn ${isExpanded ? "expanded" : ""}" data-run-id="${escapeAttr(rd.id)}" title="Expand steps">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="9 18 15 12 9 6"></polyline>
                 </svg>
@@ -1058,7 +1079,7 @@
         const isSel = state.selectedStepId === sd.id;
 
         stepItems += `
-          <div class="step-item ${isSel ? "selected" : ""}" data-step-id="${sd.id}">
+          <div class="step-item ${isSel ? "selected" : ""}" data-step-id="${escapeAttr(sd.id)}">
             <span class="status-dot dot-${sc}"></span>
             <span class="step-name">${escapeHtml(sd.name)}</span>
             <span class="badge status-${sc}" style="font-size:11px">${escapeHtml(sd.status)}</span>
@@ -1086,7 +1107,7 @@
             <div class="logs-panel">
               <div class="logs-header">
                 <h4>Step Logs</h4>
-                <button class="btn btn-sm copy-logs-btn" data-step-id="${escapeHtml(state.selectedStepId)}">Copy</button>
+                <button class="btn btn-sm copy-logs-btn" data-step-id="${escapeAttr(state.selectedStepId)}">Copy</button>
               </div>
               <div class="logs-content${logs === '(empty)' || logs === '(no logs available)' ? ' empty' : ''}">${escapeHtml(logs)}</div>
             </div>`;
@@ -1137,10 +1158,15 @@
       }
     }
 
-    // Delegation for step clicks and copy button
+    // Delegation for step clicks, copy button, and retry
     document.addEventListener("click", (e) => {
       const target = e.target instanceof Element ? e.target : null;
       if (!target) return;
+      const retryBtn = target.closest(".retry-btn");
+      if (retryBtn) {
+        refreshRuns();
+        return;
+      }
       const stepItem = target.closest(".step-item");
       if (stepItem) {
         selectStep(stepItem.dataset.stepId);
@@ -1149,18 +1175,11 @@
       const copyBtn = target.closest(".copy-logs-btn");
       if (copyBtn) {
         const stepId = copyBtn.dataset.stepId;
-        if (stepId) window.__copyLogs(stepId);
+        if (stepId && state.logs[stepId]) {
+          navigator.clipboard.writeText(state.logs[stepId]).catch(() => {});
+        }
       }
     });
-
-    // Expose for inline onclick handlers
-    window.__refresh = () => refreshRuns();
-    window.__copyLogs = (stepId) => {
-      const logs = state.logs[stepId];
-      if (logs) {
-        navigator.clipboard.writeText(logs).catch(() => {});
-      }
-    };
 
     // Filter handlers — server-side pagination
     let filterTimeout;
@@ -1254,7 +1273,7 @@
 
     // Fallback: if data hasn't loaded within 15s, show a helpful message
     setTimeout(() => {
-      if (state.loading && state.allRuns.length === 0) {
+      if (state.loading) {
         state.loading = false;
         state.error = "Could not load pipeline run data. The server tool call may have timed out.";
         render();

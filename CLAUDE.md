@@ -194,7 +194,9 @@ Then manually add `ZENML_STORE_URL` and `ZENML_STORE_API_KEY` in the UI under **
 
 ### Testing MCP Apps with Docker + Cloudflare Tunnel
 
-MCP Apps (interactive HTML UIs rendered in Claude.ai iframes) require Streamable HTTP transport and a publicly reachable URL. Use Docker + Cloudflare tunnel for local testing:
+MCP Apps (interactive HTML UIs rendered in sandboxed iframes) require Streamable HTTP transport and a publicly reachable URL. Use Docker + Cloudflare tunnel for local testing.
+
+> **Note:** As of late January 2026, Claude Desktop and Claude.ai do **not** render MCP Apps (the tool calls work, but the interactive iframe UI does not appear). MCP Apps currently work with third-party clients that support the MCP Apps specification. This testing workflow is primarily useful for development validation.
 
 **1. Build the Docker image:**
 ```bash
@@ -216,15 +218,15 @@ npx cloudflared tunnel --url http://localhost:8001
 ```
 This prints a public URL like `https://random-words.trycloudflare.com`.
 
-**4. Connect from Claude.ai:**
-- Go to **Settings → Integrations → Add MCP server**
-- Enter the tunnel URL with `/mcp` path: `https://random-words.trycloudflare.com/mcp`
-- Ask Claude to use the app (e.g., "open the run activity chart")
+**4. Connect from an MCP client:**
+- Add the tunnel URL with `/mcp` path as a Streamable HTTP MCP server: `https://random-words.trycloudflare.com/mcp`
+- Ask the assistant to use the app (e.g., "open the run activity chart")
+- If the app UI does not render (blank/no iframe), this is typically a client capability limitation rather than a server issue
 
 **Gotchas:**
 - **`ZENML_ACTIVE_PROJECT_ID` is required** — without it, tools like `list_pipeline_runs` fail with "No project is currently set as active"
 - **Port 8000 may be in use** — the MCP Inspector or other services often occupy 8000; use 8001+ for Docker
-- **Tunnel URL changes on restart** — each `npx cloudflared tunnel` invocation gets a new random URL; update your Claude.ai integration accordingly
+- **Tunnel URL changes on restart** — each `npx cloudflared tunnel` invocation gets a new random URL; update your MCP client configuration accordingly
 - **Container logs are essential** — run `docker logs mcp-zenml-test` to see server errors (they won't appear in the browser/iframe)
 - The Dockerfile copies `server/ui/` automatically, so new MCP App HTML files are included in the build
 

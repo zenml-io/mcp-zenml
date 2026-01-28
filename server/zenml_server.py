@@ -305,6 +305,8 @@ try:
             self._upstream_resource_params: set[str] = set(
                 _inspect.signature(FastMCP.resource).parameters.keys()
             )
+            # Only trust proxy headers when explicitly behind a reverse proxy
+            self._forwarded_allow_ips: str = "127.0.0.1"
 
         def add_tool(
             self,
@@ -458,7 +460,7 @@ try:
                 port=self.settings.port,
                 log_level=self.settings.log_level.lower(),
                 proxy_headers=True,
-                forwarded_allow_ips="*",
+                forwarded_allow_ips=self._forwarded_allow_ips,
             )
             server = uvicorn.Server(config)
             await server.serve()
@@ -2326,6 +2328,8 @@ if __name__ == "__main__":
                 mcp.settings.transport_security = TransportSecuritySettings(
                     enable_dns_rebinding_protection=False,
                 )
+                # Trust proxy headers from any IP (needed behind reverse proxies)
+                mcp._forwarded_allow_ips = "*"
                 # Ensure no stale session manager exists so the new security
                 # settings take effect when streamable_http_app() is called.
                 mcp._session_manager = None

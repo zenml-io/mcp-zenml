@@ -335,6 +335,9 @@
         <div class="badge" id="totalBadge" style="display:none">
           <span id="totalCount">0</span> runs
         </div>
+        <div class="badge" id="capWarning" style="display:none; background:var(--color-warning-50); color:var(--color-warning-600)">
+          Capped at 1000 runs
+        </div>
         <button class="btn-refresh" id="refreshBtn" title="Refresh">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M1.5 8a6.5 6.5 0 0 1 11.25-4.5M14.5 8a6.5 6.5 0 0 1-11.25 4.5"/>
@@ -398,6 +401,7 @@
     const totalCountEl = $("totalCount");
     const legendEl = $("legend");
     const refreshBtn = $("refreshBtn");
+    const capWarning = $("capWarning");
 
     // =================================================================
     // State
@@ -406,6 +410,7 @@
     let loading = true;
     let error = null;
     let grandTotal = 0;
+    let cappedAt1000 = false;
 
     // =================================================================
     // Data Fetching
@@ -503,6 +508,7 @@
     async function fetchRunData() {
       loading = true;
       error = null;
+      cappedAt1000 = false;
       render();
 
       const dateRange = buildDateRange();
@@ -521,7 +527,16 @@
           page: page,
         });
 
-        if (!data?.items || data.items.length === 0) break;
+        if (data == null) {
+          error = serverToolCallsEnabled
+            ? "Could not load pipeline run data. The request timed out or returned an error."
+            : "Could not load pipeline run data. Your MCP host may not support callServerTool yet.";
+          loading = false;
+          render();
+          return;
+        }
+
+        if (!data.items || data.items.length === 0) break;
 
         for (const run of data.items) {
           const dateStr = extractCreatedDate(run);
@@ -538,7 +553,10 @@
         if (data.items.length < pageSize) break;
         page++;
         // Safety: don't fetch more than 10 pages (1000 runs)
-        if (page > 10) break;
+        if (page > 10) {
+          cappedAt1000 = true;
+          break;
+        }
       }
 
       // Bucket by date
@@ -614,6 +632,7 @@
       totalBadge.style.display = "";
       legendEl.style.display = "";
       totalCountEl.textContent = grandTotal;
+      capWarning.style.display = cappedAt1000 ? "" : "none";
 
       renderChart();
     }
