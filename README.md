@@ -206,20 +206,20 @@ This server includes two experimental MCP Apps:
 | **Pipeline Runs Dashboard** | `open_pipeline_run_dashboard` | Interactive table of recent pipeline runs with status, step details, and logs |
 | **Run Activity Chart** | `open_run_activity_chart` | Bar chart of pipeline run activity over the last 30 days with status breakdown |
 
+These apps are included as proof-of-concept examples. We welcome feedback and contributions for more MCP Apps. It is still early days for this new feature so we'll have to see how it evolves. We expect to support it more fully in the future.
+
 ### Supported Clients
 
 MCP Apps require **Streamable HTTP** transport (not stdio). The following clients
 currently support MCP Apps:
 
-- ✅ **Claude Desktop** (recommended)
-- ✅ **VS Code** (Insiders)
+- ✅ **VS Code** (Insiders Edition)
 - ✅ **Goose**
 - ✅ **ChatGPT** (launching soon)
-- ⚠️ **Claude.ai** (web) — renders apps but iframe sizing is unreliable; charts
-  may appear too small or require scrolling
+- ⚠️ **Claude Desktop** -- as of late January 2026, doesn't yet render Apps.
+- ⚠️ **Claude.ai** (web) — as of late January 2026, doesn't yet render Apps.
 
-> **Note:** We were unable to test thoroughly with Claude Desktop at the time of
-> writing. If you encounter issues, please [report them](https://github.com/zenml-io/mcp-zenml/issues).
+> **Note:** We were unable to test thoroughly with Claude Desktop or Claude.ai at the time of writing. If you encounter issues, please [report them](https://github.com/zenml-io/mcp-zenml/issues).
 
 ### Running MCP Apps with Docker
 
@@ -251,7 +251,20 @@ This prints a public URL like `https://random-words.trycloudflare.com`.
 **3. Connect your client:**
 
 - In Claude Desktop or other clients, add the MCP server with URL:
-  `https://random-words.trycloudflare.com/mcp`
+  `https://random-words.trycloudflare.com/mcp` e.g.:
+
+```json
+{
+	"servers": {
+		"ZenML": {
+			"url": "https://USE-YOUR-OWN-URL.trycloudflare.com/mcp",
+			"type": "http"
+		}
+	},
+	"inputs": []
+}
+```
+
 - Ask the AI to "open the pipeline runs dashboard" or "show the run activity chart"
 
 **Important notes:**
