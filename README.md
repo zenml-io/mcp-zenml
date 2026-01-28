@@ -114,6 +114,12 @@ The MCP server exposes the following tools, grouped by category:
 | `get_model`, `list_models` | Model registry |
 | `get_model_version`, `list_model_versions` | Model versions |
 
+### Interactive Apps (Experimental)
+| Tool | Description |
+|------|-------------|
+| `open_pipeline_run_dashboard` | Open interactive pipeline runs dashboard (MCP App) |
+| `open_run_activity_chart` | Open 30-day run activity bar chart (MCP App) |
+
 ### Analysis Tools
 | Tool | Description |
 |------|-------------|
@@ -185,6 +191,75 @@ The MCP Settings page lets you generate a Personal Access Token (PAT) with a sin
 ---
 
 **Prefer manual setup?** See the detailed instructions below.
+
+## MCP Apps (Experimental)
+
+> **What are MCP Apps?** MCP Apps are interactive HTML UIs that MCP servers can
+> serve directly into AI clients. They render in sandboxed iframes and can call
+> server tools bidirectionally. See the [official announcement](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/)
+> for full details.
+
+This server includes two experimental MCP Apps:
+
+| App | Tool | Description |
+|-----|------|-------------|
+| **Pipeline Runs Dashboard** | `open_pipeline_run_dashboard` | Interactive table of recent pipeline runs with status, step details, and logs |
+| **Run Activity Chart** | `open_run_activity_chart` | Bar chart of pipeline run activity over the last 30 days with status breakdown |
+
+### Supported Clients
+
+MCP Apps require **Streamable HTTP** transport (not stdio). The following clients
+currently support MCP Apps:
+
+- ✅ **Claude Desktop** (recommended)
+- ✅ **VS Code** (Insiders)
+- ✅ **Goose**
+- ✅ **ChatGPT** (launching soon)
+- ⚠️ **Claude.ai** (web) — renders apps but iframe sizing is unreliable; charts
+  may appear too small or require scrolling
+
+> **Note:** We were unable to test thoroughly with Claude Desktop at the time of
+> writing. If you encounter issues, please [report them](https://github.com/zenml-io/mcp-zenml/issues).
+
+### Running MCP Apps with Docker
+
+MCP Apps require Streamable HTTP transport and a publicly reachable URL (for
+cloud-hosted clients like Claude.ai). The simplest setup uses Docker +
+Cloudflare tunnel:
+
+**1. Build and run the Docker container:**
+
+```bash
+docker build -t mcp-zenml:apps .
+
+docker run --rm -d --name mcp-zenml-apps -p 8001:8001 \
+  -e ZENML_STORE_URL="https://your-zenml-server.example.com" \
+  -e ZENML_STORE_API_KEY="your-api-key" \
+  -e ZENML_ACTIVE_PROJECT_ID="your-project-id" \
+  mcp-zenml:apps --transport streamable-http --host 0.0.0.0 --port 8001 \
+  --disable-dns-rebinding-protection
+```
+
+**2. Start a Cloudflare tunnel (for cloud clients):**
+
+```bash
+npx cloudflared tunnel --url http://localhost:8001
+```
+
+This prints a public URL like `https://random-words.trycloudflare.com`.
+
+**3. Connect your client:**
+
+- In Claude Desktop or other clients, add the MCP server with URL:
+  `https://random-words.trycloudflare.com/mcp`
+- Ask the AI to "open the pipeline runs dashboard" or "show the run activity chart"
+
+**Important notes:**
+- `ZENML_ACTIVE_PROJECT_ID` is required — without it, pipeline run tools will
+  fail with "No project is currently set as active"
+- The `--disable-dns-rebinding-protection` flag is needed when running behind
+  reverse proxies (cloudflared, ngrok) — it's safe when the proxy handles security
+- The tunnel URL changes on each restart — update your client integration accordingly
 
 ## Testing & Quality Assurance
 

@@ -26,9 +26,8 @@ from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
 
 import requests
-from mcp.types import CallToolResult, TextContent
-
 import zenml_mcp_analytics as analytics
+from mcp.types import CallToolResult, TextContent
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
@@ -288,17 +287,24 @@ try:
     from mcp.types import Tool as MCPTool
 
     class ZenMLFastMCP(FastMCP):
-        """FastMCP subclass that supports tool _meta (required for MCP Apps).
+        """FastMCP subclass that supports _meta on tools and resources.
 
-        The upstream FastMCP.list_tools() builds MCPTool objects without the
-        ``meta`` field, so MCP Apps hosts never see ``_meta.ui.resourceUri``.
-        This subclass stores per-tool meta at registration time and emits it
-        in list_tools().
+        The upstream FastMCP may not support the ``meta`` kwarg on
+        ``tool()`` / ``resource()`` depending on the installed version.
+        This subclass stores per-tool and per-resource meta at registration
+        time and injects it into list_tools() / list_resources().
         """
 
         def __init__(self, *a: Any, **kw: Any) -> None:
+            import inspect as _inspect
+
             super().__init__(*a, **kw)
             self._tool_meta: dict[str, dict[str, Any]] = {}
+            self._resource_meta: dict[str, dict[str, Any]] = {}
+            # Cache upstream resource() signature to avoid re-inspecting on every call
+            self._upstream_resource_params: set[str] = set(
+                _inspect.signature(FastMCP.resource).parameters.keys()
+            )
 
         def add_tool(
             self,
@@ -353,26 +359,87 @@ try:
 
             return decorator
 
+        def resource(
+            self,
+            uri: str,
+            *,
+            name: str | None = None,
+            title: str | None = None,
+            description: str | None = None,
+            mime_type: str | None = None,
+            meta: dict[str, Any] | None = None,
+            **extra: Any,
+        ) -> Callable[..., Any]:
+            """Override to intercept ``meta`` for older SDK versions.
+
+            If the upstream FastMCP.resource() already supports ``meta``,
+            we pass it through. Otherwise, we strip it and store it
+            ourselves, injecting it in list_resources().
+            """
+            upstream_params = self._upstream_resource_params
+
+            # Build kwargs for the upstream call, only passing what it accepts
+            kwargs: dict[str, Any] = {}
+            if name is not None:
+                kwargs["name"] = name
+            if description is not None:
+                kwargs["description"] = description
+            if mime_type is not None:
+                kwargs["mime_type"] = mime_type
+            # These may not exist in older SDK versions
+            if "title" in upstream_params and title is not None:
+                kwargs["title"] = title
+            if "meta" in upstream_params and meta is not None:
+                kwargs["meta"] = meta
+            kwargs.update(extra)
+
+            parent_decorator = super().resource(uri, **kwargs)
+
+            # If upstream didn't accept meta, store it ourselves
+            if "meta" not in upstream_params and meta is not None:
+                self._resource_meta[uri] = meta
+
+            return parent_decorator
+
+        async def list_resources(self) -> list[Any]:
+            """Override to inject stored resource meta for older SDK versions."""
+            resources = await super().list_resources()
+            if not self._resource_meta:
+                return resources
+            # Inject _meta for resources where we stored meta
+            patched = []
+            for r in resources:
+                uri_str = str(r.uri)
+                meta = self._resource_meta.get(uri_str)
+                if meta is not None and getattr(r, "meta", None) is None:
+                    try:
+                        data = r.model_dump(by_alias=True)
+                        data["_meta"] = meta
+                        patched.append(type(r)(**data))
+                    except Exception:
+                        patched.append(r)  # graceful fallback
+                else:
+                    patched.append(r)
+            return patched
+
         async def list_tools(self) -> list[MCPTool]:
-            tools = self._tool_manager.list_tools()
-            result = []
-            for info in tools:
-                kwargs: dict[str, Any] = dict(
-                    name=info.name,
-                    title=info.title,
-                    description=info.description,
-                    inputSchema=info.parameters,
-                    outputSchema=info.output_schema,
-                    annotations=info.annotations,
-                )
-                tool_meta = self._tool_meta.get(info.name)
-                if tool_meta is not None:
-                    # Use the alias "_meta" – the Tool model defines
-                    # `meta = Field(alias="_meta")` without populate_by_name,
-                    # so passing `meta=` would create an extra field instead.
-                    kwargs["_meta"] = tool_meta
-                result.append(MCPTool(**kwargs))
-            return result
+            tools = await super().list_tools()
+            if not self._tool_meta:
+                return tools
+            # Inject _meta for tools where we stored meta
+            patched = []
+            for tool in tools:
+                meta = self._tool_meta.get(tool.name)
+                if meta is not None and getattr(tool, "meta", None) is None:
+                    try:
+                        data = tool.model_dump(by_alias=True)
+                        data["_meta"] = meta
+                        patched.append(MCPTool(**data))
+                    except Exception:
+                        patched.append(tool)  # graceful fallback
+                else:
+                    patched.append(tool)
+            return patched
 
         async def run_streamable_http_async(self) -> None:
             """Run StreamableHTTP with proxy-aware uvicorn config.
@@ -2073,11 +2140,12 @@ def recent_runs_analysis() -> str:
 
 
 # =============================================================================
-# MCP Apps: Pipeline Run Dashboard
+# MCP Apps: Pipeline Run Dashboard & Run Activity Chart
 # =============================================================================
 
 _UI_ROOT = Path(__file__).resolve().parent / "ui"
 DASHBOARD_UI_URI = "ui://zenml/apps/pipeline-runs/index.html"
+CHART_UI_URI = "ui://zenml/apps/run-activity-chart/index.html"
 
 
 @mcp.resource(
@@ -2089,6 +2157,17 @@ DASHBOARD_UI_URI = "ui://zenml/apps/pipeline-runs/index.html"
 def pipeline_runs_dashboard_ui() -> str:
     """ZenML MCP App: Pipeline Run Dashboard (HTML entrypoint)."""
     return (_UI_ROOT / "pipeline-runs" / "index.html").read_text(encoding="utf-8")
+
+
+@mcp.resource(
+    uri=CHART_UI_URI,
+    mime_type="text/html;profile=mcp-app",
+    meta={"ui": {"csp": {"resourceDomains": ["https://unpkg.com"]}}},
+)
+@handle_exceptions
+def run_activity_chart_ui() -> str:
+    """ZenML MCP App: Run Activity Chart (HTML entrypoint)."""
+    return (_UI_ROOT / "run-activity-chart" / "index.html").read_text(encoding="utf-8")
 
 
 @mcp.resource(uri="resource://zenml_server/apps", mime_type="application/json")
@@ -2103,7 +2182,13 @@ def list_apps() -> str:
                     "title": "Pipeline Run Dashboard",
                     "description": "Interactive dashboard showing recent pipeline runs with status, steps, and logs.",
                     "entry": DASHBOARD_UI_URI,
-                }
+                },
+                {
+                    "id": "zenml.run_activity_chart",
+                    "title": "Run Activity Chart",
+                    "description": "Interactive bar chart showing pipeline run activity over the last 30 days with status breakdown.",
+                    "entry": CHART_UI_URI,
+                },
             ]
         }
     )
@@ -2133,9 +2218,37 @@ def open_pipeline_run_dashboard() -> CallToolResult:
             TextContent(
                 type="text",
                 text="Opened interactive pipeline runs dashboard. "
-                     "The dashboard loads data automatically — "
-                     "do not summarize or re-present pipeline run data below, "
-                     "the interactive UI above handles all display.",
+                "The dashboard loads data automatically — "
+                "do not summarize or re-present pipeline run data below, "
+                "the interactive UI above handles all display.",
+            )
+        ],
+    )
+
+
+@mcp.tool(
+    meta={
+        "ui": {
+            "resourceUri": CHART_UI_URI,
+        },
+    }
+)
+@handle_tool_exceptions
+def open_run_activity_chart() -> CallToolResult:
+    """Open an interactive chart showing pipeline run activity over the last 30 days.
+
+    Shows a bar chart with daily run counts, hover tooltips, and status
+    breakdown (completed in green, failed in red, other in amber).
+    """
+
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text="Opened pipeline run activity chart. "
+                "The chart loads data automatically — "
+                "do not summarize or re-present pipeline run data below, "
+                "the interactive chart above handles all display.",
             )
         ],
     )
@@ -2181,6 +2294,14 @@ if __name__ == "__main__":
         default="127.0.0.1",
         help="Host for HTTP transport (default: 127.0.0.1)",
     )
+    parser.add_argument(
+        "--disable-dns-rebinding-protection",
+        action="store_true",
+        default=False,
+        help="Disable DNS rebinding protection for HTTP transport. "
+        "Required when running behind reverse proxies (cloudflared, ngrok). "
+        "WARNING: Only use this in trusted network environments.",
+    )
     args = parser.parse_args()
 
     try:
@@ -2194,16 +2315,20 @@ if __name__ == "__main__":
             mcp.settings.host = args.host
             mcp.settings.port = args.port
 
-            # Disable DNS rebinding protection for HTTP mode. This is
-            # required when running behind reverse proxies (cloudflared,
-            # ngrok, etc.) because the Host header won't match localhost.
-            # Security is handled at the proxy/tunnel layer instead.
-            mcp.settings.transport_security = TransportSecuritySettings(
-                enable_dns_rebinding_protection=False,
-            )
-            # Ensure no stale session manager exists so the new security
-            # settings take effect when streamable_http_app() is called.
-            mcp._session_manager = None
+            if args.disable_dns_rebinding_protection:
+                # Disable DNS rebinding protection — required behind reverse
+                # proxies (cloudflared, ngrok) where Host header ≠ localhost.
+                print(
+                    "WARNING: DNS rebinding protection is disabled. "
+                    "Only use this behind a trusted reverse proxy.",
+                    file=sys.stderr,
+                )
+                mcp.settings.transport_security = TransportSecuritySettings(
+                    enable_dns_rebinding_protection=False,
+                )
+                # Ensure no stale session manager exists so the new security
+                # settings take effect when streamable_http_app() is called.
+                mcp._session_manager = None
 
             logger.info(
                 f"Starting ZenML MCP server on http://{args.host}:{args.port}/mcp"

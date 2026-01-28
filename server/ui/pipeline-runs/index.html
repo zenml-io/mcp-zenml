@@ -594,7 +594,7 @@
       logsLoading: {},    // stepId -> boolean
       loading: true,
       error: null,
-      initialDataLoaded: false,
+
     };
 
     // =================================================================
@@ -732,9 +732,36 @@
     // Data Fetching
     // =================================================================
 
-    // Auto-detect: try callServerTool on first use, disable if it fails.
+    /** Parse an MCP tool result, preferring structuredContent over text. */
+    function parseToolResult(result) {
+      if (!result) return null;
+      // Prefer structured content (new MCP structured output format)
+      const structured = result.structuredContent ?? result.structured_content;
+      if (structured != null) return structured;
+      // Fall back to text content blocks
+      if (result.content && Array.isArray(result.content)) {
+        for (const c of result.content) {
+          if (c.type === "text") {
+            try { return JSON.parse(c.text); } catch { return c.text; }
+          }
+        }
+      }
+      return result;
+    }
+
+    // Auto-detect: try callServerTool on first use, disable after repeated failures.
     let serverToolCallsEnabled = true;
-    let serverToolCallsTested = false;
+    let consecutiveFailures = 0;
+    const MAX_FAILURES = 3;
+
+    /** Check if a parsed result is a structured error envelope. */
+    function isErrorEnvelope(data) {
+      return data && typeof data === "object"
+        && data.error && typeof data.error === "object"
+        && typeof data.error.tool === "string"
+        && typeof data.error.message === "string"
+        && typeof data.error.type === "string";
+    }
 
     /** Call a server tool with a timeout. Returns parsed result or null. */
     async function callServerToolSafe(toolName, args, timeoutMs = 10000) {
@@ -742,7 +769,6 @@
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-        // SDK signature: callServerTool({ name, arguments }, options?)
         const result = await Promise.race([
           app.callServerTool({ name: toolName, arguments: args }),
           new Promise((_, reject) =>
@@ -750,21 +776,20 @@
               reject(new Error("timeout")))),
         ]);
         clearTimeout(timer);
-        serverToolCallsTested = true;
-        // Parse the MCP tool result content
-        if (result?.content) {
-          for (const c of result.content) {
-            if (c.type === "text") {
-              try { return JSON.parse(c.text); } catch { return c.text; }
-            }
-          }
+        consecutiveFailures = 0; // Reset on success
+        const parsed = parseToolResult(result);
+        if (isErrorEnvelope(parsed)) {
+          console.warn(`[ZenML] Tool ${toolName} error:`, parsed.error.message);
+          return null;
         }
-        return result;
+        return parsed;
       } catch (e) {
-        if (!serverToolCallsTested) {
-          // First call failed — disable for this session
+        consecutiveFailures++;
+        if (consecutiveFailures >= MAX_FAILURES) {
           serverToolCallsEnabled = false;
-          console.warn("[ZenML] callServerTool not available, using pre-fetched data only:", e.message);
+          console.warn("[ZenML] callServerTool disabled after repeated failures:", e.message);
+        } else {
+          console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES}):`, e.message);
         }
         return null;
       }
@@ -776,7 +801,7 @@
       state.steps[runId] = undefined;
       render();
 
-      const data = await callServerToolSafe("list_run_steps", { pipeline_run_id: runId });
+      const data = await callServerToolSafe("list_run_steps", { pipeline_run_id: runId, size: 200 });
       state.stepsLoading[runId] = false;
       if (data?.items) {
         state.steps[runId] = data.items;
@@ -812,7 +837,7 @@
       render();
     }
 
-    /** Refresh runs from server or re-render from cache. */
+    /** Fetch a page of runs from the server with current filters. */
     async function refreshRuns() {
       state.loading = true;
       state.expandedRunId = null;
@@ -821,68 +846,24 @@
       state.logs = {};
       render();
 
-      const data = await callServerToolSafe("list_pipeline_runs", {
+      const params = {
         sort_by: "desc:created",
+        page: state.page,
         size: state.size,
-        ...(state.pipelineFilter ? { pipeline_name: state.pipelineFilter } : {}),
-        ...(state.statusFilter ? { status: state.statusFilter } : {}),
-      });
+      };
+      if (state.pipelineFilter) params.pipeline_name = state.pipelineFilter;
+      if (state.statusFilter) params.status = state.statusFilter;
+
+      const data = await callServerToolSafe("list_pipeline_runs", params);
 
       if (data?.items) {
         state.allRuns = data.items;
+        state.runs = data.items;
         state.total = data.total ?? data.items.length;
       }
-      // Either way, re-render from (possibly updated) allRuns
-      state.loading = false;
-      applyLocalFilters();
-    }
-
-    /** Client-side filter/paginate over pre-fetched runs. */
-    function applyLocalFilters() {
-      let filtered = state.allRuns;
-
-      if (state.pipelineFilter) {
-        const q = state.pipelineFilter.toLowerCase();
-        filtered = filtered.filter(run => {
-          const rd = extractRunData(run);
-          return rd.pipelineName.toLowerCase().includes(q) || rd.name.toLowerCase().includes(q);
-        });
-      }
-
-      if (state.statusFilter) {
-        const q = state.statusFilter.toLowerCase();
-        filtered = filtered.filter(run => {
-          const rd = extractRunData(run);
-          return rd.status.toLowerCase() === q;
-        });
-      }
-
-      state.total = filtered.length;
-      const start = (state.page - 1) * state.size;
-      state.runs = filtered.slice(start, start + state.size);
       state.loading = false;
       updateTitle();
       render();
-    }
-
-    function parseToolResult(result) {
-      // The host may deliver structured content differently
-      if (!result) return null;
-
-      // If result has structuredContent, use it directly
-      if (result.structuredContent) return result.structuredContent;
-
-      // If result has content array (text blocks), parse first text
-      if (result.content && Array.isArray(result.content)) {
-        const textBlock = result.content.find(c => c.type === "text");
-        if (textBlock?.text) {
-          try { return JSON.parse(textBlock.text); } catch { return textBlock.text; }
-        }
-      }
-
-      // Direct object
-      if (typeof result === "object") return result;
-      return null;
     }
 
     // =================================================================
@@ -1105,7 +1086,7 @@
             <div class="logs-panel">
               <div class="logs-header">
                 <h4>Step Logs</h4>
-                <button class="btn btn-sm" onclick="window.__copyLogs('${state.selectedStepId}')">Copy</button>
+                <button class="btn btn-sm copy-logs-btn" data-step-id="${escapeHtml(state.selectedStepId)}">Copy</button>
               </div>
               <div class="logs-content${logs === '(empty)' || logs === '(no logs available)' ? ' empty' : ''}">${escapeHtml(logs)}</div>
             </div>`;
@@ -1156,11 +1137,19 @@
       }
     }
 
-    // Delegation for step clicks
+    // Delegation for step clicks and copy button
     document.addEventListener("click", (e) => {
-      const stepItem = e.target.closest(".step-item");
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      const stepItem = target.closest(".step-item");
       if (stepItem) {
         selectStep(stepItem.dataset.stepId);
+        return;
+      }
+      const copyBtn = target.closest(".copy-logs-btn");
+      if (copyBtn) {
+        const stepId = copyBtn.dataset.stepId;
+        if (stepId) window.__copyLogs(stepId);
       }
     });
 
@@ -1173,39 +1162,33 @@
       }
     };
 
-    // Filter handlers — apply client-side over pre-fetched data
+    // Filter handlers — server-side pagination
     let filterTimeout;
     pipelineFilter.addEventListener("input", () => {
       clearTimeout(filterTimeout);
       filterTimeout = setTimeout(() => {
         state.pipelineFilter = pipelineFilter.value.trim();
         state.page = 1;
-        state.expandedRunId = null;
-        state.selectedStepId = null;
-        applyLocalFilters();
+        refreshRuns();
       }, 400);
     });
 
     statusFilter.addEventListener("change", () => {
       state.statusFilter = statusFilter.value;
       state.page = 1;
-      state.expandedRunId = null;
-      state.selectedStepId = null;
-      applyLocalFilters();
+      refreshRuns();
     });
 
     pageSizeSelect.addEventListener("change", () => {
       state.size = parseInt(pageSizeSelect.value, 10);
       state.page = 1;
-      applyLocalFilters();
+      refreshRuns();
     });
 
     prevBtn.addEventListener("click", () => {
       if (state.page > 1) {
         state.page--;
-        state.expandedRunId = null;
-        state.selectedStepId = null;
-        applyLocalFilters();
+        refreshRuns();
       }
     });
 
@@ -1213,9 +1196,7 @@
       const totalPages = Math.ceil(state.total / state.size);
       if (state.page < totalPages) {
         state.page++;
-        state.expandedRunId = null;
-        state.selectedStepId = null;
-        applyLocalFilters();
+        refreshRuns();
       }
     });
 
