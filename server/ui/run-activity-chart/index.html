@@ -447,11 +447,13 @@
 
     async function callServerToolSafe(toolName, args, timeoutMs = 15000) {
       if (!serverToolCallsEnabled) return null;
+      let timeoutId;
       try {
         const result = await Promise.race([
           app.callServerTool({ name: toolName, arguments: args }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("timeout")), timeoutMs)),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+          }),
         ]);
         consecutiveFailures = 0; // Reset on success
         const parsed = parseToolResult(result);
@@ -469,6 +471,8 @@
           console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES}):`, e.message);
         }
         return null;
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
@@ -476,18 +480,21 @@
     function buildDateRange() {
       const dates = [];
       const now = new Date();
+      const utcMidnight = new Date(Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+      ));
       for (let i = DAYS - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
+        const d = new Date(utcMidnight);
+        d.setUTCDate(d.getUTCDate() - i);
         dates.push(toDateStr(d));
       }
       return dates;
     }
 
     function toDateStr(d) {
-      return d.getFullYear() + "-" +
-        String(d.getMonth() + 1).padStart(2, "0") + "-" +
-        String(d.getDate()).padStart(2, "0");
+      return d.toISOString().slice(0, 10);
     }
 
     function extractStatus(run) {
@@ -602,6 +609,9 @@
         loadingState.style.display = "";
         totalBadge.style.display = "none";
         legendEl.style.display = "none";
+        // Remove any previous error message so loading doesn't stack with errors.
+        const oldErrs = chartContainer.querySelectorAll(".state-message.error-msg");
+        oldErrs.forEach((node) => node.remove());
         // Remove any existing SVG
         const oldSvg = chartContainer.querySelector("svg");
         if (oldSvg) oldSvg.remove();
@@ -627,7 +637,11 @@
         const btn = document.createElement("button");
         btn.className = "retry-btn";
         btn.textContent = "Retry";
-        btn.addEventListener("click", () => fetchRunData());
+        btn.addEventListener("click", () => {
+          serverToolCallsEnabled = true;
+          consecutiveFailures = 0;
+          fetchRunData();
+        });
         msgEl.append(icon, span, btn);
         chartContainer.appendChild(msgEl);
         return;
@@ -732,8 +746,8 @@
       // Remove loading state, insert SVG
       const oldSvg = chartContainer.querySelector("svg");
       if (oldSvg) oldSvg.remove();
-      const msgEl = chartContainer.querySelector(".state-message");
-      if (msgEl) msgEl.remove();
+      const oldErrs = chartContainer.querySelectorAll(".state-message.error-msg");
+      oldErrs.forEach((node) => node.remove());
 
       chartContainer.insertAdjacentHTML("beforeend", svg);
 

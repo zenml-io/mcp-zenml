@@ -775,16 +775,14 @@
     /** Call a server tool with a timeout. Returns parsed result or null. */
     async function callServerToolSafe(toolName, args, timeoutMs = 10000) {
       if (!serverToolCallsEnabled) return null;
+      let timeoutId;
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
         const result = await Promise.race([
           app.callServerTool({ name: toolName, arguments: args }),
-          new Promise((_, reject) =>
-            controller.signal.addEventListener("abort", () =>
-              reject(new Error("timeout")))),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+          }),
         ]);
-        clearTimeout(timer);
         consecutiveFailures = 0; // Reset on success
         const parsed = parseToolResult(result);
         if (isErrorEnvelope(parsed)) {
@@ -801,6 +799,8 @@
           console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES}):`, e.message);
         }
         return null;
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
@@ -1045,7 +1045,7 @@
           return `<div class="summary-item">
             <span class="status-dot dot-${sc}"></span>
             <span class="summary-count">${count}</span>
-            <span>${status}</span>
+            <span>${escapeHtml(status)}</span>
           </div>`;
         }).join("");
 
@@ -1168,6 +1168,8 @@
       if (!target) return;
       const retryBtn = target.closest(".retry-btn");
       if (retryBtn) {
+        serverToolCallsEnabled = true;
+        consecutiveFailures = 0;
         refreshRuns();
         return;
       }
