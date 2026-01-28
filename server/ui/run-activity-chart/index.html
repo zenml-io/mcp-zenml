@@ -611,8 +611,14 @@
       loadingState.style.display = "none";
 
       if (error) {
+        // Remove previous error message and SVG, but keep #loadingState in the DOM
+        const oldErr = chartContainer.querySelector(".state-message.error-msg");
+        if (oldErr) oldErr.remove();
+        const oldSvg = chartContainer.querySelector("svg");
+        if (oldSvg) oldSvg.remove();
+
         const msgEl = document.createElement("div");
-        msgEl.className = "state-message";
+        msgEl.className = "state-message error-msg";
         const icon = document.createElement("span");
         icon.className = "error-icon";
         icon.innerHTML = "&#9888;";
@@ -623,10 +629,13 @@
         btn.textContent = "Retry";
         btn.addEventListener("click", () => fetchRunData());
         msgEl.append(icon, span, btn);
-        chartContainer.innerHTML = "";
         chartContainer.appendChild(msgEl);
         return;
       }
+
+      // Clean up any previous error message
+      const oldErr = chartContainer.querySelector(".state-message.error-msg");
+      if (oldErr) oldErr.remove();
 
       // Update header
       totalBadge.style.display = "";
@@ -847,7 +856,10 @@
     // =================================================================
     // MCP App Lifecycle
     // =================================================================
+    let hasFetched = false;
+
     app.ontoolresult = () => {
+      hasFetched = true;
       fetchRunData();
     };
 
@@ -890,6 +902,13 @@
 
     // Connect and start (must await to complete handshake)
     await app.connect();
+
+    // Kick off initial fetch (in case client opens the resource directly
+    // without going through the open_run_activity_chart tool).
+    if (!hasFetched) {
+      hasFetched = true;
+      fetchRunData();
+    }
 
     // Fallback timeout
     setTimeout(() => {

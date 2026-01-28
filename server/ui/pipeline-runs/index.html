@@ -881,6 +881,10 @@
       if (data.items) {
         state.runs = data.items;
         state.total = data.total ?? data.items.length;
+      } else {
+        // Unexpected response shape — clear stale data rather than silently keeping it
+        state.runs = [];
+        state.total = 0;
       }
       state.loading = false;
       updateTitle();
@@ -1224,9 +1228,12 @@
     // =================================================================
     // MCP App Lifecycle
     // =================================================================
+    let hasFetched = false;
+
     app.ontoolresult = () => {
       // The tool result is intentionally minimal (no data) to prevent Claude
       // from re-rendering runs as text below the app. Fetch data via callServerTool.
+      hasFetched = true;
       refreshRuns();
     };
 
@@ -1270,6 +1277,14 @@
 
     // Connect and start (must await to complete handshake)
     await app.connect();
+
+    // Kick off initial fetch (in case client opens the resource directly
+    // without going through the open_pipeline_run_dashboard tool).
+    // The guard prevents a redundant fetch if ontoolresult already fired.
+    if (!hasFetched) {
+      hasFetched = true;
+      refreshRuns();
+    }
 
     // Fallback: if data hasn't loaded within 15s, show a helpful message
     setTimeout(() => {

@@ -27,7 +27,6 @@ from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
 
 import requests
 import zenml_mcp_analytics as analytics
-from mcp.types import CallToolResult, TextContent
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
@@ -2204,7 +2203,7 @@ def list_apps() -> str:
     }
 )
 @handle_tool_exceptions
-def open_pipeline_run_dashboard() -> CallToolResult:
+def open_pipeline_run_dashboard() -> str:
     """Open an interactive dashboard of recent ZenML pipeline runs.
 
     The dashboard shows pipeline runs with status indicators, expandable step
@@ -2215,16 +2214,11 @@ def open_pipeline_run_dashboard() -> CallToolResult:
     # Return a short message only — no data payload.
     # The iframe fetches its own data via callServerTool("list_pipeline_runs").
     # This prevents Claude from re-rendering the runs as a table below the app.
-    return CallToolResult(
-        content=[
-            TextContent(
-                type="text",
-                text="Opened interactive pipeline runs dashboard. "
-                "The dashboard loads data automatically — "
-                "do not summarize or re-present pipeline run data below, "
-                "the interactive UI above handles all display.",
-            )
-        ],
+    return (
+        "Opened interactive pipeline runs dashboard. "
+        "The dashboard loads data automatically — "
+        "do not summarize or re-present pipeline run data below, "
+        "the interactive UI above handles all display."
     )
 
 
@@ -2236,23 +2230,18 @@ def open_pipeline_run_dashboard() -> CallToolResult:
     }
 )
 @handle_tool_exceptions
-def open_run_activity_chart() -> CallToolResult:
+def open_run_activity_chart() -> str:
     """Open an interactive chart showing pipeline run activity over the last 30 days.
 
     Shows a bar chart with daily run counts, hover tooltips, and status
     breakdown (completed in green, failed in red, other in amber).
     """
 
-    return CallToolResult(
-        content=[
-            TextContent(
-                type="text",
-                text="Opened pipeline run activity chart. "
-                "The chart loads data automatically — "
-                "do not summarize or re-present pipeline run data below, "
-                "the interactive chart above handles all display.",
-            )
-        ],
+    return (
+        "Opened pipeline run activity chart. "
+        "The chart loads data automatically — "
+        "do not summarize or re-present pipeline run data below, "
+        "the interactive chart above handles all display."
     )
 
 
