@@ -1,5 +1,5 @@
 httpx
 mcp[cli]
-zenml==0.93.0
+zenml~=0.93.0
 setuptools
 requests>=2.32.0
