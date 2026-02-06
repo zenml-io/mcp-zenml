@@ -143,9 +143,11 @@ def get_or_create_user_id() -> str:
     try:
         if id_file.exists():
             stored = id_file.read_text().strip()
-            if stored:
-                _user_id = stored
+            valid_stored = _as_uuid_str(stored) if stored else None
+            if valid_stored:
+                _user_id = valid_stored
                 return _user_id
+            # Invalid/corrupt file contents — fall through to regenerate
 
         # Generate new ID
         _user_id = str(uuid.uuid4())
@@ -290,7 +292,12 @@ def _ensure_sender_thread_started() -> None:
         _sender_thread.start()
 
 
-def _stop_sender_thread() -> None:
+def _stop_sender_thread(*, join_timeout_s: float | None = None) -> bool:
+    """Signal the sender thread to stop; optionally join with bounded timeout.
+
+    Returns True if the thread is confirmed not alive after this call.
+    Never raises.
+    """
     _sender_stop_event.set()
     try:
         _event_queue.put_nowait(None)
@@ -298,6 +305,19 @@ def _stop_sender_thread() -> None:
         pass
     except Exception:
         pass
+
+    if join_timeout_s is None:
+        return True
+
+    try:
+        with _sender_start_lock:
+            thread = _sender_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout_s)
+            return not thread.is_alive()
+        return True
+    except Exception:
+        return False
 
 
 def _send_events(events: list[dict[str, Any]]) -> None:
@@ -495,13 +515,22 @@ def set_session_properties(properties: dict[str, Any]) -> None:
 def set_client_info_once(
     client_name: str | None = None, client_version: str | None = None
 ) -> None:
-    """Store MCP client identity once per session for analytics enrichment."""
-    if not client_name and not client_version:
+    """Store MCP client identity once per session for analytics enrichment.
+
+    Only sets keys when the provided value is non-null and non-empty,
+    so a first call with None doesn't permanently lock out later real values.
+    """
+    # Normalize: treat blank strings as not-provided
+    name = client_name.strip() if client_name else None
+    version = client_version.strip() if client_version else None
+    if not name and not version:
         return
     try:
         with _session_properties_lock:
-            _session_properties.setdefault("mcp_client_name", client_name)
-            _session_properties.setdefault("mcp_client_version", client_version)
+            if name:
+                _session_properties.setdefault("mcp_client_name", name)
+            if version:
+                _session_properties.setdefault("mcp_client_version", version)
     except Exception:
         return
 
@@ -666,11 +695,13 @@ def _on_shutdown(
             print(f"[Analytics DEV] MCP Server Shutdown: {props}", file=sys.stderr)
             return
 
-        # Stop background worker to avoid race conditions while we drain
+        # Stop background worker and wait for it to finish (bounded) so we
+        # don't close _http_client while the worker is mid-POST.
+        join_budget = min(ANALYTICS_SHUTDOWN_FLUSH_TIMEOUT_S, 0.5)
         try:
-            _stop_sender_thread()
+            sender_stopped = _stop_sender_thread(join_timeout_s=join_budget)
         except Exception:
-            pass
+            sender_stopped = False
 
         # Drain queued events and send everything synchronously with bounded time
         shutdown_event = _build_track_event("MCP Server Shutdown", props)
@@ -694,7 +725,12 @@ def _on_shutdown(
         _send_events_sync(drained)
 
     finally:
-        _close_http_client()
+        # Only close the shared HTTP client if the sender thread is confirmed
+        # stopped. If it's still alive (join timed out), let it close the client
+        # on exit to avoid racing a mid-flight POST. Worst case: tiny resource
+        # leak on process exit, which is acceptable.
+        if sender_stopped:
+            _close_http_client()
 
 
 # =============================================================================

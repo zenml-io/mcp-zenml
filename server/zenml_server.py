@@ -303,19 +303,34 @@ _mcp_client_info_captured = False
 _mcp_client_info_lock = Lock()
 
 
+def _getattr_multi(obj: Any, *names: str) -> Any:
+    """Try multiple attribute names on an object, return first non-None."""
+    if obj is None:
+        return None
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            return v
+    return None
+
+
 def _get_mcp_client_info_safe() -> dict[str, Any] | None:
-    """Best-effort MCP client detection (only valid during a request)."""
+    """Best-effort MCP client detection (only valid during a request).
+
+    Checks both camelCase and snake_case field names to handle different
+    MCP SDK versions.
+    """
     try:
         ctx = mcp.get_context()
         session = getattr(ctx, "session", None)
         if session is None:
             return None
 
-        params = getattr(session, "client_params", None)
+        params = _getattr_multi(session, "client_params", "clientParams")
         if params is None:
             return None
 
-        client_info = getattr(params, "clientInfo", None)
+        client_info = _getattr_multi(params, "clientInfo", "client_info")
         if client_info is None:
             return None
 
@@ -2626,10 +2641,18 @@ if __name__ == "__main__":
         "Required when running behind reverse proxies (cloudflared, ngrok). "
         "WARNING: Only use this in trusted network environments.",
     )
+    _startup_env = (os.getenv("ZENML_MCP_STARTUP_VALIDATION") or "off").lower().strip()
+    if _startup_env not in {"off", "warn", "strict"}:
+        print(
+            f"Warning: ZENML_MCP_STARTUP_VALIDATION={_startup_env!r} is not valid "
+            f"(expected off/warn/strict), defaulting to 'off'",
+            file=sys.stderr,
+        )
+        _startup_env = "off"
     parser.add_argument(
         "--startup-validation",
         choices=["off", "warn", "strict"],
-        default=os.getenv("ZENML_MCP_STARTUP_VALIDATION", "off"),
+        default=_startup_env,
         help="Run a lightweight startup diagnostic before serving MCP. "
         "'warn' prints problems but continues. 'strict' exits non-zero if "
         "required setup is missing. (default: off, env: ZENML_MCP_STARTUP_VALIDATION)",
