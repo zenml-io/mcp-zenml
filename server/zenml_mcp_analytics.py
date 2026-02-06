@@ -46,6 +46,9 @@ DEV_MODE = os.getenv("ZENML_MCP_ANALYTICS_DEV", "").lower() in ("true", "1", "ye
 ANALYTICS_ENDPOINT = "https://analytics.zenml.io/batch"
 ANALYTICS_SOURCE_CONTEXT = "mcp-zenml"
 ANALYTICS_TIMEOUT_S = float(os.getenv("ZENML_MCP_ANALYTICS_TIMEOUT_S", "2.0"))
+ANALYTICS_SHUTDOWN_FLUSH_TIMEOUT_S = float(
+    os.getenv("ZENML_MCP_ANALYTICS_SHUTDOWN_TIMEOUT_S", "1.0")
+)
 
 # Debug flag for events (routes to dev vs prod Segment on server side)
 ANALYTICS_DEBUG = os.getenv("LOGLEVEL", "").upper() == "DEBUG" or DEV_MODE
@@ -66,6 +69,9 @@ _init_attempted = False
 _init_failed = False
 _shutdown_registered = False
 _http_client: Any = None
+
+_session_properties: dict[str, Any] = {}
+_session_properties_lock = Lock()
 
 _event_queue: Queue[list[dict[str, Any]] | None] = Queue(
     maxsize=ANALYTICS_QUEUE_MAXSIZE
@@ -100,13 +106,22 @@ def _get_config_dir() -> Path:
     return Path.home() / ".config" / "zenml-mcp"
 
 
+def _as_uuid_str(value: str) -> str | None:
+    """Validate and normalize a string as a UUID. Returns None if invalid."""
+    try:
+        return str(uuid.UUID(value))
+    except Exception:
+        return None
+
+
 def get_or_create_user_id() -> str:
     """Get or create a stable anonymous user ID.
 
     Priority:
-    1. Environment variable ZENML_MCP_ANALYTICS_ID (useful for Docker)
+    1. Environment variable ZENML_MCP_ANALYTICS_ID (must be valid UUID)
     2. Persistent file in config directory
-    3. Fallback to session-only UUID if file storage fails
+    3. Docker fallback: deterministic UUID5 derived from ZENML_STORE_URL hash
+    4. Fallback to session-only random UUID
     """
     global _user_id
     if _user_id:
@@ -115,8 +130,11 @@ def get_or_create_user_id() -> str:
     # Check environment variable first (for Docker consistency)
     env_id = os.getenv("ZENML_MCP_ANALYTICS_ID")
     if env_id:
-        _user_id = env_id
-        return _user_id
+        valid = _as_uuid_str(env_id)
+        if valid:
+            _user_id = valid
+            return _user_id
+        # Ignore invalid env ID to avoid backend rejection; continue to other strategies
 
     config_dir = _get_config_dir()
 
@@ -124,9 +142,12 @@ def get_or_create_user_id() -> str:
 
     try:
         if id_file.exists():
-            _user_id = id_file.read_text().strip()
-            if _user_id:  # Ensure file wasn't empty
+            stored = id_file.read_text().strip()
+            valid_stored = _as_uuid_str(stored) if stored else None
+            if valid_stored:
+                _user_id = valid_stored
                 return _user_id
+            # Invalid/corrupt file contents — fall through to regenerate
 
         # Generate new ID
         _user_id = str(uuid.uuid4())
@@ -134,7 +155,15 @@ def get_or_create_user_id() -> str:
         id_file.write_text(_user_id)
         return _user_id
     except (OSError, PermissionError):
-        # Fallback: session-only ID
+        # Docker-friendly fallback: deterministic UUID derived from store URL.
+        # This keeps a stable anonymous ID even when the filesystem is ephemeral/read-only.
+        if is_running_in_docker():
+            store_url = os.getenv("ZENML_STORE_URL", "").strip()
+            if store_url:
+                _user_id = str(uuid.uuid5(uuid.NAMESPACE_URL, store_url))
+                return _user_id
+
+        # Final fallback: session-only ID
         _user_id = str(uuid.uuid4())
         return _user_id
 
@@ -263,7 +292,12 @@ def _ensure_sender_thread_started() -> None:
         _sender_thread.start()
 
 
-def _stop_sender_thread() -> None:
+def _stop_sender_thread(*, join_timeout_s: float | None = None) -> bool:
+    """Signal the sender thread to stop; optionally join with bounded timeout.
+
+    Returns True if the thread is confirmed not alive after this call.
+    Never raises.
+    """
     _sender_stop_event.set()
     try:
         _event_queue.put_nowait(None)
@@ -271,6 +305,19 @@ def _stop_sender_thread() -> None:
         pass
     except Exception:
         pass
+
+    if join_timeout_s is None:
+        return True
+
+    try:
+        with _sender_start_lock:
+            thread = _sender_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout_s)
+            return not thread.is_alive()
+        return True
+    except Exception:
+        return False
 
 
 def _send_events(events: list[dict[str, Any]]) -> None:
@@ -365,10 +412,15 @@ def _register_shutdown_handlers() -> None:
     _shutdown_registered = True
 
     # Register atexit handler (works in both dev mode and production)
-    atexit.register(_on_shutdown)
+    atexit.register(_on_shutdown, "atexit", None)
 
     def signal_handler(sig: int, frame: Any) -> None:
-        _on_shutdown()
+        sig_name = None
+        try:
+            sig_name = signal.Signals(sig).name
+        except Exception:
+            sig_name = str(sig)
+        _on_shutdown("signal", sig_name)
         sys.exit(0)
 
     # Register signal handlers (best effort)
@@ -451,6 +503,38 @@ def is_analytics_enabled() -> bool:
     return ANALYTICS_ENABLED and not _init_failed
 
 
+def set_session_properties(properties: dict[str, Any]) -> None:
+    """Attach properties to all subsequent events in this process/session."""
+    try:
+        with _session_properties_lock:
+            _session_properties.update(properties)
+    except Exception:
+        return
+
+
+def set_client_info_once(
+    client_name: str | None = None, client_version: str | None = None
+) -> None:
+    """Store MCP client identity once per session for analytics enrichment.
+
+    Only sets keys when the provided value is non-null and non-empty,
+    so a first call with None doesn't permanently lock out later real values.
+    """
+    # Normalize: treat blank strings as not-provided
+    name = client_name.strip() if client_name else None
+    version = client_version.strip() if client_version else None
+    if not name and not version:
+        return
+    try:
+        with _session_properties_lock:
+            if name:
+                _session_properties.setdefault("mcp_client_name", name)
+            if version:
+                _session_properties.setdefault("mcp_client_version", version)
+    except Exception:
+        return
+
+
 # =============================================================================
 # Event tracking
 # =============================================================================
@@ -470,7 +554,18 @@ def track_event(event_name: str, properties: dict[str, Any] | None = None) -> No
         if not _ensure_initialized():
             return
 
-        props = properties.copy() if properties else {}
+        # Start with session-wide properties, then overlay event-specific ones
+        base: dict[str, Any] = {}
+        try:
+            with _session_properties_lock:
+                base.update(_session_properties)
+        except Exception:
+            pass
+
+        props = base
+        if properties:
+            props.update(properties)
+
         props["session_id"] = _session_id
         props["is_ci"] = is_ci_environment()
         # Preserve caller-provided test_run, or inject if env var is set
@@ -493,6 +588,8 @@ def track_tool_call(
     error_type: str | None = None,
     size: int | None = None,
     http_status_code: int | None = None,
+    mcp_client_name: str | None = None,
+    mcp_client_version: str | None = None,
 ) -> None:
     """Track a tool call with session stats.
 
@@ -503,6 +600,8 @@ def track_tool_call(
         error_type: Type of error if failed (e.g., "HTTPError")
         size: Size parameter if this was a list operation
         http_status_code: HTTP status code if failed due to HTTPError
+        mcp_client_name: MCP client name (e.g., "claude-desktop", "cursor")
+        mcp_client_version: MCP client version string
     """
     try:
         global _tool_call_count
@@ -522,32 +621,45 @@ def track_tool_call(
             properties["size"] = size
         if http_status_code is not None:
             properties["http_status_code"] = http_status_code
+        if mcp_client_name:
+            properties["mcp_client_name"] = mcp_client_name
+        if mcp_client_version:
+            properties["mcp_client_version"] = mcp_client_version
 
         track_event("Tool Called", properties)
     except Exception:
         return
 
 
-def track_server_started() -> None:
-    """Track server startup event with environment information."""
+def track_server_started(extra_properties: dict[str, Any] | None = None) -> None:
+    """Track server startup event with environment information.
+
+    Args:
+        extra_properties: Optional additional properties to merge into the event
+            (e.g., startup_validation results, transport type, zenml_server_version).
+    """
     try:
-        track_event(
-            "MCP Server Started",
-            {
-                "server_version": get_server_version(),
-                "python_version": platform.python_version(),
-                "os": platform.system(),
-                "is_docker": is_running_in_docker(),
-            },
-        )
+        props: dict[str, Any] = {
+            "server_version": get_server_version(),
+            "python_version": platform.python_version(),
+            "os": platform.system(),
+            "is_docker": is_running_in_docker(),
+        }
+        if extra_properties:
+            props.update(extra_properties)
+        track_event("MCP Server Started", props)
     except Exception:
         return
 
 
-def _on_shutdown() -> None:
-    """Handle server shutdown - send summary event.
+def _on_shutdown(
+    shutdown_reason: str = "atexit", shutdown_signal: str | None = None
+) -> None:
+    """Handle server shutdown - send summary event synchronously (best-effort).
 
-    Called via atexit or signal handlers.
+    Called via atexit or signal handlers. Sends the shutdown event directly
+    (bypassing the queue) with a bounded flush timeout to maximize delivery
+    reliability, especially in Docker containers receiving SIGTERM.
 
     IMPORTANT: This function never calls init_analytics() during shutdown.
     """
@@ -568,22 +680,57 @@ def _on_shutdown() -> None:
             unique_tools_used = len(_tools_used)
 
         uptime = int(time.time() - _session_start_time)
-        props = {
+        props: dict[str, Any] = {
             "uptime_seconds": uptime,
             "total_tool_calls": total_tool_calls,
             "unique_tools_used": unique_tools_used,
             "session_id": _session_id,
             "is_ci": is_ci_environment(),
+            "shutdown_reason": shutdown_reason,
         }
+        if shutdown_signal:
+            props["shutdown_signal"] = shutdown_signal
 
         if DEV_MODE:
             print(f"[Analytics DEV] MCP Server Shutdown: {props}", file=sys.stderr)
             return
 
-        _send_events([_build_track_event("MCP Server Shutdown", props)])
+        # Stop background worker and wait for it to finish (bounded) so we
+        # don't close _http_client while the worker is mid-POST.
+        join_budget = min(ANALYTICS_SHUTDOWN_FLUSH_TIMEOUT_S, 0.5)
+        try:
+            sender_stopped = _stop_sender_thread(join_timeout_s=join_budget)
+        except Exception:
+            sender_stopped = False
+
+        # Drain queued events and send everything synchronously with bounded time
+        shutdown_event = _build_track_event("MCP Server Shutdown", props)
+        drained: list[dict[str, Any]] = []
+
+        start = time.perf_counter()
+        try:
+            while True:
+                if (time.perf_counter() - start) > ANALYTICS_SHUTDOWN_FLUSH_TIMEOUT_S:
+                    break
+                batch = _event_queue.get_nowait()
+                if batch is None:
+                    break
+                drained.extend(batch)
+        except Empty:
+            pass
+        except Exception:
+            pass
+
+        drained.append(shutdown_event)
+        _send_events_sync(drained)
+
     finally:
-        _stop_sender_thread()
-        _close_http_client()
+        # Only close the shared HTTP client if the sender thread is confirmed
+        # stopped. If it's still alive (join timed out), let it close the client
+        # on exit to avoid racing a mid-flight POST. Worst case: tiny resource
+        # leak on process exit, which is acceptable.
+        if sender_stopped:
+            _close_http_client()
 
 
 # =============================================================================

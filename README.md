@@ -127,6 +127,11 @@ The MCP server exposes the following tools, grouped by category:
 | `recent_runs_analysis` | Analyze recent pipeline runs |
 | `most_recent_runs` | Get N most recent runs |
 
+### Diagnostics
+| Tool | Description |
+|------|-------------|
+| `diagnose_zenml_setup` | Diagnose server setup (env vars, SDK, connectivity, auth). Works even when misconfigured. |
+
 ### Deprecated Tools
 | Tool | Replacement |
 |------|-------------|
@@ -292,6 +297,7 @@ The automated tests verify:
 - Server initialization and tool discovery
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
+- `diagnose_zenml_setup` returns structured diagnostics even in constrained environments
 
 ## Debugging with MCP Inspector
 
@@ -342,7 +348,28 @@ export ZENML_MCP_DISABLE_ANALYTICS=true
 export ZENML_MCP_ANALYTICS_DEV=true
 ```
 
-**For Docker users:** Set `ZENML_MCP_ANALYTICS_ID` to maintain a consistent anonymous ID across container restarts.
+**For Docker users:** You can set `ZENML_MCP_ANALYTICS_ID` (must be a valid UUID) to maintain a consistent anonymous ID across container restarts. If you don't set it and the container filesystem can't persist the analytics ID file, the server falls back to a deterministic anonymous UUID derived from a hash of `ZENML_STORE_URL` (the URL itself is never sent as an event property).
+
+**Additional analytics options:**
+- `ZENML_MCP_ANALYTICS_SHUTDOWN_TIMEOUT_S` — max time (seconds) to flush analytics synchronously during shutdown (default: 1.0)
+
+**Note on shutdown tracking:** Shutdown events are sent synchronously with a bounded timeout for best delivery reliability. However, if a container is killed with `SIGKILL` (e.g., `docker kill`), shutdown handlers cannot fire — this is a Docker/OS limitation, not a bug.
+
+### Startup Validation
+
+You can enable a lightweight startup diagnostic check:
+
+```bash
+# Print warnings but start normally
+uv run server/zenml_server.py --startup-validation warn
+
+# Exit non-zero if required setup is missing (useful in Docker/CI)
+uv run server/zenml_server.py --startup-validation strict
+```
+
+You can also set this via environment variable: `ZENML_MCP_STARTUP_VALIDATION=warn`.
+
+The `diagnose_zenml_setup` tool is also available as an MCP tool for runtime troubleshooting — it works even when the ZenML SDK is not installed or environment variables are missing.
 
 ## Manual Setup
 

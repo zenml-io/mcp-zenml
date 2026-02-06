@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Testing and Development
 - **Run smoke tests**: `uv run scripts/test_mcp_server.py server/zenml_server.py`
 - **Run analytics tests**: `uv run scripts/test_analytics.py --full-diagnostic`
+- **Run unit tests**: `uv run scripts/test_datetime_normalization.py`
 - **Format code**: `./scripts/format.sh` (uses ruff for linting/formatting + ty for type checking)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
 - **Type check only**: `uvx ty check` (runs type checking without formatting)
@@ -37,8 +38,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    ```
 
 4. **Wait for CI to pass** before merging - PR tests include:
-   - MCP smoke tests (Python)
+   - MCP smoke tests (Python) — requires ZenML credentials
    - Analytics pipeline tests
+   - Unit tests (datetime normalization, exception classification) — no credentials needed
    - Docker build verification
    - Type checking (ty)
    - Security linting (zizmor)
@@ -67,9 +69,12 @@ The project is a Model Context Protocol (MCP) server that provides AI assistants
 **Analytics Module**: `server/zenml_mcp_analytics.py`
 - Anonymous usage tracking via the ZenML Analytics Server (opt-out available)
 - Sends events to `https://analytics.zenml.io/batch` with `Source-Context: mcp-zenml`
-- Tracks tool usage, session duration, and error rates
+- Tracks tool usage, session duration, error rates, and MCP client info
+- Deterministic Docker user IDs (UUID5 from ZENML_STORE_URL hash when filesystem is ephemeral)
+- Synchronous shutdown flush for reliable delivery under SIGTERM
+- Session-wide properties via `set_session_properties()` / `set_client_info_once()`
 - Failure-safe: analytics errors never affect server functionality
-- Environment variables: `ZENML_MCP_ANALYTICS_ENABLED`, `ZENML_MCP_ANALYTICS_DEV`
+- Environment variables: `ZENML_MCP_ANALYTICS_ENABLED`, `ZENML_MCP_ANALYTICS_DEV`, `ZENML_MCP_ANALYTICS_SHUTDOWN_TIMEOUT_S`
 
 **Key Features**:
 - Reads ZenML server configuration from environment variables (`ZENML_STORE_URL`, `ZENML_STORE_API_KEY`)
@@ -119,6 +124,7 @@ Tools are organized by entity type in `server/zenml_server.py`:
 | **Artifacts** | `list_artifacts` | |
 | **Secrets** | `list_secrets` | Names only |
 | **Analysis** | `stack_components_analysis`, `recent_runs_analysis`, `most_recent_runs` | |
+| **Diagnostics** | `diagnose_zenml_setup` | Works without ZenML SDK |
 | **Execution** | `trigger_pipeline` | Prefer `snapshot_name_or_id` |
 | **Deprecated** | `get_run_template`, `list_run_templates` | Use snapshot tools instead |
 
@@ -137,10 +143,11 @@ The server requires:
 
 ### Testing Infrastructure
 
-- **PR Testing**: GitHub Actions runs tests on every PR (formatting checks + smoke tests)
+- **PR Testing**: GitHub Actions runs tests on every PR (smoke tests, unit tests, formatting, type checks)
 - **Scheduled testing**: Comprehensive smoke tests run every 3 days with automated issue creation on failures
-- **Manual testing**: Use the test script to verify MCP protocol functionality
+- **Manual testing**: Use the test scripts to verify MCP protocol functionality
 - **CI/CD**: Uses UV with caching for fast dependency installation
+- **Important**: When adding new test scripts, always wire them into `.github/workflows/pr-test.yml` so they run in CI. Tests that don't need ZenML credentials should run unconditionally (no `if: env.ZENML_STORE_URL != ''` guard).
 
 ### Debugging with MCP Inspector
 

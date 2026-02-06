@@ -19,11 +19,14 @@ import functools
 import json
 import logging
 import os
+import re
 import sys
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
+from urllib.parse import urlparse
 
 import requests
 import zenml_mcp_analytics as analytics
@@ -116,8 +119,14 @@ def _make_error_result(
     message: str,
     error_type: str,
     http_status_code: int | None = None,
+    *,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a structured error envelope for non-text tools."""
+    """Build a structured error envelope for non-text tools.
+
+    Canonical shape (validated by smoke tests):
+        {"error": {"tool": str, "message": str, "type": str, ...}}
+    """
     error: dict[str, Any] = {
         "tool": tool_name,
         "message": message,
@@ -125,7 +134,353 @@ def _make_error_result(
     }
     if http_status_code is not None:
         error["http_status_code"] = http_status_code
+    if details:
+        error["details"] = details
     return {"error": error}
+
+
+# =============================================================================
+# Datetime filter normalization
+# =============================================================================
+# ZenML requires datetime filters in "%Y-%m-%d %H:%M:%S" format exactly.
+# LLMs commonly send date-only strings (e.g. gte:2026-02-02), ISO-8601
+# timestamps with T/Z/offsets, or range:.. syntax.  All of these cause
+# ValidationErrors if passed through as-is.  This helper normalizes the most
+# common inputs so they reach ZenML in the right format.
+
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_DT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+_SPACE_FRAC_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+$")
+_RANGE_RE = re.compile(r"^range:(?P<lower>.+?)\.\.(?P<upper>.+)$")
+_DATETIME_FILTER_KEYS = frozenset({"created", "updated", "start_time", "end_time"})
+_KNOWN_OPS = frozenset(
+    {
+        "equals",
+        "notequals",
+        "contains",
+        "startswith",
+        "endswith",
+        "oneof",
+        "gte",
+        "gt",
+        "lte",
+        "lt",
+        "in",
+    }
+)
+_UPPER_BOUND_OPS = frozenset({"lte", "lt"})
+
+
+def _parse_iso_to_zenml(s: str) -> str | None:
+    """Best-effort parse an ISO-8601 string into ZenML format (YYYY-MM-DD HH:MM:SS).
+
+    Returns None if the string isn't recognizable ISO-8601.
+    Timezone-aware inputs are converted to UTC before formatting.
+    """
+    try:
+        # Python 3.11+ fromisoformat handles Z, offsets, fractional seconds
+        adjusted = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(adjusted)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def _norm_datetime_token(s: str, *, upper_bound: bool) -> str:
+    """Normalize a single datetime token to ZenML's required format.
+
+    Handles ISO-8601 (T separator, Z suffix, timezone offsets, fractional
+    seconds), space-separated datetimes with fractional seconds, and
+    date-only strings (YYYY-MM-DD).
+    """
+    s = s.strip()
+    # Try stdlib ISO parser first (handles offsets, Z, missing seconds, etc.)
+    if _ISO_DT_RE.match(s):
+        parsed = _parse_iso_to_zenml(s)
+        if parsed:
+            return parsed
+    # Space-separated with fractional seconds: 2026-02-01 10:00:00.123 → drop fraction
+    m = _SPACE_FRAC_RE.match(s)
+    if m:
+        return m.group(1)
+    # Date-only: append time of day (start or end depending on operator context)
+    if _DATE_ONLY_RE.match(s):
+        return f"{s} {'23:59:59' if upper_bound else '00:00:00'}"
+    return s
+
+
+def _normalize_datetime_filter(value: str) -> str:
+    """Normalize a datetime filter value for ZenML compatibility.
+
+    Handles:
+    - range:lower..upper → in:lower 00:00:00,upper 23:59:59
+    - gte:YYYY-MM-DD → gte:YYYY-MM-DD 00:00:00
+    - lte:YYYY-MM-DD → lte:YYYY-MM-DD 23:59:59
+    - ISO timestamps (T separator) → space separator
+    - Bare YYYY-MM-DD (no operator) → YYYY-MM-DD 00:00:00
+    """
+    raw = value.strip()
+    if not raw:
+        return value
+
+    # Convenience: range:lower..upper → in:lower,upper
+    m = _RANGE_RE.match(raw)
+    if m:
+        lower = _norm_datetime_token(m.group("lower"), upper_bound=False)
+        upper = _norm_datetime_token(m.group("upper"), upper_bound=True)
+        return f"in:{lower},{upper}"
+
+    # Split optional op:value
+    head, sep, tail = raw.partition(":")
+    if sep and head in _KNOWN_OPS:
+        op, rest = head, tail
+    else:
+        op, rest = None, raw
+
+    # Handle in: operator (comma-separated pair)
+    if op == "in" and "," in rest:
+        lower, upper = rest.split(",", 1)
+        lower = _norm_datetime_token(lower, upper_bound=False)
+        upper = _norm_datetime_token(upper, upper_bound=True)
+        return f"in:{lower},{upper}"
+
+    # Normalize single value
+    is_upper = op in _UPPER_BOUND_OPS
+    norm = _norm_datetime_token(rest, upper_bound=is_upper)
+    return f"{op}:{norm}" if op else norm
+
+
+# =============================================================================
+# Exception classification (stable categories + actionable user messages)
+# =============================================================================
+
+_ERROR_MISSING_ENV_RE = re.compile(
+    r"^(?P<var>[A-Z0-9_]+) environment variable not set$"
+)
+
+
+def _redact_url(url: str | None) -> str | None:
+    """Redact URL to scheme+hostname only (avoid leaking paths/tokens)."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.hostname:
+            return f"{parsed.scheme}://{parsed.hostname}"
+        return parsed.hostname or "<invalid-url>"
+    except Exception:
+        return "<invalid-url>"
+
+
+def _classify_exception(
+    *,
+    tool_name: str,
+    exc: Exception,
+    http_status_code: int | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Map exceptions into stable categories + safe user messages.
+
+    Returns (category, user_message, details) where category is a stable
+    string like 'AuthenticationError', 'DependencyMissing', etc.
+    """
+    raw_type = type(exc).__name__
+    details: dict[str, Any] = {"raw_type": raw_type}
+
+    # ---- HTTP errors (requests) ----
+    if isinstance(exc, requests.HTTPError):
+        status = http_status_code
+        if status is not None:
+            details["http_status_code"] = status
+
+        if status == 401:
+            return (
+                "AuthenticationError",
+                "Authentication failed. Please check your API key.",
+                details,
+            )
+        if status == 403:
+            return (
+                "AuthenticationError",
+                "Authorization failed. Your API key may not have access.",
+                details,
+            )
+        if status == 404:
+            if tool_name == "get_step_logs":
+                return (
+                    "NotFound",
+                    "Logs not found. Please check the step ID. Also note that if the step was run "
+                    "on a stack with a local or non-cloud-based artifact store then no logs will "
+                    "have been stored by ZenML.",
+                    details,
+                )
+            if tool_name == "get_deployment_logs":
+                return (
+                    "NotFound",
+                    "Deployment not found or logs unavailable. Please check the deployment "
+                    "name/ID. Note that log availability depends on the deployer type and "
+                    "infrastructure configuration.",
+                    details,
+                )
+            return ("NotFound", "Resource not found (HTTP 404).", details)
+
+        if status is not None and 400 <= status < 500:
+            return (
+                "ConfigurationError",
+                f"Request failed (HTTP {status}). Please check your inputs and configuration.",
+                details,
+            )
+        if status is not None and status >= 500:
+            return (
+                "UpstreamError",
+                f"ZenML server error (HTTP {status}). Please try again later.",
+                details,
+            )
+
+        return ("UpstreamError", "Request failed.", details)
+
+    # ---- Validation errors ----
+    # Detect by class name + module to avoid false positives from unrelated
+    # exceptions that happen to contain "validation" in their text.
+    exc_mod = getattr(exc.__class__, "__module__", "")
+    is_validation = raw_type == "ValidationError" or (
+        "pydantic" in exc_mod and "Validation" in raw_type
+    )
+    if is_validation:
+        error_snippet = str(exc)[:300]
+        details["validation_error"] = error_snippet
+        # Generic message suitable for any validation error
+        msg = "Validation failed. Please check your inputs.\n\n" + error_snippet
+        # Add filter-syntax help only for tools that accept filters
+        if tool_name.startswith("list_"):
+            msg += (
+                "\n\nFILTER SYNTAX REFERENCE:\n"
+                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, oneof:, in:\n"
+                "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
+                "- Date-only and ISO-8601 inputs are auto-normalized\n"
+                "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59"
+            )
+        return ("ValidationError", msg, details)
+
+    # ---- Common configuration errors (missing env vars) ----
+    if isinstance(exc, ValueError):
+        msg = str(exc)
+        m = _ERROR_MISSING_ENV_RE.match(msg.strip())
+        if m:
+            var = m.group("var")
+            details["missing_env_var"] = var
+            return (
+                "ConfigurationError",
+                f"Missing required environment variable: {var}.",
+                details,
+            )
+
+    # ---- Missing Python deps / integrations ----
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        details["import_error"] = str(exc)
+        return (
+            "DependencyMissing",
+            f"Missing dependency or integration: {exc}",
+            details,
+        )
+
+    # ---- Request connectivity/timeouts ----
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        details["connection_error"] = raw_type
+        return (
+            "UpstreamError",
+            "Could not reach ZenML server. Please check network connectivity and ZENML_STORE_URL.",
+            details,
+        )
+
+    # ---- ZenML auth exceptions (detected by class name to avoid importing ZenML) ----
+    if raw_type in ("CredentialsNotValid", "AuthorizationException"):
+        return (
+            "AuthenticationError",
+            "Authentication to ZenML failed. Check your ZENML_STORE_API_KEY.",
+            details,
+        )
+
+    # ---- Project not configured ----
+    msg = str(exc)
+    if "No project is currently set as active" in msg:
+        return (
+            "ProjectNotConfigured",
+            "No project is currently set as active. Set ZENML_ACTIVE_PROJECT_ID (or configure an active project in ZenML).",
+            details,
+        )
+
+    # ---- Version mismatch (heuristics) ----
+    if "ZenML" in msg and ("version" in msg.lower() or "incompatible" in msg.lower()):
+        details["version_message"] = msg[:200]
+        return (
+            "VersionMismatch",
+            "Version mismatch between this MCP server and your ZenML installation/server.",
+            details,
+        )
+
+    # ---- Default ----
+    # Always show details for ImportError/RuntimeError since they indicate setup/config issues
+    if isinstance(exc, (ImportError, RuntimeError)):
+        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
+
+    if analytics.DEV_MODE:
+        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
+
+    return ("UnexpectedError", f"Error in {tool_name}: {raw_type}", details)
+
+
+# =============================================================================
+# MCP client detection (best-effort, request-scoped)
+# =============================================================================
+
+# Track whether we've already captured client info this session
+_mcp_client_info_captured = False
+_mcp_client_info_lock = Lock()
+
+
+def _getattr_multi(obj: Any, *names: str) -> Any:
+    """Try multiple attribute names on an object, return first non-None."""
+    if obj is None:
+        return None
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            return v
+    return None
+
+
+def _get_mcp_client_info_safe() -> dict[str, Any] | None:
+    """Best-effort MCP client detection (only valid during a request).
+
+    Checks both camelCase and snake_case field names to handle different
+    MCP SDK versions.
+    """
+    try:
+        ctx = mcp.get_context()
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return None
+
+        params = _getattr_multi(session, "client_params", "clientParams")
+        if params is None:
+            return None
+
+        client_info = _getattr_multi(params, "clientInfo", "client_info")
+        if client_info is None:
+            return None
+
+        name = getattr(client_info, "name", None)
+        version = getattr(client_info, "version", None)
+        if not name and not version:
+            return None
+
+        return {"name": name, "version": version}
+    except Exception:
+        return None
 
 
 # Decorator for handling exceptions in tool functions (with analytics tracking)
@@ -145,13 +500,39 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     def wrapper(*args: Any, **kwargs: Any) -> T:
         import time
 
+        global _mcp_client_info_captured
+
         start_time = time.perf_counter()
         success = True
         error_type: str | None = None
         http_status_code: int | None = None
 
+        # Capture MCP client info once per session (best-effort)
+        client: dict[str, Any] | None = None
         try:
-            result = func(*args, **kwargs)
+            if not _mcp_client_info_captured:
+                client = _get_mcp_client_info_safe()
+                if client:
+                    with _mcp_client_info_lock:
+                        if not _mcp_client_info_captured:
+                            _mcp_client_info_captured = True
+                            analytics.set_client_info_once(
+                                client_name=client.get("name"),
+                                client_version=client.get("version"),
+                            )
+        except Exception:
+            client = None
+
+        try:
+            # Normalize datetime filter kwargs before calling the tool.
+            # Uses a copy so analytics.extract_size_from_call sees original kwargs.
+            call_kwargs = dict(kwargs) if kwargs else kwargs
+            if call_kwargs:
+                for key in _DATETIME_FILTER_KEYS:
+                    if key in call_kwargs and isinstance(call_kwargs[key], str):
+                        call_kwargs[key] = _normalize_datetime_filter(call_kwargs[key])
+
+            result = func(*args, **call_kwargs)
             # Detect structured error envelopes (full shape validation to avoid
             # false positives from legitimate "error" fields in successful results)
             if _is_structured_error_envelope(result):
@@ -160,37 +541,20 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             return result
         except requests.HTTPError as e:
             success = False
-            error_type = type(e).__name__
             http_status_code = (
                 e.response.status_code
                 if getattr(e, "response", None) is not None
                 else None
             )
 
-            if http_status_code == 401:
-                message = "Authentication failed. Please check your API key."
-            elif http_status_code == 404 and func_name == "get_step_logs":
-                message = (
-                    "Logs not found. Please check the step ID. "
-                    "Also note that if the step was run on a stack with a local "
-                    "or non-cloud-based artifact store then no logs will have been "
-                    "stored by ZenML."
-                )
-            elif http_status_code == 404 and func_name == "get_deployment_logs":
-                message = (
-                    "Deployment not found or logs unavailable. Please check the deployment "
-                    "name/ID. Note that log availability depends on the deployer type and "
-                    "infrastructure configuration."
-                )
-            elif http_status_code is not None:
-                message = f"Request failed (HTTP {http_status_code})."
-            else:
-                message = "Request failed."
+            category, message, details = _classify_exception(
+                tool_name=func_name,
+                exc=e,
+                http_status_code=http_status_code,
+            )
+            error_type = category
 
-            if analytics.DEV_MODE:
-                message = f"{message} ({e})"
-
-            err_log = f"Error in {func_name}: {error_type}"
+            err_log = f"Error in {func_name}: {category}"
             if http_status_code is not None:
                 err_log = f"{err_log} (HTTP {http_status_code})"
             if analytics.DEV_MODE:
@@ -202,26 +566,27 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             return cast(
                 T,
                 _make_error_result(
-                    func_name, message, error_type or "HTTPError", http_status_code
+                    func_name,
+                    message,
+                    category,
+                    http_status_code,
+                    details=details,
                 ),
             )
         except Exception as e:
             success = False
-            error_type = type(e).__name__
+            category, message, details = _classify_exception(
+                tool_name=func_name,
+                exc=e,
+            )
+            error_type = category
 
-            # Always show details for ImportError/RuntimeError since they indicate setup/config issues
-            if analytics.DEV_MODE or isinstance(e, (ImportError, RuntimeError)):
-                error_detail = str(e)
-            else:
-                error_detail = error_type
-
-            message = f"Error in {func_name}: {error_detail}"
             print(message, file=sys.stderr)
 
             if text_tool:
                 return cast(T, message)
             return cast(
-                T, _make_error_result(func_name, message, error_type or "Exception")
+                T, _make_error_result(func_name, message, category, details=details)
             )
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
@@ -234,6 +599,8 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     error_type=error_type,
                     size=size,
                     http_status_code=http_status_code,
+                    mcp_client_name=(client or {}).get("name"),
+                    mcp_client_version=(client or {}).get("version"),
                 )
             except Exception:
                 pass
@@ -595,6 +962,134 @@ def make_step_logs_request(
     return data
 
 
+# =============================================================================
+# Startup Diagnostics (works without ZenML SDK)
+# =============================================================================
+
+
+def collect_zenml_setup_diagnostics(
+    *, include_client_info: bool = False
+) -> dict[str, Any]:
+    """Collect setup diagnostics without requiring ZenML SDK initialization.
+
+    This function is safe even if zenml cannot be imported, env vars are missing,
+    or the server URL is unreachable.
+    """
+    store_url = os.environ.get("ZENML_STORE_URL")
+    api_key_present = bool(os.environ.get("ZENML_STORE_API_KEY"))
+    active_project_id_present = bool(os.environ.get("ZENML_ACTIVE_PROJECT_ID"))
+
+    checks: dict[str, Any] = {
+        "env": {
+            "ZENML_STORE_URL_present": bool(store_url),
+            "ZENML_STORE_API_KEY_present": api_key_present,
+            "ZENML_ACTIVE_PROJECT_ID_present": active_project_id_present,
+            "ZENML_STORE_URL_redacted": _redact_url(store_url),
+        },
+        "python": {
+            "version": sys.version.split()[0],
+        },
+        "analytics": {
+            "enabled": analytics.is_analytics_enabled(),
+            "dev_mode": analytics.DEV_MODE,
+        },
+    }
+
+    # ZenML import check (no Client() call)
+    try:
+        import zenml as _zenml
+
+        checks["zenml"] = {
+            "importable": True,
+            "version": getattr(_zenml, "__version__", "unknown"),
+        }
+    except Exception as e:
+        checks["zenml"] = {"importable": False, "error_type": type(e).__name__}
+
+    # Connectivity probe (best-effort, short timeouts)
+    connectivity: dict[str, Any] = {"attempted": False}
+    if store_url:
+        connectivity["attempted"] = True
+        base = store_url.rstrip("/")
+        probe_urls = [f"{base}/api/v1/info", f"{base}/health"]
+        for url in probe_urls:
+            try:
+                r = requests.get(url, timeout=(1.0, 2.5))
+                connectivity.update(
+                    {
+                        "url": _redact_url(url),
+                        "status_code": r.status_code,
+                        "ok": r.status_code in (200, 204),
+                    }
+                )
+                # Try to extract server version from /api/v1/info response
+                if r.status_code == 200 and "info" in url:
+                    try:
+                        info = r.json()
+                        if isinstance(info, dict) and "version" in info:
+                            checks["zenml_server_version"] = info["version"]
+                    except Exception:
+                        pass
+                break
+            except Exception as e:
+                connectivity.update({"ok": False, "last_error_type": type(e).__name__})
+
+    checks["connectivity"] = connectivity
+
+    if include_client_info:
+        checks["mcp_client"] = _get_mcp_client_info_safe()
+
+    # Summarize issues
+    issues: list[dict[str, Any]] = []
+    if not store_url:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "missing_store_url",
+                "message": "ZENML_STORE_URL is not set.",
+            }
+        )
+    if store_url and not api_key_present:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "missing_api_key",
+                "message": "ZENML_STORE_API_KEY is not set.",
+            }
+        )
+    if store_url and connectivity.get("attempted") and connectivity.get("ok") is False:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "unreachable",
+                "message": "Could not reach ZenML server.",
+            }
+        )
+    if checks.get("zenml", {}).get("importable") is False:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "zenml_not_importable",
+                "message": "ZenML SDK is not importable in this environment.",
+            }
+        )
+
+    ok = not any(i["severity"] == "error" for i in issues)
+    return {"ok": ok, "issues": issues, "checks": checks}
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def diagnose_zenml_setup() -> dict[str, Any]:
+    """Diagnose ZenML MCP server setup (env vars, connectivity, auth, versions).
+
+    Returns structured diagnostics about the server's configuration and
+    connectivity. This tool works even when the ZenML SDK is not installed
+    or environment variables are missing - use it to troubleshoot setup issues.
+    """
+    return collect_zenml_setup_diagnostics(include_client_info=True)
+
+
 @mcp.tool()
 @handle_tool_exceptions
 def get_step_logs(step_run_id: str) -> dict[str, Any]:
@@ -620,12 +1115,16 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
     return make_step_logs_request(server_url, step_run_id, access_token)
 
 
+# Page-size defaults for list tools:
+#   50 – lightweight resources (users, projects, tags, secrets)
+#   20 – medium resources (stacks, pipelines, models, connectors, etc.)
+#   10 – heavy payloads (pipeline runs, run steps, artifacts)
 @mcp.tool()
 @handle_tool_exceptions
 def list_users(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -633,14 +1132,21 @@ def list_users(
 ) -> dict[str, Any]:
     """List all users in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the users by
-        page: The page number to return
-        size: The number of users to return
-        logical_operator: The logical operator to use
-        created: The creation date of the users
-        updated: The last update date of the users
-        active: Whether the user is active
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-01-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        active: Filter by active status
     """
     users = get_zenml_client().list_users(
         sort_by=sort_by,
@@ -709,7 +1215,7 @@ def get_project(name_id_or_prefix: str, hydrate: bool = True) -> dict[str, Any]:
 def list_projects(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -718,15 +1224,20 @@ def list_projects(
 ) -> dict[str, Any]:
     """List all projects in the ZenML workspace.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the projects by
-        page: The page number to return
-        size: The number of projects to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
         name: Filter by project name
         display_name: Filter by project display name
     """
@@ -780,7 +1291,7 @@ def easter_egg() -> str:
 def list_stacks(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -788,16 +1299,20 @@ def list_stacks(
 ) -> dict[str, Any]:
     """List all stacks in the ZenML workspace.
 
-    By default, the stacks are sorted by creation date in descending order.
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the stacks by
-        page: The page number to return
-        size: The number of stacks to return
-        logical_operator: The logical operator to use
-        created: The creation date of the stacks
-        updated: The last update date of the stacks
-        name: The name of the stacks
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by stack name (e.g. contains:prod)
     """
     stacks = get_zenml_client().list_stacks(
         sort_by=sort_by,
@@ -816,20 +1331,24 @@ def list_stacks(
 def list_pipelines(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     created: str | None = None,
     updated: str | None = None,
 ) -> dict[str, Any]:
     """List all pipelines in the ZenML workspace.
 
-    By default, the pipelines are sorted by creation date in descending order.
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the pipelines by
-        page: The page number to return
-        size: The number of pipelines to return
-        created: The creation date of the pipelines
-        updated: The last update date of the pipelines
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
     """
     pipelines = get_zenml_client().list_pipelines(
         sort_by=sort_by,
@@ -892,7 +1411,7 @@ def get_service(name_id_or_prefix: str) -> dict[str, Any]:
 def list_services(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     id: str | None = None,
     created: str | None = None,
@@ -906,14 +1425,20 @@ def list_services(
 ) -> dict[str, Any]:
     """List all services in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the services by
-        page: The page number to return
-        size: The number of services to return
-        logical_operator: The logical operator to use
-        id: The ID of the services
-        created: The creation date of the services
-        updated: The last update date of the services
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        id: Filter by service UUID
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
         running: Whether the service is running
         service_name: The name of the service
         pipeline_name: The name of the pipeline
@@ -956,7 +1481,7 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
 def list_stack_components(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -966,16 +1491,22 @@ def list_stack_components(
 ) -> dict[str, Any]:
     """List all stack components in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the stack components by
-        page: The page number to return
-        size: The number of stack components to return
-        logical_operator: The logical operator to use
-        created: The creation date of the stack components
-        updated: The last update date of the stack components
-        name: The name of the stack components
-        flavor: The flavor of the stack components
-        stack_id: The ID of the stack
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by component name (e.g. contains:s3)
+        flavor: Filter by flavor name (e.g. contains:aws)
+        stack_id: Filter by stack UUID
     """
     stack_components = get_zenml_client().list_stack_components(
         sort_by=sort_by,
@@ -1008,7 +1539,7 @@ def get_flavor(name_id_or_prefix: str) -> dict[str, Any]:
 def list_flavors(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     id: str | None = None,
     created: str | None = None,
@@ -1018,14 +1549,19 @@ def list_flavors(
 ) -> dict[str, Any]:
     """List all flavors in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+
     Args:
-        sort_by: The field to sort the flavors by
-        page: The page number to return
-        size: The number of flavors to return
-        logical_operator: The logical operator to use
-        id: The ID of the flavors
-        created: The creation date of the flavors
-        updated: The last update date of the flavors
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        id: Filter by flavor UUID
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
     """
     flavors = get_zenml_client().list_flavors(
         sort_by=sort_by,
@@ -1150,7 +1686,7 @@ def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
 def list_run_templates(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     created: str | None = None,
     updated: str | None = None,
     name: str | None = None,
@@ -1158,18 +1694,23 @@ def list_run_templates(
 ) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
-    ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `list_snapshots` instead.
-    Snapshots are the modern replacement for run templates. To find runnable
-    snapshots, use `list_snapshots(runnable=True)`.
+    DEPRECATED: Use `list_snapshots` instead. For runnable configs, use
+    `list_snapshots(runnable=True)`.
+
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the run templates by
-        page: The page number to return
-        size: The number of run templates to return
-        created: The creation date of the run templates
-        updated: The last update date of the run templates
-        name: The name of the run templates
-        tag: The tag of the run templates
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by template name (e.g. contains:train)
+        tag: Filter by tag name
     """
     run_templates = get_zenml_client().list_run_templates(
         sort_by=sort_by,
@@ -1233,7 +1774,7 @@ def get_snapshot(
 def list_snapshots(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1248,26 +1789,30 @@ def list_snapshots(
 ) -> dict[str, Any]:
     """List all snapshots in the ZenML workspace.
 
-    Snapshots are frozen pipeline configurations that replace the deprecated
-    Run Templates. Use `runnable=True` to find snapshots that can be triggered.
+    Snapshots are frozen pipeline configurations (replacing deprecated Run Templates).
+    Use `runnable=True` to find snapshots that can be triggered.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the snapshots by
-        page: The page number to return
-        size: The number of snapshots to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        name: Filter by snapshot name
-        pipeline: Filter by pipeline name or ID
-        runnable: Filter to only runnable snapshots (can be triggered)
-        deployable: Filter to only deployable snapshots
-        deployed: Filter to only currently deployed snapshots
-        tag: Filter by tag
-        project: Optional project scope (defaults to active project)
-        named_only: Only return named snapshots (default True to avoid internal ones)
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by snapshot name (e.g. contains:prod)
+        pipeline: Filter by pipeline name or UUID
+        runnable: If True, only return snapshots that can be triggered
+        deployable: If True, only return deployable snapshots
+        deployed: If True, only return currently deployed snapshots
+        tag: Filter by tag name
+        project: Project scope (defaults to active project)
+        named_only: Only named snapshots (default True to skip internal ones)
     """
     snapshots = get_zenml_client().list_snapshots(
         sort_by=sort_by,
@@ -1323,7 +1868,7 @@ def get_deployment(
 def list_deployments(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1339,22 +1884,26 @@ def list_deployments(
 
     Deployments show what's currently serving/provisioned with runtime status.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the deployments by
-        page: The page number to return
-        size: The number of deployments to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        name: Filter by deployment name
-        status: Filter by deployment status (e.g., "running", "error")
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by deployment name (e.g. contains:prod)
+        status: Filter by status (e.g. oneof:running,error)
         url: Filter by deployment URL
-        pipeline: Filter by pipeline name or ID
-        snapshot_id: Filter by source snapshot ID
-        tag: Filter by tag
-        project: Optional project scope (defaults to active project)
+        pipeline: Filter by pipeline name or UUID
+        snapshot_id: Filter by source snapshot UUID
+        tag: Filter by tag name
+        project: Project scope (defaults to active project)
     """
     deployments = get_zenml_client().list_deployments(
         sort_by=sort_by,
@@ -1503,7 +2052,7 @@ def get_schedule(name_id_or_prefix: str) -> dict[str, Any]:
 def list_schedules(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1514,16 +2063,22 @@ def list_schedules(
 ) -> dict[str, Any]:
     """List all schedules in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the schedules by
-        page: The page number to return
-        size: The number of schedules to return
-        created: The creation date of the schedules
-        updated: The last update date of the schedules
-        name: The name of the schedules
-        pipeline_id: The ID of the pipeline
-        orchestrator_id: The ID of the orchestrator
-        active: Whether the schedule is active
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by schedule name (e.g. contains:daily)
+        pipeline_id: Filter by pipeline UUID
+        orchestrator_id: Filter by orchestrator UUID
+        active: Filter by active status (True/False)
     """
     schedules = get_zenml_client().list_schedules(
         sort_by=sort_by,
@@ -1573,22 +2128,32 @@ def list_pipeline_runs(
 ) -> dict[str, Any]:
     """List all pipeline runs in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters — useful
+    for answering 'how many runs?' without fetching all pages.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+    Date range: 'in:2026-02-01 00:00:00,2026-02-07 23:59:59'.
+
     Args:
-        sort_by: The field to sort the pipeline runs by
-        page: The page number to return
-        size: The number of pipeline runs to return
-        logical_operator: The logical operator to use
-        created: The creation date of the pipeline runs
-        updated: The last update date of the pipeline runs
-        name: The name of the pipeline runs
-        pipeline_id: The ID of the pipeline
-        pipeline_name: The name of the pipeline
-        stack_id: The ID of the stack
-        status: The status of the pipeline runs
-        start_time: The start time of the pipeline runs
-        end_time: The end time of the pipeline runs
-        stack: The stack of the pipeline runs
-        stack_component: The stack component of the pipeline runs
+        sort_by: Sort field and direction (e.g. desc:created, asc:start_time)
+        page: Page number (1-indexed)
+        size: Results per page (keep small for runs — they have large payloads)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by run name (e.g. contains:training)
+        pipeline_id: Filter by pipeline UUID
+        pipeline_name: Filter by pipeline name (e.g. contains:my_pipeline)
+        stack_id: Filter by stack UUID
+        status: Filter by run status (e.g. oneof:completed,failed).
+            Values: initializing, failed, completed, running, cached
+        start_time: Filter by run start time (e.g. gte:2026-02-01 00:00:00)
+        end_time: Filter by run end time (e.g. lte:2026-02-07 23:59:59)
+        stack: Filter by stack name
+        stack_component: Filter by stack component name
     """
     pipeline_runs = get_zenml_client().list_pipeline_runs(
         sort_by=sort_by,
@@ -1639,18 +2204,26 @@ def list_run_steps(
 ) -> dict[str, Any]:
     """List all run steps in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the run steps by
-        page: The page number to return
-        size: The number of run steps to return
-        logical_operator: The logical operator to use
-        created: The creation date of the run steps
-        updated: The last update date of the run steps
-        name: The name of the run steps
-        status: The status of the run steps
-        start_time: The start time of the run steps
-        end_time: The end time of the run steps
-        pipeline_run_id: The ID of the pipeline run
+        sort_by: Sort field and direction (e.g. desc:created, asc:start_time)
+        page: Page number (1-indexed)
+        size: Results per page (keep small — step payloads are large)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by step name (e.g. contains:train)
+        status: Filter by step status (e.g. oneof:completed,failed).
+            Values: initializing, failed, completed, running, cached
+        start_time: Filter by step start time (e.g. gte:2026-02-01 00:00:00)
+        end_time: Filter by step end time (e.g. lte:2026-02-07 23:59:59)
+        pipeline_run_id: Filter by pipeline run UUID
     """
     run_steps = get_zenml_client().list_run_steps(
         sort_by=sort_by,
@@ -1682,14 +2255,20 @@ def list_artifacts(
 ) -> dict[str, Any]:
     """List all artifacts in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the artifacts by
-        page: The page number to return
-        size: The number of artifacts to return
-        logical_operator: The logical operator to use
-        created: The creation date of the artifacts
-        updated: The last update date of the artifacts
-        name: The name of the artifacts
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page (keep small — artifact payloads are large)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by artifact name (e.g. contains:model)
     """
     artifacts = get_zenml_client().list_artifacts(
         sort_by=sort_by,
@@ -1737,15 +2316,21 @@ def list_artifact_versions(
 ) -> dict[str, Any]:
     """List all versions of a specific artifact.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        artifact_name_or_id: The name or ID of the artifact
-        sort_by: The field to sort the versions by
-        page: The page number to return
-        size: The number of versions to return
-        logical_operator: The logical operator to use
-        created: The creation date filter
-        updated: The last update date filter
-        tag: The tag filter
+        artifact_name_or_id: The name or UUID of the artifact
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page (keep small — version payloads are large)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        tag: Filter by tag name
     """
     versions = get_zenml_client().list_artifact_versions(
         artifact=artifact_name_or_id,
@@ -1765,22 +2350,28 @@ def list_artifact_versions(
 def list_secrets(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """List all secrets in the ZenML workspace.
+    """List all secrets in the ZenML workspace (names only, no values).
+
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the secrets by
-        page: The page number to return
-        size: The number of secrets to return
-        logical_operator: The logical operator to use
-        created: The creation date of the secrets
-        updated: The last update date of the secrets
-        name: The name of the secrets
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by secret name (e.g. contains:api)
     """
     secrets = get_zenml_client().list_secrets(
         sort_by=sort_by,
@@ -1811,7 +2402,7 @@ def get_service_connector(name_id_or_prefix: str) -> dict[str, Any]:
 def list_service_connectors(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1820,15 +2411,21 @@ def list_service_connectors(
 ) -> dict[str, Any]:
     """List all service connectors in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the service connectors by
-        page: The page number to return
-        size: The number of service connectors to return
-        logical_operator: The logical operator to use
-        created: The creation date of the service connectors
-        updated: The last update date of the service connectors
-        name: The name of the service connectors
-        connector_type: The type of the service connectors
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by connector name (e.g. contains:aws)
+        connector_type: Filter by connector type (e.g. contains:gcp)
     """
     service_connectors = get_zenml_client().list_service_connectors(
         sort_by=sort_by,
@@ -1860,7 +2457,7 @@ def get_model(name_id_or_prefix: str) -> dict[str, Any]:
 def list_models(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1869,15 +2466,21 @@ def list_models(
 ) -> dict[str, Any]:
     """List all models in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the models by
-        page: The page number to return
-        size: The number of models to return
-        logical_operator: The logical operator to use
-        created: The creation date of the models
-        updated: The last update date of the models
-        name: The name of the models
-        tag: The tag of the models
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by model name (e.g. contains:bert)
+        tag: Filter by tag name (e.g. contains:prod)
     """
     models = get_zenml_client().list_models(
         sort_by=sort_by,
@@ -1917,7 +2520,7 @@ def list_model_versions(
     model_name_or_id: str,
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1928,18 +2531,24 @@ def list_model_versions(
 ) -> dict[str, Any]:
     """List all model versions for a model.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        model_name_or_id: The name, ID or prefix of the model to retrieve
-        sort_by: The field to sort the model versions by
-        page: The page number to return
-        size: The number of model versions to return
-        logical_operator: The logical operator to use
-        created: The creation date of the model versions
-        updated: The last update date of the model versions
-        name: The name of the model versions
-        number: The number of the model versions
-        stage: The stage of the model versions
-        tag: The tag of the model versions
+        model_name_or_id: The name or UUID of the model
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by version name
+        number: Filter by version number
+        stage: Filter by stage (e.g. oneof:production,staging)
+        tag: Filter by tag name
     """
     model_versions = get_zenml_client().list_model_versions(
         model_name_or_id,
@@ -1997,7 +2606,7 @@ def get_tag(tag_name_or_id: str, hydrate: bool = True) -> dict[str, Any]:
 def list_tags(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2007,20 +2616,24 @@ def list_tags(
 ) -> dict[str, Any]:
     """List all tags in the ZenML workspace.
 
-    Tags enable queries like "show me all prod deployments" and help organize
+    Tags enable queries like 'show me all prod deployments' and help organize
     resources. Exclusive tags can only be applied once per entity.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the tags by
-        page: The page number to return
-        size: The number of tags to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        name: Filter by tag name
-        exclusive: Filter by exclusive tags (can only be applied once per entity)
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by tag name (e.g. contains:prod)
+        exclusive: If True, only return exclusive tags
         resource_type: Filter by resource type the tag applies to
     """
     tags = get_zenml_client().list_tags(
@@ -2072,7 +2685,7 @@ def get_build(
 def list_builds(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2084,23 +2697,27 @@ def list_builds(
 ) -> dict[str, Any]:
     """List all pipeline builds in the ZenML workspace.
 
-    Builds explain reproducibility (container image/code) and can help debug
-    infrastructure issues.
+    Builds contain image info, code embedding, and stack checksums for
+    reproducibility and infrastructure debugging.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the builds by
-        page: The page number to return
-        size: The number of builds to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        pipeline_id: Filter by pipeline ID
-        stack_id: Filter by stack ID
-        is_local: Filter by local builds (not runnable from server)
-        contains_code: Filter by builds that contain embedded code
-        project: Optional project scope (defaults to active project)
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        pipeline_id: Filter by pipeline UUID
+        stack_id: Filter by stack UUID
+        is_local: If True, only local builds (not runnable from server)
+        contains_code: If True, only builds with embedded code
+        project: Project scope (defaults to active project)
     """
     builds = get_zenml_client().list_builds(
         sort_by=sort_by,
@@ -2293,11 +2910,76 @@ if __name__ == "__main__":
         "Required when running behind reverse proxies (cloudflared, ngrok). "
         "WARNING: Only use this in trusted network environments.",
     )
+    _startup_env = (os.getenv("ZENML_MCP_STARTUP_VALIDATION") or "off").lower().strip()
+    if _startup_env not in {"off", "warn", "strict"}:
+        print(
+            f"Warning: ZENML_MCP_STARTUP_VALIDATION={_startup_env!r} is not valid "
+            f"(expected off/warn/strict), defaulting to 'off'",
+            file=sys.stderr,
+        )
+        _startup_env = "off"
+    parser.add_argument(
+        "--startup-validation",
+        choices=["off", "warn", "strict"],
+        default=_startup_env,
+        help="Run a lightweight startup diagnostic before serving MCP. "
+        "'warn' prints problems but continues. 'strict' exits non-zero if "
+        "required setup is missing. (default: off, env: ZENML_MCP_STARTUP_VALIDATION)",
+    )
     args = parser.parse_args()
 
     try:
         analytics.init_analytics()
-        analytics.track_server_started()
+
+        # Attach transport to session-wide analytics properties
+        try:
+            analytics.set_session_properties({"transport": args.transport})
+        except Exception:
+            pass
+
+        # Run startup validation if enabled
+        startup_extra: dict[str, Any] = {
+            "startup_validation_mode": args.startup_validation
+        }
+        if args.startup_validation != "off":
+            diag = collect_zenml_setup_diagnostics(include_client_info=False)
+            startup_extra["startup_validation_ok"] = bool(diag.get("ok"))
+
+            # Include ZenML versions if detected
+            zenml_info = diag.get("checks", {}).get("zenml", {})
+            if zenml_info.get("importable"):
+                startup_extra["zenml_sdk_version"] = zenml_info.get("version")
+            server_version = diag.get("checks", {}).get("zenml_server_version")
+            if server_version:
+                startup_extra["zenml_server_version"] = server_version
+
+            if args.startup_validation == "warn" and not diag.get("ok"):
+                print("Startup validation warnings:", file=sys.stderr)
+                for issue in diag.get("issues", []):
+                    print(
+                        f"  - [{issue.get('severity')}] {issue.get('message')}",
+                        file=sys.stderr,
+                    )
+
+            if args.startup_validation == "strict" and not diag.get("ok"):
+                print(
+                    "Startup validation failed (strict mode). Refusing to start.",
+                    file=sys.stderr,
+                )
+                for issue in diag.get("issues", []):
+                    print(
+                        f"  - [{issue.get('severity')}] {issue.get('message')}",
+                        file=sys.stderr,
+                    )
+                analytics.track_event(
+                    "Startup Validation Failed",
+                    {
+                        "issues_count": len(diag.get("issues", [])),
+                    },
+                )
+                raise SystemExit(2)
+
+        analytics.track_server_started(extra_properties=startup_extra)
 
         if args.transport == "streamable-http":
             from mcp.server.transport_security import TransportSecuritySettings
