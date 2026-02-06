@@ -174,12 +174,20 @@ def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
     if normalized.startswith("Error in "):
         return normalized[:100] + ("..." if len(normalized) > 100 else "")
 
-    # HTTP error patterns from handle_tool_exceptions
+    # Error patterns from handle_tool_exceptions / _classify_exception
     error_patterns = [
         "Authentication failed",  # HTTP 401
+        "Authorization failed",  # HTTP 403
         "Request failed",  # HTTPError (various status codes)
         "Logs not found",  # 404 for get_step_logs
         "Deployment not found or logs unavailable",  # 404 for get_deployment_logs
+        "Missing dependency or integration",  # ImportError / DependencyMissing
+        "Missing required environment variable",  # ConfigurationError
+        "No project is currently set as active",  # ProjectNotConfigured
+        "Authentication to ZenML failed",  # CredentialsNotValid
+        "Could not reach ZenML server",  # ConnectionError / Timeout
+        "Version mismatch",  # VersionMismatch
+        "ZenML server error",  # HTTP 5xx
     ]
 
     for pattern in error_patterns:
@@ -311,6 +319,7 @@ class MCPSmokeTest:
         """
         safe_tools_to_test = [
             # Safe tools: read-only, no required parameters, return empty pages when no data
+            "diagnose_zenml_setup",
             "list_users",
             "list_stacks",
             "list_pipelines",

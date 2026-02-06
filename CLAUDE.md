@@ -67,9 +67,12 @@ The project is a Model Context Protocol (MCP) server that provides AI assistants
 **Analytics Module**: `server/zenml_mcp_analytics.py`
 - Anonymous usage tracking via the ZenML Analytics Server (opt-out available)
 - Sends events to `https://analytics.zenml.io/batch` with `Source-Context: mcp-zenml`
-- Tracks tool usage, session duration, and error rates
+- Tracks tool usage, session duration, error rates, and MCP client info
+- Deterministic Docker user IDs (UUID5 from ZENML_STORE_URL hash when filesystem is ephemeral)
+- Synchronous shutdown flush for reliable delivery under SIGTERM
+- Session-wide properties via `set_session_properties()` / `set_client_info_once()`
 - Failure-safe: analytics errors never affect server functionality
-- Environment variables: `ZENML_MCP_ANALYTICS_ENABLED`, `ZENML_MCP_ANALYTICS_DEV`
+- Environment variables: `ZENML_MCP_ANALYTICS_ENABLED`, `ZENML_MCP_ANALYTICS_DEV`, `ZENML_MCP_ANALYTICS_SHUTDOWN_TIMEOUT_S`
 
 **Key Features**:
 - Reads ZenML server configuration from environment variables (`ZENML_STORE_URL`, `ZENML_STORE_API_KEY`)
@@ -119,6 +122,7 @@ Tools are organized by entity type in `server/zenml_server.py`:
 | **Artifacts** | `list_artifacts` | |
 | **Secrets** | `list_secrets` | Names only |
 | **Analysis** | `stack_components_analysis`, `recent_runs_analysis`, `most_recent_runs` | |
+| **Diagnostics** | `diagnose_zenml_setup` | Works without ZenML SDK |
 | **Execution** | `trigger_pipeline` | Prefer `snapshot_name_or_id` |
 | **Deprecated** | `get_run_template`, `list_run_templates` | Use snapshot tools instead |
 

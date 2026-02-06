@@ -175,6 +175,7 @@ cython_debug/
 # project-specific ignores
 design/
 mcp.json
+.mcp.json
 .claude/
 .mcpregistry_github_token
 .mcpregistry_registry_token

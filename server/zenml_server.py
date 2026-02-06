@@ -19,11 +19,13 @@ import functools
 import json
 import logging
 import os
+import re
 import sys
 import warnings
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
+from urllib.parse import urlparse
 
 import requests
 import zenml_mcp_analytics as analytics
@@ -116,8 +118,14 @@ def _make_error_result(
     message: str,
     error_type: str,
     http_status_code: int | None = None,
+    *,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a structured error envelope for non-text tools."""
+    """Build a structured error envelope for non-text tools.
+
+    Canonical shape (validated by smoke tests):
+        {"error": {"tool": str, "message": str, "type": str, ...}}
+    """
     error: dict[str, Any] = {
         "tool": tool_name,
         "message": message,
@@ -125,7 +133,200 @@ def _make_error_result(
     }
     if http_status_code is not None:
         error["http_status_code"] = http_status_code
+    if details:
+        error["details"] = details
     return {"error": error}
+
+
+# =============================================================================
+# Exception classification (stable categories + actionable user messages)
+# =============================================================================
+
+_ERROR_MISSING_ENV_RE = re.compile(
+    r"^(?P<var>[A-Z0-9_]+) environment variable not set$"
+)
+
+
+def _redact_url(url: str | None) -> str | None:
+    """Redact URL to scheme+hostname only (avoid leaking paths/tokens)."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.hostname:
+            return f"{parsed.scheme}://{parsed.hostname}"
+        return parsed.hostname or "<invalid-url>"
+    except Exception:
+        return "<invalid-url>"
+
+
+def _classify_exception(
+    *,
+    tool_name: str,
+    exc: Exception,
+    http_status_code: int | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Map exceptions into stable categories + safe user messages.
+
+    Returns (category, user_message, details) where category is a stable
+    string like 'AuthenticationError', 'DependencyMissing', etc.
+    """
+    raw_type = type(exc).__name__
+    details: dict[str, Any] = {"raw_type": raw_type}
+
+    # ---- HTTP errors (requests) ----
+    if isinstance(exc, requests.HTTPError):
+        status = http_status_code
+        if status is not None:
+            details["http_status_code"] = status
+
+        if status == 401:
+            return (
+                "AuthenticationError",
+                "Authentication failed. Please check your API key.",
+                details,
+            )
+        if status == 403:
+            return (
+                "AuthenticationError",
+                "Authorization failed. Your API key may not have access.",
+                details,
+            )
+        if status == 404:
+            if tool_name == "get_step_logs":
+                return (
+                    "NotFound",
+                    "Logs not found. Please check the step ID. Also note that if the step was run "
+                    "on a stack with a local or non-cloud-based artifact store then no logs will "
+                    "have been stored by ZenML.",
+                    details,
+                )
+            if tool_name == "get_deployment_logs":
+                return (
+                    "NotFound",
+                    "Deployment not found or logs unavailable. Please check the deployment "
+                    "name/ID. Note that log availability depends on the deployer type and "
+                    "infrastructure configuration.",
+                    details,
+                )
+            return ("NotFound", "Resource not found (HTTP 404).", details)
+
+        if status is not None and 400 <= status < 500:
+            return (
+                "ConfigurationError",
+                f"Request failed (HTTP {status}). Please check your inputs and configuration.",
+                details,
+            )
+        if status is not None and status >= 500:
+            return (
+                "UpstreamError",
+                f"ZenML server error (HTTP {status}). Please try again later.",
+                details,
+            )
+
+        return ("UpstreamError", "Request failed.", details)
+
+    # ---- Common configuration errors (missing env vars) ----
+    if isinstance(exc, ValueError):
+        msg = str(exc)
+        m = _ERROR_MISSING_ENV_RE.match(msg.strip())
+        if m:
+            var = m.group("var")
+            details["missing_env_var"] = var
+            return (
+                "ConfigurationError",
+                f"Missing required environment variable: {var}.",
+                details,
+            )
+
+    # ---- Missing Python deps / integrations ----
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        details["import_error"] = str(exc)
+        return (
+            "DependencyMissing",
+            f"Missing dependency or integration: {exc}",
+            details,
+        )
+
+    # ---- Request connectivity/timeouts ----
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        details["connection_error"] = raw_type
+        return (
+            "UpstreamError",
+            "Could not reach ZenML server. Please check network connectivity and ZENML_STORE_URL.",
+            details,
+        )
+
+    # ---- ZenML auth exceptions (detected by class name to avoid importing ZenML) ----
+    if raw_type in ("CredentialsNotValid", "AuthorizationException"):
+        return (
+            "AuthenticationError",
+            "Authentication to ZenML failed. Check your ZENML_STORE_API_KEY.",
+            details,
+        )
+
+    # ---- Project not configured ----
+    msg = str(exc)
+    if "No project is currently set as active" in msg:
+        return (
+            "ProjectNotConfigured",
+            "No project is currently set as active. Set ZENML_ACTIVE_PROJECT_ID (or configure an active project in ZenML).",
+            details,
+        )
+
+    # ---- Version mismatch (heuristics) ----
+    if "ZenML" in msg and ("version" in msg.lower() or "incompatible" in msg.lower()):
+        details["version_message"] = msg[:200]
+        return (
+            "VersionMismatch",
+            "Version mismatch between this MCP server and your ZenML installation/server.",
+            details,
+        )
+
+    # ---- Default ----
+    # Always show details for ImportError/RuntimeError since they indicate setup/config issues
+    if isinstance(exc, (ImportError, RuntimeError)):
+        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
+
+    if analytics.DEV_MODE:
+        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
+
+    return ("UnexpectedError", f"Error in {tool_name}: {raw_type}", details)
+
+
+# =============================================================================
+# MCP client detection (best-effort, request-scoped)
+# =============================================================================
+
+# Track whether we've already captured client info this session
+_mcp_client_info_captured = False
+_mcp_client_info_lock = Lock()
+
+
+def _get_mcp_client_info_safe() -> dict[str, Any] | None:
+    """Best-effort MCP client detection (only valid during a request)."""
+    try:
+        ctx = mcp.get_context()
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return None
+
+        params = getattr(session, "client_params", None)
+        if params is None:
+            return None
+
+        client_info = getattr(params, "clientInfo", None)
+        if client_info is None:
+            return None
+
+        name = getattr(client_info, "name", None)
+        version = getattr(client_info, "version", None)
+        if not name and not version:
+            return None
+
+        return {"name": name, "version": version}
+    except Exception:
+        return None
 
 
 # Decorator for handling exceptions in tool functions (with analytics tracking)
@@ -145,10 +346,28 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     def wrapper(*args: Any, **kwargs: Any) -> T:
         import time
 
+        global _mcp_client_info_captured
+
         start_time = time.perf_counter()
         success = True
         error_type: str | None = None
         http_status_code: int | None = None
+
+        # Capture MCP client info once per session (best-effort)
+        client: dict[str, Any] | None = None
+        try:
+            if not _mcp_client_info_captured:
+                client = _get_mcp_client_info_safe()
+                if client:
+                    with _mcp_client_info_lock:
+                        if not _mcp_client_info_captured:
+                            _mcp_client_info_captured = True
+                            analytics.set_client_info_once(
+                                client_name=client.get("name"),
+                                client_version=client.get("version"),
+                            )
+        except Exception:
+            client = None
 
         try:
             result = func(*args, **kwargs)
@@ -160,37 +379,20 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             return result
         except requests.HTTPError as e:
             success = False
-            error_type = type(e).__name__
             http_status_code = (
                 e.response.status_code
                 if getattr(e, "response", None) is not None
                 else None
             )
 
-            if http_status_code == 401:
-                message = "Authentication failed. Please check your API key."
-            elif http_status_code == 404 and func_name == "get_step_logs":
-                message = (
-                    "Logs not found. Please check the step ID. "
-                    "Also note that if the step was run on a stack with a local "
-                    "or non-cloud-based artifact store then no logs will have been "
-                    "stored by ZenML."
-                )
-            elif http_status_code == 404 and func_name == "get_deployment_logs":
-                message = (
-                    "Deployment not found or logs unavailable. Please check the deployment "
-                    "name/ID. Note that log availability depends on the deployer type and "
-                    "infrastructure configuration."
-                )
-            elif http_status_code is not None:
-                message = f"Request failed (HTTP {http_status_code})."
-            else:
-                message = "Request failed."
+            category, message, details = _classify_exception(
+                tool_name=func_name,
+                exc=e,
+                http_status_code=http_status_code,
+            )
+            error_type = category
 
-            if analytics.DEV_MODE:
-                message = f"{message} ({e})"
-
-            err_log = f"Error in {func_name}: {error_type}"
+            err_log = f"Error in {func_name}: {category}"
             if http_status_code is not None:
                 err_log = f"{err_log} (HTTP {http_status_code})"
             if analytics.DEV_MODE:
@@ -202,26 +404,27 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             return cast(
                 T,
                 _make_error_result(
-                    func_name, message, error_type or "HTTPError", http_status_code
+                    func_name,
+                    message,
+                    category,
+                    http_status_code,
+                    details=details,
                 ),
             )
         except Exception as e:
             success = False
-            error_type = type(e).__name__
+            category, message, details = _classify_exception(
+                tool_name=func_name,
+                exc=e,
+            )
+            error_type = category
 
-            # Always show details for ImportError/RuntimeError since they indicate setup/config issues
-            if analytics.DEV_MODE or isinstance(e, (ImportError, RuntimeError)):
-                error_detail = str(e)
-            else:
-                error_detail = error_type
-
-            message = f"Error in {func_name}: {error_detail}"
             print(message, file=sys.stderr)
 
             if text_tool:
                 return cast(T, message)
             return cast(
-                T, _make_error_result(func_name, message, error_type or "Exception")
+                T, _make_error_result(func_name, message, category, details=details)
             )
         finally:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
@@ -234,6 +437,8 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     error_type=error_type,
                     size=size,
                     http_status_code=http_status_code,
+                    mcp_client_name=(client or {}).get("name"),
+                    mcp_client_version=(client or {}).get("version"),
                 )
             except Exception:
                 pass
@@ -593,6 +798,134 @@ def make_step_logs_request(
     if isinstance(data, list):
         return {"logs": data}
     return data
+
+
+# =============================================================================
+# Startup Diagnostics (works without ZenML SDK)
+# =============================================================================
+
+
+def collect_zenml_setup_diagnostics(
+    *, include_client_info: bool = False
+) -> dict[str, Any]:
+    """Collect setup diagnostics without requiring ZenML SDK initialization.
+
+    This function is safe even if zenml cannot be imported, env vars are missing,
+    or the server URL is unreachable.
+    """
+    store_url = os.environ.get("ZENML_STORE_URL")
+    api_key_present = bool(os.environ.get("ZENML_STORE_API_KEY"))
+    active_project_id_present = bool(os.environ.get("ZENML_ACTIVE_PROJECT_ID"))
+
+    checks: dict[str, Any] = {
+        "env": {
+            "ZENML_STORE_URL_present": bool(store_url),
+            "ZENML_STORE_API_KEY_present": api_key_present,
+            "ZENML_ACTIVE_PROJECT_ID_present": active_project_id_present,
+            "ZENML_STORE_URL_redacted": _redact_url(store_url),
+        },
+        "python": {
+            "version": sys.version.split()[0],
+        },
+        "analytics": {
+            "enabled": analytics.is_analytics_enabled(),
+            "dev_mode": analytics.DEV_MODE,
+        },
+    }
+
+    # ZenML import check (no Client() call)
+    try:
+        import zenml as _zenml
+
+        checks["zenml"] = {
+            "importable": True,
+            "version": getattr(_zenml, "__version__", "unknown"),
+        }
+    except Exception as e:
+        checks["zenml"] = {"importable": False, "error_type": type(e).__name__}
+
+    # Connectivity probe (best-effort, short timeouts)
+    connectivity: dict[str, Any] = {"attempted": False}
+    if store_url:
+        connectivity["attempted"] = True
+        base = store_url.rstrip("/")
+        probe_urls = [f"{base}/api/v1/info", f"{base}/health"]
+        for url in probe_urls:
+            try:
+                r = requests.get(url, timeout=(1.0, 2.5))
+                connectivity.update(
+                    {
+                        "url": _redact_url(url),
+                        "status_code": r.status_code,
+                        "ok": r.status_code in (200, 204),
+                    }
+                )
+                # Try to extract server version from /api/v1/info response
+                if r.status_code == 200 and "info" in url:
+                    try:
+                        info = r.json()
+                        if isinstance(info, dict) and "version" in info:
+                            checks["zenml_server_version"] = info["version"]
+                    except Exception:
+                        pass
+                break
+            except Exception as e:
+                connectivity.update({"ok": False, "last_error_type": type(e).__name__})
+
+    checks["connectivity"] = connectivity
+
+    if include_client_info:
+        checks["mcp_client"] = _get_mcp_client_info_safe()
+
+    # Summarize issues
+    issues: list[dict[str, Any]] = []
+    if not store_url:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "missing_store_url",
+                "message": "ZENML_STORE_URL is not set.",
+            }
+        )
+    if store_url and not api_key_present:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "missing_api_key",
+                "message": "ZENML_STORE_API_KEY is not set.",
+            }
+        )
+    if store_url and connectivity.get("attempted") and connectivity.get("ok") is False:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "unreachable",
+                "message": "Could not reach ZenML server.",
+            }
+        )
+    if checks.get("zenml", {}).get("importable") is False:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "zenml_not_importable",
+                "message": "ZenML SDK is not importable in this environment.",
+            }
+        )
+
+    ok = not any(i["severity"] == "error" for i in issues)
+    return {"ok": ok, "issues": issues, "checks": checks}
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def diagnose_zenml_setup() -> dict[str, Any]:
+    """Diagnose ZenML MCP server setup (env vars, connectivity, auth, versions).
+
+    Returns structured diagnostics about the server's configuration and
+    connectivity. This tool works even when the ZenML SDK is not installed
+    or environment variables are missing - use it to troubleshoot setup issues.
+    """
+    return collect_zenml_setup_diagnostics(include_client_info=True)
 
 
 @mcp.tool()
@@ -2293,11 +2626,68 @@ if __name__ == "__main__":
         "Required when running behind reverse proxies (cloudflared, ngrok). "
         "WARNING: Only use this in trusted network environments.",
     )
+    parser.add_argument(
+        "--startup-validation",
+        choices=["off", "warn", "strict"],
+        default=os.getenv("ZENML_MCP_STARTUP_VALIDATION", "off"),
+        help="Run a lightweight startup diagnostic before serving MCP. "
+        "'warn' prints problems but continues. 'strict' exits non-zero if "
+        "required setup is missing. (default: off, env: ZENML_MCP_STARTUP_VALIDATION)",
+    )
     args = parser.parse_args()
 
     try:
         analytics.init_analytics()
-        analytics.track_server_started()
+
+        # Attach transport to session-wide analytics properties
+        try:
+            analytics.set_session_properties({"transport": args.transport})
+        except Exception:
+            pass
+
+        # Run startup validation if enabled
+        startup_extra: dict[str, Any] = {
+            "startup_validation_mode": args.startup_validation
+        }
+        if args.startup_validation != "off":
+            diag = collect_zenml_setup_diagnostics(include_client_info=False)
+            startup_extra["startup_validation_ok"] = bool(diag.get("ok"))
+
+            # Include ZenML versions if detected
+            zenml_info = diag.get("checks", {}).get("zenml", {})
+            if zenml_info.get("importable"):
+                startup_extra["zenml_sdk_version"] = zenml_info.get("version")
+            server_version = diag.get("checks", {}).get("zenml_server_version")
+            if server_version:
+                startup_extra["zenml_server_version"] = server_version
+
+            if args.startup_validation == "warn" and not diag.get("ok"):
+                print("Startup validation warnings:", file=sys.stderr)
+                for issue in diag.get("issues", []):
+                    print(
+                        f"  - [{issue.get('severity')}] {issue.get('message')}",
+                        file=sys.stderr,
+                    )
+
+            if args.startup_validation == "strict" and not diag.get("ok"):
+                print(
+                    "Startup validation failed (strict mode). Refusing to start.",
+                    file=sys.stderr,
+                )
+                for issue in diag.get("issues", []):
+                    print(
+                        f"  - [{issue.get('severity')}] {issue.get('message')}",
+                        file=sys.stderr,
+                    )
+                analytics.track_event(
+                    "Startup Validation Failed",
+                    {
+                        "issues_count": len(diag.get("issues", [])),
+                    },
+                )
+                raise SystemExit(2)
+
+        analytics.track_server_started(extra_properties=startup_extra)
 
         if args.transport == "streamable-http":
             from mcp.server.transport_security import TransportSecuritySettings
