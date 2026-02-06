@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
@@ -139,14 +140,19 @@ def _make_error_result(
 
 
 # =============================================================================
-# Datetime filter normalization (Fix D from mcp-tool-ux-friction.md)
+# Datetime filter normalization
 # =============================================================================
-# ZenML requires datetime filters in "%Y-%m-%d %H:%M:%S" format.
-# LLMs commonly send date-only strings (e.g. gte:2026-02-02) which cause
-# ValidationErrors. This helper normalizes common inputs before they reach ZenML.
+# ZenML requires datetime filters in "%Y-%m-%d %H:%M:%S" format exactly.
+# LLMs commonly send date-only strings (e.g. gte:2026-02-02), ISO-8601
+# timestamps with T/Z/offsets, or range:.. syntax.  All of these cause
+# ValidationErrors if passed through as-is.  This helper normalizes the most
+# common inputs so they reach ZenML in the right format.
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_ISO_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$")
+_ISO_DT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+_SPACE_FRAC_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+$")
 _RANGE_RE = re.compile(r"^range:(?P<lower>.+?)\.\.(?P<upper>.+)$")
 _DATETIME_FILTER_KEYS = frozenset({"created", "updated", "start_time", "end_time"})
 _KNOWN_OPS = frozenset(
@@ -167,17 +173,41 @@ _KNOWN_OPS = frozenset(
 _UPPER_BOUND_OPS = frozenset({"lte", "lt"})
 
 
+def _parse_iso_to_zenml(s: str) -> str | None:
+    """Best-effort parse an ISO-8601 string into ZenML format (YYYY-MM-DD HH:MM:SS).
+
+    Returns None if the string isn't recognizable ISO-8601.
+    Timezone-aware inputs are converted to UTC before formatting.
+    """
+    try:
+        # Python 3.11+ fromisoformat handles Z, offsets, fractional seconds
+        adjusted = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(adjusted)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
 def _norm_datetime_token(s: str, *, upper_bound: bool) -> str:
     """Normalize a single datetime token to ZenML's required format.
 
-    - ISO 8601 (T separator, optional Z) → space separator, seconds precision
-    - Date-only (YYYY-MM-DD) → append 00:00:00 or 23:59:59
+    Handles ISO-8601 (T separator, Z suffix, timezone offsets, fractional
+    seconds), space-separated datetimes with fractional seconds, and
+    date-only strings (YYYY-MM-DD).
     """
     s = s.strip()
+    # Try stdlib ISO parser first (handles offsets, Z, missing seconds, etc.)
     if _ISO_DT_RE.match(s):
-        s = s.replace("T", " ").rstrip("Z")
-        if "." in s:
-            s = s.split(".", 1)[0]
+        parsed = _parse_iso_to_zenml(s)
+        if parsed:
+            return parsed
+    # Space-separated with fractional seconds: 2026-02-01 10:00:00.123 → drop fraction
+    m = _SPACE_FRAC_RE.match(s)
+    if m:
+        return m.group(1)
+    # Date-only: append time of day (start or end depending on operator context)
     if _DATE_ONLY_RE.match(s):
         return f"{s} {'23:59:59' if upper_bound else '00:00:00'}"
     return s
@@ -312,27 +342,28 @@ def _classify_exception(
 
         return ("UpstreamError", "Request failed.", details)
 
-    # ---- Validation errors (bad filter syntax / datetime format) ----
-    # Detect by class name to avoid hard import dependency on pydantic version
-    if raw_type == "ValidationError" or "validation error" in str(exc).lower()[:200]:
+    # ---- Validation errors ----
+    # Detect by class name + module to avoid false positives from unrelated
+    # exceptions that happen to contain "validation" in their text.
+    exc_mod = getattr(exc.__class__, "__module__", "")
+    is_validation = raw_type == "ValidationError" or (
+        "pydantic" in exc_mod and "Validation" in raw_type
+    )
+    if is_validation:
         error_snippet = str(exc)[:300]
         details["validation_error"] = error_snippet
-        return (
-            "ValidationError",
-            "Filter validation failed. Check your filter syntax.\n\n"
-            "CORRECT FILTER SYNTAX:\n"
-            "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
-            "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, oneof:, in:\n"
-            "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59\n"
-            "- Status filter: oneof:completed,failed\n"
-            "- Sort: desc:created or asc:updated\n\n"
-            "COMMON MISTAKES:\n"
-            "- BAD:  gte:2026-02-01 (missing time)\n"
-            "- GOOD: gte:2026-02-01 00:00:00\n"
-            "- BAD:  2026-02-01T10:00:00Z (ISO format)\n"
-            "- GOOD: 2026-02-01 10:00:00",
-            details,
-        )
+        # Generic message suitable for any validation error
+        msg = "Validation failed. Please check your inputs.\n\n" + error_snippet
+        # Add filter-syntax help only for tools that accept filters
+        if tool_name.startswith("list_"):
+            msg += (
+                "\n\nFILTER SYNTAX REFERENCE:\n"
+                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, oneof:, in:\n"
+                "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
+                "- Date-only and ISO-8601 inputs are auto-normalized\n"
+                "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59"
+            )
+        return ("ValidationError", msg, details)
 
     # ---- Common configuration errors (missing env vars) ----
     if isinstance(exc, ValueError):
@@ -493,7 +524,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             client = None
 
         try:
-            # Normalize datetime filter kwargs before calling the tool (Fix D).
+            # Normalize datetime filter kwargs before calling the tool.
             # Uses a copy so analytics.extract_size_from_call sees original kwargs.
             call_kwargs = dict(kwargs) if kwargs else kwargs
             if call_kwargs:
@@ -1084,6 +1115,10 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
     return make_step_logs_request(server_url, step_run_id, access_token)
 
 
+# Page-size defaults for list tools:
+#   50 – lightweight resources (users, projects, tags, secrets)
+#   20 – medium resources (stacks, pipelines, models, connectors, etc.)
+#   10 – heavy payloads (pipeline runs, run steps, artifacts)
 @mcp.tool()
 @handle_tool_exceptions
 def list_users(
