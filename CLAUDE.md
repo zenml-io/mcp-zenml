@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Testing and Development
 - **Run smoke tests**: `uv run scripts/test_mcp_server.py server/zenml_server.py`
 - **Run analytics tests**: `uv run scripts/test_analytics.py --full-diagnostic`
+- **Run unit tests**: `uv run scripts/test_datetime_normalization.py`
 - **Format code**: `./scripts/format.sh` (uses ruff for linting/formatting + ty for type checking)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
 - **Type check only**: `uvx ty check` (runs type checking without formatting)
@@ -37,8 +38,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    ```
 
 4. **Wait for CI to pass** before merging - PR tests include:
-   - MCP smoke tests (Python)
+   - MCP smoke tests (Python) — requires ZenML credentials
    - Analytics pipeline tests
+   - Unit tests (datetime normalization, exception classification) — no credentials needed
    - Docker build verification
    - Type checking (ty)
    - Security linting (zizmor)
@@ -141,10 +143,11 @@ The server requires:
 
 ### Testing Infrastructure
 
-- **PR Testing**: GitHub Actions runs tests on every PR (formatting checks + smoke tests)
+- **PR Testing**: GitHub Actions runs tests on every PR (smoke tests, unit tests, formatting, type checks)
 - **Scheduled testing**: Comprehensive smoke tests run every 3 days with automated issue creation on failures
-- **Manual testing**: Use the test script to verify MCP protocol functionality
+- **Manual testing**: Use the test scripts to verify MCP protocol functionality
 - **CI/CD**: Uses UV with caching for fast dependency installation
+- **Important**: When adding new test scripts, always wire them into `.github/workflows/pr-test.yml` so they run in CI. Tests that don't need ZenML credentials should run unconditionally (no `if: env.ZENML_STORE_URL != ''` guard).
 
 ### Debugging with MCP Inspector
 
