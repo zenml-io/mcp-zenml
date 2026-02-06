@@ -61,6 +61,11 @@ jobs:
           echo "Running analytics pipeline test..."
           uv run scripts/test_analytics.py --full-diagnostic
 
+      - name: Run unit tests (no credentials needed)
+        run: |
+          echo "Running datetime normalization and classification tests..."
+          uv run scripts/test_datetime_normalization.py
+
   docker-build:
     runs-on: ubuntu-latest
     steps:
