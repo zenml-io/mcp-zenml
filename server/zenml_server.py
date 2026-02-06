@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
@@ -139,6 +140,121 @@ def _make_error_result(
 
 
 # =============================================================================
+# Datetime filter normalization
+# =============================================================================
+# ZenML requires datetime filters in "%Y-%m-%d %H:%M:%S" format exactly.
+# LLMs commonly send date-only strings (e.g. gte:2026-02-02), ISO-8601
+# timestamps with T/Z/offsets, or range:.. syntax.  All of these cause
+# ValidationErrors if passed through as-is.  This helper normalizes the most
+# common inputs so they reach ZenML in the right format.
+
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_DT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+_SPACE_FRAC_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+$")
+_RANGE_RE = re.compile(r"^range:(?P<lower>.+?)\.\.(?P<upper>.+)$")
+_DATETIME_FILTER_KEYS = frozenset({"created", "updated", "start_time", "end_time"})
+_KNOWN_OPS = frozenset(
+    {
+        "equals",
+        "notequals",
+        "contains",
+        "startswith",
+        "endswith",
+        "oneof",
+        "gte",
+        "gt",
+        "lte",
+        "lt",
+        "in",
+    }
+)
+_UPPER_BOUND_OPS = frozenset({"lte", "lt"})
+
+
+def _parse_iso_to_zenml(s: str) -> str | None:
+    """Best-effort parse an ISO-8601 string into ZenML format (YYYY-MM-DD HH:MM:SS).
+
+    Returns None if the string isn't recognizable ISO-8601.
+    Timezone-aware inputs are converted to UTC before formatting.
+    """
+    try:
+        # Python 3.11+ fromisoformat handles Z, offsets, fractional seconds
+        adjusted = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(adjusted)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def _norm_datetime_token(s: str, *, upper_bound: bool) -> str:
+    """Normalize a single datetime token to ZenML's required format.
+
+    Handles ISO-8601 (T separator, Z suffix, timezone offsets, fractional
+    seconds), space-separated datetimes with fractional seconds, and
+    date-only strings (YYYY-MM-DD).
+    """
+    s = s.strip()
+    # Try stdlib ISO parser first (handles offsets, Z, missing seconds, etc.)
+    if _ISO_DT_RE.match(s):
+        parsed = _parse_iso_to_zenml(s)
+        if parsed:
+            return parsed
+    # Space-separated with fractional seconds: 2026-02-01 10:00:00.123 → drop fraction
+    m = _SPACE_FRAC_RE.match(s)
+    if m:
+        return m.group(1)
+    # Date-only: append time of day (start or end depending on operator context)
+    if _DATE_ONLY_RE.match(s):
+        return f"{s} {'23:59:59' if upper_bound else '00:00:00'}"
+    return s
+
+
+def _normalize_datetime_filter(value: str) -> str:
+    """Normalize a datetime filter value for ZenML compatibility.
+
+    Handles:
+    - range:lower..upper → in:lower 00:00:00,upper 23:59:59
+    - gte:YYYY-MM-DD → gte:YYYY-MM-DD 00:00:00
+    - lte:YYYY-MM-DD → lte:YYYY-MM-DD 23:59:59
+    - ISO timestamps (T separator) → space separator
+    - Bare YYYY-MM-DD (no operator) → YYYY-MM-DD 00:00:00
+    """
+    raw = value.strip()
+    if not raw:
+        return value
+
+    # Convenience: range:lower..upper → in:lower,upper
+    m = _RANGE_RE.match(raw)
+    if m:
+        lower = _norm_datetime_token(m.group("lower"), upper_bound=False)
+        upper = _norm_datetime_token(m.group("upper"), upper_bound=True)
+        return f"in:{lower},{upper}"
+
+    # Split optional op:value
+    head, sep, tail = raw.partition(":")
+    if sep and head in _KNOWN_OPS:
+        op, rest = head, tail
+    else:
+        op, rest = None, raw
+
+    # Handle in: operator (comma-separated pair)
+    if op == "in" and "," in rest:
+        lower, upper = rest.split(",", 1)
+        lower = _norm_datetime_token(lower, upper_bound=False)
+        upper = _norm_datetime_token(upper, upper_bound=True)
+        return f"in:{lower},{upper}"
+
+    # Normalize single value
+    is_upper = op in _UPPER_BOUND_OPS
+    norm = _norm_datetime_token(rest, upper_bound=is_upper)
+    return f"{op}:{norm}" if op else norm
+
+
+# =============================================================================
 # Exception classification (stable categories + actionable user messages)
 # =============================================================================
 
@@ -225,6 +341,29 @@ def _classify_exception(
             )
 
         return ("UpstreamError", "Request failed.", details)
+
+    # ---- Validation errors ----
+    # Detect by class name + module to avoid false positives from unrelated
+    # exceptions that happen to contain "validation" in their text.
+    exc_mod = getattr(exc.__class__, "__module__", "")
+    is_validation = raw_type == "ValidationError" or (
+        "pydantic" in exc_mod and "Validation" in raw_type
+    )
+    if is_validation:
+        error_snippet = str(exc)[:300]
+        details["validation_error"] = error_snippet
+        # Generic message suitable for any validation error
+        msg = "Validation failed. Please check your inputs.\n\n" + error_snippet
+        # Add filter-syntax help only for tools that accept filters
+        if tool_name.startswith("list_"):
+            msg += (
+                "\n\nFILTER SYNTAX REFERENCE:\n"
+                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, oneof:, in:\n"
+                "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
+                "- Date-only and ISO-8601 inputs are auto-normalized\n"
+                "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59"
+            )
+        return ("ValidationError", msg, details)
 
     # ---- Common configuration errors (missing env vars) ----
     if isinstance(exc, ValueError):
@@ -385,7 +524,15 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             client = None
 
         try:
-            result = func(*args, **kwargs)
+            # Normalize datetime filter kwargs before calling the tool.
+            # Uses a copy so analytics.extract_size_from_call sees original kwargs.
+            call_kwargs = dict(kwargs) if kwargs else kwargs
+            if call_kwargs:
+                for key in _DATETIME_FILTER_KEYS:
+                    if key in call_kwargs and isinstance(call_kwargs[key], str):
+                        call_kwargs[key] = _normalize_datetime_filter(call_kwargs[key])
+
+            result = func(*args, **call_kwargs)
             # Detect structured error envelopes (full shape validation to avoid
             # false positives from legitimate "error" fields in successful results)
             if _is_structured_error_envelope(result):
@@ -968,12 +1115,16 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
     return make_step_logs_request(server_url, step_run_id, access_token)
 
 
+# Page-size defaults for list tools:
+#   50 – lightweight resources (users, projects, tags, secrets)
+#   20 – medium resources (stacks, pipelines, models, connectors, etc.)
+#   10 – heavy payloads (pipeline runs, run steps, artifacts)
 @mcp.tool()
 @handle_tool_exceptions
 def list_users(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -981,14 +1132,21 @@ def list_users(
 ) -> dict[str, Any]:
     """List all users in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the users by
-        page: The page number to return
-        size: The number of users to return
-        logical_operator: The logical operator to use
-        created: The creation date of the users
-        updated: The last update date of the users
-        active: Whether the user is active
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-01-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        active: Filter by active status
     """
     users = get_zenml_client().list_users(
         sort_by=sort_by,
@@ -1057,7 +1215,7 @@ def get_project(name_id_or_prefix: str, hydrate: bool = True) -> dict[str, Any]:
 def list_projects(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1066,15 +1224,20 @@ def list_projects(
 ) -> dict[str, Any]:
     """List all projects in the ZenML workspace.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the projects by
-        page: The page number to return
-        size: The number of projects to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
         name: Filter by project name
         display_name: Filter by project display name
     """
@@ -1128,7 +1291,7 @@ def easter_egg() -> str:
 def list_stacks(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1136,16 +1299,20 @@ def list_stacks(
 ) -> dict[str, Any]:
     """List all stacks in the ZenML workspace.
 
-    By default, the stacks are sorted by creation date in descending order.
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the stacks by
-        page: The page number to return
-        size: The number of stacks to return
-        logical_operator: The logical operator to use
-        created: The creation date of the stacks
-        updated: The last update date of the stacks
-        name: The name of the stacks
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by stack name (e.g. contains:prod)
     """
     stacks = get_zenml_client().list_stacks(
         sort_by=sort_by,
@@ -1164,20 +1331,24 @@ def list_stacks(
 def list_pipelines(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     created: str | None = None,
     updated: str | None = None,
 ) -> dict[str, Any]:
     """List all pipelines in the ZenML workspace.
 
-    By default, the pipelines are sorted by creation date in descending order.
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the pipelines by
-        page: The page number to return
-        size: The number of pipelines to return
-        created: The creation date of the pipelines
-        updated: The last update date of the pipelines
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
     """
     pipelines = get_zenml_client().list_pipelines(
         sort_by=sort_by,
@@ -1240,7 +1411,7 @@ def get_service(name_id_or_prefix: str) -> dict[str, Any]:
 def list_services(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     id: str | None = None,
     created: str | None = None,
@@ -1254,14 +1425,20 @@ def list_services(
 ) -> dict[str, Any]:
     """List all services in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the services by
-        page: The page number to return
-        size: The number of services to return
-        logical_operator: The logical operator to use
-        id: The ID of the services
-        created: The creation date of the services
-        updated: The last update date of the services
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        id: Filter by service UUID
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
         running: Whether the service is running
         service_name: The name of the service
         pipeline_name: The name of the pipeline
@@ -1304,7 +1481,7 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
 def list_stack_components(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1314,16 +1491,22 @@ def list_stack_components(
 ) -> dict[str, Any]:
     """List all stack components in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the stack components by
-        page: The page number to return
-        size: The number of stack components to return
-        logical_operator: The logical operator to use
-        created: The creation date of the stack components
-        updated: The last update date of the stack components
-        name: The name of the stack components
-        flavor: The flavor of the stack components
-        stack_id: The ID of the stack
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by component name (e.g. contains:s3)
+        flavor: Filter by flavor name (e.g. contains:aws)
+        stack_id: Filter by stack UUID
     """
     stack_components = get_zenml_client().list_stack_components(
         sort_by=sort_by,
@@ -1356,7 +1539,7 @@ def get_flavor(name_id_or_prefix: str) -> dict[str, Any]:
 def list_flavors(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     id: str | None = None,
     created: str | None = None,
@@ -1366,14 +1549,19 @@ def list_flavors(
 ) -> dict[str, Any]:
     """List all flavors in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+
     Args:
-        sort_by: The field to sort the flavors by
-        page: The page number to return
-        size: The number of flavors to return
-        logical_operator: The logical operator to use
-        id: The ID of the flavors
-        created: The creation date of the flavors
-        updated: The last update date of the flavors
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        id: Filter by flavor UUID
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
     """
     flavors = get_zenml_client().list_flavors(
         sort_by=sort_by,
@@ -1498,7 +1686,7 @@ def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
 def list_run_templates(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     created: str | None = None,
     updated: str | None = None,
     name: str | None = None,
@@ -1506,18 +1694,23 @@ def list_run_templates(
 ) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
-    ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `list_snapshots` instead.
-    Snapshots are the modern replacement for run templates. To find runnable
-    snapshots, use `list_snapshots(runnable=True)`.
+    DEPRECATED: Use `list_snapshots` instead. For runnable configs, use
+    `list_snapshots(runnable=True)`.
+
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the run templates by
-        page: The page number to return
-        size: The number of run templates to return
-        created: The creation date of the run templates
-        updated: The last update date of the run templates
-        name: The name of the run templates
-        tag: The tag of the run templates
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by template name (e.g. contains:train)
+        tag: Filter by tag name
     """
     run_templates = get_zenml_client().list_run_templates(
         sort_by=sort_by,
@@ -1581,7 +1774,7 @@ def get_snapshot(
 def list_snapshots(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1596,26 +1789,30 @@ def list_snapshots(
 ) -> dict[str, Any]:
     """List all snapshots in the ZenML workspace.
 
-    Snapshots are frozen pipeline configurations that replace the deprecated
-    Run Templates. Use `runnable=True` to find snapshots that can be triggered.
+    Snapshots are frozen pipeline configurations (replacing deprecated Run Templates).
+    Use `runnable=True` to find snapshots that can be triggered.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the snapshots by
-        page: The page number to return
-        size: The number of snapshots to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        name: Filter by snapshot name
-        pipeline: Filter by pipeline name or ID
-        runnable: Filter to only runnable snapshots (can be triggered)
-        deployable: Filter to only deployable snapshots
-        deployed: Filter to only currently deployed snapshots
-        tag: Filter by tag
-        project: Optional project scope (defaults to active project)
-        named_only: Only return named snapshots (default True to avoid internal ones)
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by snapshot name (e.g. contains:prod)
+        pipeline: Filter by pipeline name or UUID
+        runnable: If True, only return snapshots that can be triggered
+        deployable: If True, only return deployable snapshots
+        deployed: If True, only return currently deployed snapshots
+        tag: Filter by tag name
+        project: Project scope (defaults to active project)
+        named_only: Only named snapshots (default True to skip internal ones)
     """
     snapshots = get_zenml_client().list_snapshots(
         sort_by=sort_by,
@@ -1671,7 +1868,7 @@ def get_deployment(
 def list_deployments(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1687,22 +1884,26 @@ def list_deployments(
 
     Deployments show what's currently serving/provisioned with runtime status.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the deployments by
-        page: The page number to return
-        size: The number of deployments to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        name: Filter by deployment name
-        status: Filter by deployment status (e.g., "running", "error")
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by deployment name (e.g. contains:prod)
+        status: Filter by status (e.g. oneof:running,error)
         url: Filter by deployment URL
-        pipeline: Filter by pipeline name or ID
-        snapshot_id: Filter by source snapshot ID
-        tag: Filter by tag
-        project: Optional project scope (defaults to active project)
+        pipeline: Filter by pipeline name or UUID
+        snapshot_id: Filter by source snapshot UUID
+        tag: Filter by tag name
+        project: Project scope (defaults to active project)
     """
     deployments = get_zenml_client().list_deployments(
         sort_by=sort_by,
@@ -1851,7 +2052,7 @@ def get_schedule(name_id_or_prefix: str) -> dict[str, Any]:
 def list_schedules(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -1862,16 +2063,22 @@ def list_schedules(
 ) -> dict[str, Any]:
     """List all schedules in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the schedules by
-        page: The page number to return
-        size: The number of schedules to return
-        created: The creation date of the schedules
-        updated: The last update date of the schedules
-        name: The name of the schedules
-        pipeline_id: The ID of the pipeline
-        orchestrator_id: The ID of the orchestrator
-        active: Whether the schedule is active
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by schedule name (e.g. contains:daily)
+        pipeline_id: Filter by pipeline UUID
+        orchestrator_id: Filter by orchestrator UUID
+        active: Filter by active status (True/False)
     """
     schedules = get_zenml_client().list_schedules(
         sort_by=sort_by,
@@ -1921,22 +2128,32 @@ def list_pipeline_runs(
 ) -> dict[str, Any]:
     """List all pipeline runs in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters — useful
+    for answering 'how many runs?' without fetching all pages.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+    Date range: 'in:2026-02-01 00:00:00,2026-02-07 23:59:59'.
+
     Args:
-        sort_by: The field to sort the pipeline runs by
-        page: The page number to return
-        size: The number of pipeline runs to return
-        logical_operator: The logical operator to use
-        created: The creation date of the pipeline runs
-        updated: The last update date of the pipeline runs
-        name: The name of the pipeline runs
-        pipeline_id: The ID of the pipeline
-        pipeline_name: The name of the pipeline
-        stack_id: The ID of the stack
-        status: The status of the pipeline runs
-        start_time: The start time of the pipeline runs
-        end_time: The end time of the pipeline runs
-        stack: The stack of the pipeline runs
-        stack_component: The stack component of the pipeline runs
+        sort_by: Sort field and direction (e.g. desc:created, asc:start_time)
+        page: Page number (1-indexed)
+        size: Results per page (keep small for runs — they have large payloads)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by run name (e.g. contains:training)
+        pipeline_id: Filter by pipeline UUID
+        pipeline_name: Filter by pipeline name (e.g. contains:my_pipeline)
+        stack_id: Filter by stack UUID
+        status: Filter by run status (e.g. oneof:completed,failed).
+            Values: initializing, failed, completed, running, cached
+        start_time: Filter by run start time (e.g. gte:2026-02-01 00:00:00)
+        end_time: Filter by run end time (e.g. lte:2026-02-07 23:59:59)
+        stack: Filter by stack name
+        stack_component: Filter by stack component name
     """
     pipeline_runs = get_zenml_client().list_pipeline_runs(
         sort_by=sort_by,
@@ -1987,18 +2204,26 @@ def list_run_steps(
 ) -> dict[str, Any]:
     """List all run steps in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+    The 'total' field gives the global count matching your filters.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the run steps by
-        page: The page number to return
-        size: The number of run steps to return
-        logical_operator: The logical operator to use
-        created: The creation date of the run steps
-        updated: The last update date of the run steps
-        name: The name of the run steps
-        status: The status of the run steps
-        start_time: The start time of the run steps
-        end_time: The end time of the run steps
-        pipeline_run_id: The ID of the pipeline run
+        sort_by: Sort field and direction (e.g. desc:created, asc:start_time)
+        page: Page number (1-indexed)
+        size: Results per page (keep small — step payloads are large)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by step name (e.g. contains:train)
+        status: Filter by step status (e.g. oneof:completed,failed).
+            Values: initializing, failed, completed, running, cached
+        start_time: Filter by step start time (e.g. gte:2026-02-01 00:00:00)
+        end_time: Filter by step end time (e.g. lte:2026-02-07 23:59:59)
+        pipeline_run_id: Filter by pipeline run UUID
     """
     run_steps = get_zenml_client().list_run_steps(
         sort_by=sort_by,
@@ -2030,14 +2255,20 @@ def list_artifacts(
 ) -> dict[str, Any]:
     """List all artifacts in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the artifacts by
-        page: The page number to return
-        size: The number of artifacts to return
-        logical_operator: The logical operator to use
-        created: The creation date of the artifacts
-        updated: The last update date of the artifacts
-        name: The name of the artifacts
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page (keep small — artifact payloads are large)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by artifact name (e.g. contains:model)
     """
     artifacts = get_zenml_client().list_artifacts(
         sort_by=sort_by,
@@ -2085,15 +2316,21 @@ def list_artifact_versions(
 ) -> dict[str, Any]:
     """List all versions of a specific artifact.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        artifact_name_or_id: The name or ID of the artifact
-        sort_by: The field to sort the versions by
-        page: The page number to return
-        size: The number of versions to return
-        logical_operator: The logical operator to use
-        created: The creation date filter
-        updated: The last update date filter
-        tag: The tag filter
+        artifact_name_or_id: The name or UUID of the artifact
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page (keep small — version payloads are large)
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        tag: Filter by tag name
     """
     versions = get_zenml_client().list_artifact_versions(
         artifact=artifact_name_or_id,
@@ -2113,22 +2350,28 @@ def list_artifact_versions(
 def list_secrets(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """List all secrets in the ZenML workspace.
+    """List all secrets in the ZenML workspace (names only, no values).
+
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the secrets by
-        page: The page number to return
-        size: The number of secrets to return
-        logical_operator: The logical operator to use
-        created: The creation date of the secrets
-        updated: The last update date of the secrets
-        name: The name of the secrets
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by secret name (e.g. contains:api)
     """
     secrets = get_zenml_client().list_secrets(
         sort_by=sort_by,
@@ -2159,7 +2402,7 @@ def get_service_connector(name_id_or_prefix: str) -> dict[str, Any]:
 def list_service_connectors(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2168,15 +2411,21 @@ def list_service_connectors(
 ) -> dict[str, Any]:
     """List all service connectors in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the service connectors by
-        page: The page number to return
-        size: The number of service connectors to return
-        logical_operator: The logical operator to use
-        created: The creation date of the service connectors
-        updated: The last update date of the service connectors
-        name: The name of the service connectors
-        connector_type: The type of the service connectors
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by connector name (e.g. contains:aws)
+        connector_type: Filter by connector type (e.g. contains:gcp)
     """
     service_connectors = get_zenml_client().list_service_connectors(
         sort_by=sort_by,
@@ -2208,7 +2457,7 @@ def get_model(name_id_or_prefix: str) -> dict[str, Any]:
 def list_models(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2217,15 +2466,21 @@ def list_models(
 ) -> dict[str, Any]:
     """List all models in the ZenML workspace.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        sort_by: The field to sort the models by
-        page: The page number to return
-        size: The number of models to return
-        logical_operator: The logical operator to use
-        created: The creation date of the models
-        updated: The last update date of the models
-        name: The name of the models
-        tag: The tag of the models
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by model name (e.g. contains:bert)
+        tag: Filter by tag name (e.g. contains:prod)
     """
     models = get_zenml_client().list_models(
         sort_by=sort_by,
@@ -2265,7 +2520,7 @@ def list_model_versions(
     model_name_or_id: str,
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2276,18 +2531,24 @@ def list_model_versions(
 ) -> dict[str, Any]:
     """List all model versions for a model.
 
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
+
     Args:
-        model_name_or_id: The name, ID or prefix of the model to retrieve
-        sort_by: The field to sort the model versions by
-        page: The page number to return
-        size: The number of model versions to return
-        logical_operator: The logical operator to use
-        created: The creation date of the model versions
-        updated: The last update date of the model versions
-        name: The name of the model versions
-        number: The number of the model versions
-        stage: The stage of the model versions
-        tag: The tag of the model versions
+        model_name_or_id: The name or UUID of the model
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by version name
+        number: Filter by version number
+        stage: Filter by stage (e.g. oneof:production,staging)
+        tag: Filter by tag name
     """
     model_versions = get_zenml_client().list_model_versions(
         model_name_or_id,
@@ -2345,7 +2606,7 @@ def get_tag(tag_name_or_id: str, hydrate: bool = True) -> dict[str, Any]:
 def list_tags(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 50,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2355,20 +2616,24 @@ def list_tags(
 ) -> dict[str, Any]:
     """List all tags in the ZenML workspace.
 
-    Tags enable queries like "show me all prod deployments" and help organize
+    Tags enable queries like 'show me all prod deployments' and help organize
     resources. Exclusive tags can only be applied once per entity.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the tags by
-        page: The page number to return
-        size: The number of tags to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        name: Filter by tag name
-        exclusive: Filter by exclusive tags (can only be applied once per entity)
+        sort_by: Sort field and direction (e.g. desc:created, asc:name)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        name: Filter by tag name (e.g. contains:prod)
+        exclusive: If True, only return exclusive tags
         resource_type: Filter by resource type the tag applies to
     """
     tags = get_zenml_client().list_tags(
@@ -2420,7 +2685,7 @@ def get_build(
 def list_builds(
     sort_by: str = "desc:created",
     page: int = 1,
-    size: int = 10,
+    size: int = 20,
     logical_operator: str = "and",
     created: str | None = None,
     updated: str | None = None,
@@ -2432,23 +2697,27 @@ def list_builds(
 ) -> dict[str, Any]:
     """List all pipeline builds in the ZenML workspace.
 
-    Builds explain reproducibility (container image/code) and can help debug
-    infrastructure issues.
+    Builds contain image info, code embedding, and stack checksums for
+    reproducibility and infrastructure debugging.
 
-    Returns JSON including pagination metadata (items, total, page, size).
+    Returns paginated results with 'items', 'total', 'page', 'size' fields.
+
+    Filter syntax: String params support 'op:value' operators (gte, lte, gt,
+    lt, equals, notequals, contains, startswith, endswith, oneof, in).
+    Datetime format: 'YYYY-MM-DD HH:MM:SS' (e.g. gte:2026-02-01 00:00:00).
 
     Args:
-        sort_by: The field to sort the builds by
-        page: The page number to return
-        size: The number of builds to return
-        logical_operator: The logical operator to use for combining filters
-        created: Filter by creation date
-        updated: Filter by last update date
-        pipeline_id: Filter by pipeline ID
-        stack_id: Filter by stack ID
-        is_local: Filter by local builds (not runnable from server)
-        contains_code: Filter by builds that contain embedded code
-        project: Optional project scope (defaults to active project)
+        sort_by: Sort field and direction (e.g. desc:created)
+        page: Page number (1-indexed)
+        size: Results per page
+        logical_operator: Combine filters with 'and' or 'or'
+        created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
+        updated: Filter by update time (same syntax as created)
+        pipeline_id: Filter by pipeline UUID
+        stack_id: Filter by stack UUID
+        is_local: If True, only local builds (not runnable from server)
+        contains_code: If True, only builds with embedded code
+        project: Project scope (defaults to active project)
     """
     builds = get_zenml_client().list_builds(
         sort_by=sort_by,

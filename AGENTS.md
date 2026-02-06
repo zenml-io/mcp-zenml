@@ -2,13 +2,14 @@
 
 ## Project Structure & Module Organization
 - `server/` – MCP server implementation. Main entry: `server/zenml_server.py`; analytics: `server/zenml_mcp_analytics.py`; treat `server/lib/` as vendored support code (avoid edits unless necessary).
-- `scripts/` – Developer utilities: `format.sh` (ruff) and `test_mcp_server.py` (smoke test).
+- `scripts/` – Developer utilities: `format.sh` (ruff), `test_mcp_server.py` (smoke test), `test_analytics.py` (analytics diagnostics), `test_datetime_normalization.py` (unit tests).
 - `assets/` – Images and static assets.
 - Root files – `README.md`, `manifest.json`, `mcp-zenml.mcpb` (MCP bundle), CI in `.github/workflows/`.
 
 ## Build, Test, and Development Commands
 - Run server locally: `uv run server/zenml_server.py`
 - Smoke test (local): `uv run scripts/test_mcp_server.py server/zenml_server.py`
+- Unit tests (local): `uv run scripts/test_datetime_normalization.py`
 - Format & lint: `bash scripts/format.sh` (ruff check + import sort + format)
 - CI mirrors the smoke test via GitHub Actions and requires Python 3.12.
 
@@ -20,8 +21,11 @@
 
 ## Testing Guidelines
 - Primary test: `scripts/test_mcp_server.py` exercises MCP connection, initialization, and basic tools.
-- Run locally with `uv run ...`; CI runs on PRs and a scheduled workflow.
-- If adding tests, follow descriptive names (e.g., `test_<area>_behavior.py`) and place alongside existing script tests under `scripts/` or add a `tests/` folder. Keep tests fast and network-light; mock ZenML calls when feasible.
+- Unit tests: `scripts/test_datetime_normalization.py` tests datetime filter normalization and exception classification (no credentials needed).
+- Analytics tests: `scripts/test_analytics.py` tests the analytics pipeline.
+- Run locally with `uv run scripts/<test_script>.py`; CI runs on PRs and a scheduled workflow.
+- **When adding new test scripts, always wire them into `.github/workflows/pr-test.yml`** so they run in CI. Tests that don't need ZenML credentials should run unconditionally.
+- Follow descriptive names (e.g., `test_<area>_behavior.py`) and place under `scripts/`. Keep tests fast and network-light; mock ZenML calls when feasible.
 
 ## Commit & Pull Request Guidelines
 - Commits: concise, imperative subject (e.g., "Update README", "Add smoke test"), group related changes.
