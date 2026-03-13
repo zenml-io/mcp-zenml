@@ -55,6 +55,10 @@
   },
   "tools": [
     {
+      "name": "diagnose_zenml_setup",
+      "description": "Diagnose ZenML MCP server setup (env vars, connectivity, auth, versions)."
+    },
+    {
       "name": "get_step_logs",
       "description": "Get the logs for a specific step run."
     },
