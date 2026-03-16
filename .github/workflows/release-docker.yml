@@ -92,12 +92,15 @@ jobs:
       - name: Build MCP bundle
         run: bash scripts/build_mcpb.sh
 
-      - name: Create GitHub Release (auto notes)
+      - name: Create/Update GitHub Release (attach MCP bundle)
         run: |
+          # Try to create a new release; if it already exists (created by
+          # release.yml), fall back to uploading the bundle to the existing one.
           gh release create "${TAG}" \
             --title "${TAG}" \
             --generate-notes \
-            mcp-zenml.mcpb
+            mcp-zenml.mcpb 2>/dev/null || \
+          gh release upload "${TAG}" mcp-zenml.mcpb --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
