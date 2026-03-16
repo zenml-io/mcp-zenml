@@ -14,7 +14,8 @@ permissions:
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
-    
+    environment: ci
+
     env:
       # ZenML configuration
       ZENML_DISABLE_RICH_LOGGING: "1"

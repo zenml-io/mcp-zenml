@@ -13,6 +13,7 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    environment: docker
     permissions:
       id-token: write
       contents: write
@@ -92,9 +93,11 @@ jobs:
         run: bash scripts/build_mcpb.sh
 
       - name: Create GitHub Release (auto notes)
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          files: mcp-zenml.mcpb
-          generate_release_notes: true
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            mcp-zenml.mcpb
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
