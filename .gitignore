@@ -180,3 +180,4 @@ mcp.json
 .mcpregistry_github_token
 .mcpregistry_registry_token
 .env.local
+.mcp.json

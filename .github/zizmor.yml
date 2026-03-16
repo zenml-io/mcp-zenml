@@ -10,5 +10,5 @@ rules:
   # doesn't evaluate runtime values.
   cache-poisoning:
     ignore:
-      - release-docker.yml:81  # setup-node with cache: "" (disabled)
-      - release.yml:95         # setup-node with cache: "" (disabled)
+      - release-docker.yml:82  # setup-node with cache: "" (disabled)
+      - release.yml:98         # setup-node with cache: "" (disabled)
