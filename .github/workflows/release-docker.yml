@@ -13,6 +13,7 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    environment: docker
     permissions:
       id-token: write
       contents: write
@@ -78,13 +79,13 @@ jobs:
         run: ./mcp-publisher publish
 
       - name: Set up Node.js
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v4
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v4
         with:
           node-version: "20"
           cache: ""
 
       - name: Install uv
-        uses: astral-sh/setup-uv@61cb8a9741eeb8a550a1b8544337180c0fc8476b # v5
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v5
         with:
           enable-cache: false
 
@@ -92,9 +93,11 @@ jobs:
         run: bash scripts/build_mcpb.sh
 
       - name: Create GitHub Release (auto notes)
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          files: mcp-zenml.mcpb
-          generate_release_notes: true
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            mcp-zenml.mcpb
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
