@@ -20,6 +20,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **IMPORTANT: Always use feature branches and pull requests for changes.**
 
+ALSO IMPORTANT: **Before opening a PR or making a large commit**, always run `/simplify` to review changed code for reuse opportunities, quality issues, and efficiency improvements. Fix any issues it finds before committing.
+
 1. **Create a feature branch** for any changes:
    ```bash
    git checkout -b feature/your-feature-name
