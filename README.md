@@ -28,6 +28,10 @@ It provides a unified interface for managing data, models, and experiments.
 
 For more information, see the [ZenML website](https://zenml.io) and [our documentation](https://docs.zenml.io).
 
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/zenml-io-mcp-zenml).
+
 ## Features
 
 The server provides MCP tools to access core read functionality from the ZenML
