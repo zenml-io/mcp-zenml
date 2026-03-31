@@ -65,8 +65,10 @@ jobs:
       - name: Install MCP Publisher
         run: |
           # Build publisher from source (requires Go)
+          # Pinned to specific commit for supply chain security
           git clone https://github.com/modelcontextprotocol/registry publisher-repo
           cd publisher-repo
+          git checkout c5c4b9e8890dd5754bee889b2f1417f4fe3b5ce5  # 2026-03-22
           make publisher
           cp bin/mcp-publisher ../mcp-publisher
           cd ..

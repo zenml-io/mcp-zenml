@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim AS base
+FROM python:3.12-slim@sha256:3d5ed973e45820f5ba5e46bd065bd88b3a504ff0724d85980dcd05eab361fcf4 AS base
 
-# Install uv (pinned) from official distroless image so it's on PATH
-COPY --from=ghcr.io/astral-sh/uv:0.8.15 /uv /uvx /bin/
+# Install uv (pinned to digest) from official distroless image so it's on PATH
+COPY --from=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9ac307d9f2d8a391edc7896c54289ced0 /uv /uvx /bin/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

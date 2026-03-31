@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Code Quality
 - **Format + Type Check**: `bash scripts/format.sh` (runs ruff + ty)
 - **Type Check Only**: `uvx ty check` (uses configuration from `pyproject.toml`)
+- **Recompile requirements**: `uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt`
 
 ## Development Workflow
 
@@ -279,6 +280,23 @@ bash scripts/format.sh          # Runs ruff + ty together
 - **Environment Variables**: Server configuration via `ZENML_STORE_URL` and
   `ZENML_STORE_API_KEY`
 - **Type Hints**: All public functions have type hints; type checking enforced in CI
+
+### Supply Chain Security
+
+The project applies multiple layers of supply chain protection:
+
+- **Python package cooldown**: `exclude-newer = "7 days"` in `[tool.uv]` (`pyproject.toml`) prevents installing packages published within the last 7 days, giving time for compromised versions to be detected and yanked. Override for a single install: `uv add <pkg> --exclude-newer "0 days"`
+- **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds verify integrity against these hashes.
+- **Docker image digests**: Base images in the `Dockerfile` are pinned to `@sha256:` digests (not just tags) to prevent tag mutation attacks
+- **GitHub Actions SHA pinning**: All third-party actions pinned to full commit SHAs with version comments; `persist-credentials: false` on all checkout steps
+- **Dependabot cooldown**: 7-day cooldown on GitHub Actions updates (`.github/dependabot.yml`)
+- **MCP Registry publisher pinned**: `release-docker.yml` checks out the MCP registry repo at a specific commit SHA
+- **zizmor audit**: Security linting of workflow files runs in CI
+
+**Recompiling requirements.txt** (after updating `requirements.in`):
+```bash
+uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt
+```
 
 ## Release Process
 
