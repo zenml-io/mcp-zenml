@@ -51,7 +51,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v5
         with:
           enable-cache: true
 
@@ -90,12 +90,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v5
         with:
           enable-cache: false
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v4 # zizmor: ignore[cache-poisoning]
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v4 # zizmor: ignore[cache-poisoning]
         with:
           node-version: "20"
 
