@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
       
       - name: Install uv
-        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v5
         with:
           version: "0.7.13"
           enable-cache: true
@@ -52,7 +52,7 @@ jobs:
 
       - name: Create issue on failure
         if: always() && steps.smoke-test.outcome == 'failure'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
         with:
           script: |
             // Check for existing open issues with the same title
