@@ -52,6 +52,7 @@ jobs:
 
       - name: Create issue on failure
         if: always() && steps.smoke-test.outcome == 'failure'
+        # Pin to the peeled commit for the annotated v9.0.0 tag.
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |

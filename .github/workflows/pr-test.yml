@@ -48,6 +48,9 @@ jobs:
           version: "0.8.15"
           enable-cache: true
 
+      - name: Check PEP 723 dependency drift
+        run: python scripts/check_pep723_requirements.py
+
       - name: Verify hashed requirements
         run: |
           uv venv --python 3.12 "${RUNNER_TEMP}/requirements-hash-check"

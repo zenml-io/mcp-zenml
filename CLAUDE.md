@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Format code**: `./scripts/format.sh` (uses ruff for linting/formatting + ty for type checking)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
 - **Type check only**: `uvx ty check` (runs type checking without formatting)
+- **Check PEP 723 dependency drift**: `python scripts/check_pep723_requirements.py`
 - **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv (CI creates a throwaway Python 3.12 environment under the runner temp directory for this check)
 - **Run workflow security scan**: `GH_TOKEN=$(gh auth token) uvx zizmor==1.25.2 --format=github --config=.github/zizmor.yml .github/workflows/`
 
@@ -18,6 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Format + Type Check**: `bash scripts/format.sh` (runs ruff + ty)
 - **Type Check Only**: `uvx ty check` (uses configuration from `pyproject.toml`)
 - **Recompile requirements**: `uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt`
+- **Check PEP 723 dependency drift**: use the canonical command listed under Testing and Development above.
 - **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv
 
 ## Development Workflow
@@ -291,6 +293,8 @@ The project applies multiple layers of supply chain protection:
 
 - **Python package cooldown**: `exclude-newer = "7 days"` in `[tool.uv]` (`pyproject.toml`) prevents installing packages published within the last 7 days, giving time for compromised versions to be detected and yanked. Override for a single install: `uv add <pkg> --exclude-newer "0 days"`
 - **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds and MCP bundle vendoring both enforce these hashes with `uv pip install --require-hashes ...`. PR CI also verifies the file with `uv pip install --dry-run --require-hashes -r requirements.txt` inside a throwaway Python 3.12 venv.
+- **PEP 723 drift check**: Runtime `uv run` entry points mirror `requirements.in`, and `scripts/check_pep723_requirements.py` fails CI if those inline dependency blocks drift.
+- **Pinned MCPB bundler**: `scripts/build_mcpb.sh` installs the exact pinned MCPB npm package configured in that script before packing the bundle.
 - **Docker image digests**: Base images in the `Dockerfile` are pinned to `@sha256:` digests (not just tags) to prevent tag mutation attacks
 - **GitHub Actions SHA pinning**: All third-party actions pinned to full commit SHAs with version comments; `persist-credentials: false` on all checkout steps. `astral-sh/setup-uv` steps also pin the installed `uv` binary to `0.8.15`.
 - **Dependabot cooldown**: 7-day cooldown on GitHub Actions updates (`.github/dependabot.yml`)
@@ -300,6 +304,11 @@ The project applies multiple layers of supply chain protection:
 **Recompiling requirements.txt** (after updating `requirements.in`):
 ```bash
 uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt
+```
+
+**Checking PEP 723 runtime dependency drift locally**:
+```bash
+python scripts/check_pep723_requirements.py
 ```
 
 **Validating requirements.txt hashes locally**:

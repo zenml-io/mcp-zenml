@@ -3,7 +3,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]",
-#     "zenml",
+#     "zenml~=0.93.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
