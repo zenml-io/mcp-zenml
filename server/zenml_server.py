@@ -492,8 +492,10 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     - Tracks tool usage via analytics (timing, success/failure, size param)
     - Returns structured error dicts for structured tools, strings for text tools
     """
-    # Capture function name and return type at decoration time
-    func_name = func.__name__  # type: ignore[attr-defined]
+    # Capture function name and return type at decoration time.
+    # getattr-with-default keeps the type checker honest: a generic Callable
+    # isn't guaranteed to have __name__, even though our decorated tools always do.
+    func_name = getattr(func, "__name__", "unknown_tool")
     text_tool = _is_text_tool(func)
 
     @functools.wraps(func)
@@ -616,8 +618,9 @@ def handle_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     It catches exceptions but does NOT track analytics (to avoid noise from
     non-tool endpoints).
     """
-    # Capture function name at decoration time (avoids type checker issues with __name__)
-    func_name = func.__name__  # type: ignore[attr-defined]
+    # Capture function name at decoration time. getattr-with-default avoids type
+    # checker issues: a generic Callable isn't guaranteed to expose __name__.
+    func_name = getattr(func, "__name__", "unknown")
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
