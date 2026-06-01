@@ -8,7 +8,7 @@ ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd -P)"
 cd "${ROOT}"
 
 # Install Python dependencies into the vendored server/lib directory.
-uv pip install -r requirements.txt --target server/lib
+uv pip install --require-hashes -r requirements.txt --target server/lib
 
 # Install the MCP bundler CLI globally.
 npm install --global @anthropic-ai/mcpb

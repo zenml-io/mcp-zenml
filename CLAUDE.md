@@ -11,11 +11,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Format code**: `./scripts/format.sh` (uses ruff for linting/formatting + ty for type checking)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
 - **Type check only**: `uvx ty check` (runs type checking without formatting)
+- **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv (CI creates a throwaway Python 3.12 environment under the runner temp directory for this check)
+- **Run workflow security scan**: `GH_TOKEN=$(gh auth token) uvx zizmor==1.25.2 --format=github --config=.github/zizmor.yml .github/workflows/`
 
 ### Code Quality
 - **Format + Type Check**: `bash scripts/format.sh` (runs ruff + ty)
 - **Type Check Only**: `uvx ty check` (uses configuration from `pyproject.toml`)
 - **Recompile requirements**: `uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt`
+- **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv
 
 ## Development Workflow
 
@@ -46,7 +49,8 @@ ALSO IMPORTANT: **Before opening a PR or making a large commit**, always run `/s
    - Unit tests (datetime normalization, exception classification) — no credentials needed
    - Docker build verification
    - Type checking (ty)
-   - Security linting (zizmor)
+   - Hashed requirements verification
+   - Dedicated workflow security linting in `.github/workflows/zizmor.yml` when workflow/config files change
 
 5. **After merge, trigger release** if needed (see Release Process below)
 
@@ -149,7 +153,7 @@ The server requires:
 - **PR Testing**: GitHub Actions runs tests on every PR (smoke tests, unit tests, formatting, type checks)
 - **Scheduled testing**: Comprehensive smoke tests run every 3 days with automated issue creation on failures
 - **Manual testing**: Use the test scripts to verify MCP protocol functionality
-- **CI/CD**: Uses UV with caching for fast dependency installation
+- **CI/CD**: Uses `uv` with caching for fast dependency installation. GitHub Actions setup-uv steps pin the `uv` binary to `0.8.15` so CI, Docker, and release packaging use the same installer behavior.
 - **Important**: When adding new test scripts, always wire them into `.github/workflows/pr-test.yml` so they run in CI. Tests that don't need ZenML credentials should run unconditionally (no `if: env.ZENML_STORE_URL != ''` guard).
 
 ### Debugging with MCP Inspector
@@ -286,16 +290,34 @@ bash scripts/format.sh          # Runs ruff + ty together
 The project applies multiple layers of supply chain protection:
 
 - **Python package cooldown**: `exclude-newer = "7 days"` in `[tool.uv]` (`pyproject.toml`) prevents installing packages published within the last 7 days, giving time for compromised versions to be detected and yanked. Override for a single install: `uv add <pkg> --exclude-newer "0 days"`
-- **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds verify integrity against these hashes.
+- **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds and MCP bundle vendoring both enforce these hashes with `uv pip install --require-hashes ...`. PR CI also verifies the file with `uv pip install --dry-run --require-hashes -r requirements.txt` inside a throwaway Python 3.12 venv.
 - **Docker image digests**: Base images in the `Dockerfile` are pinned to `@sha256:` digests (not just tags) to prevent tag mutation attacks
-- **GitHub Actions SHA pinning**: All third-party actions pinned to full commit SHAs with version comments; `persist-credentials: false` on all checkout steps
+- **GitHub Actions SHA pinning**: All third-party actions pinned to full commit SHAs with version comments; `persist-credentials: false` on all checkout steps. `astral-sh/setup-uv` steps also pin the installed `uv` binary to `0.8.15`.
 - **Dependabot cooldown**: 7-day cooldown on GitHub Actions updates (`.github/dependabot.yml`)
 - **MCP Registry publisher pinned**: `release-docker.yml` checks out the MCP registry repo at a specific commit SHA
-- **zizmor audit**: Security linting of workflow files runs in CI
+- **zizmor audit**: Security linting of workflow files runs in the dedicated `.github/workflows/zizmor.yml` workflow with minimal permissions, path filters, weekly scheduled runs, and manual dispatch.
 
 **Recompiling requirements.txt** (after updating `requirements.in`):
 ```bash
 uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt
+```
+
+**Validating requirements.txt hashes locally**:
+```bash
+uv pip install --dry-run --require-hashes -r requirements.txt
+```
+
+If no virtual environment is active, create a temporary one first:
+```bash
+REQUIREMENTS_HASH_CHECK_ENV=$(mktemp -d)
+uv venv --python 3.12 "${REQUIREMENTS_HASH_CHECK_ENV}"
+source "${REQUIREMENTS_HASH_CHECK_ENV}/bin/activate"
+uv pip install --dry-run --require-hashes -r requirements.txt
+```
+
+**Running the workflow security scan locally**:
+```bash
+GH_TOKEN=$(gh auth token) uvx zizmor==1.25.2 --format=github --config=.github/zizmor.yml .github/workflows/
 ```
 
 ## Release Process

@@ -24,7 +24,7 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt /app/
-RUN uv pip install -r requirements.txt
+RUN uv pip install --require-hashes -r requirements.txt
 
 # Security: non-root user
 RUN useradd -m -u 10001 appuser

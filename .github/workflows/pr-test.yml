@@ -38,14 +38,21 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.8.15"
           enable-cache: true
+
+      - name: Verify hashed requirements
+        run: |
+          uv venv --python 3.12 "${RUNNER_TEMP}/requirements-hash-check"
+          source "${RUNNER_TEMP}/requirements-hash-check/bin/activate"
+          uv pip install --dry-run --require-hashes -r requirements.txt
 
       - name: Run MCP smoke test
         if: env.ZENML_STORE_URL != ''
@@ -109,8 +116,8 @@ jobs:
             echo "⚠️ Warning: Expected analytics status message not found"
           fi
 
-  security-lint:
-    name: Security Lint Workflows
+  type-check:
+    name: Type Checking
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,33 +127,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
-
-      - name: Run zizmor security linter
-        run: uvx zizmor --format=github .
-
-  type-check:
-    name: Type Checking
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-        with:
-          persist-credentials: false
-
       - name: Set up Python 3.12
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.8.15"
           enable-cache: true
 
       - name: Run ty type checker
