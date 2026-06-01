@@ -7,14 +7,26 @@ ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd -P)"
 
 cd "${ROOT}"
 
-# Install Python dependencies into the vendored server/lib directory.
-uv pip install -r requirements.txt --target server/lib
+VENDOR_DIR="${ROOT}/server/lib"
+TEMP_VENDOR_DIR="$(mktemp -d "${ROOT}/server/lib.tmp.XXXXXX")"
+MCPB_VERSION="2.1.2"
 
-# Install the MCP bundler CLI globally.
-npm install --global @anthropic-ai/mcpb
+cleanup() {
+  if [[ -n "${TEMP_VENDOR_DIR:-}" && -d "${TEMP_VENDOR_DIR}" ]]; then
+    rm -rf -- "${TEMP_VENDOR_DIR}"
+  fi
+}
+trap cleanup EXIT
 
-# Build the MCP bundle.
-mcpb pack
+# Install Python dependencies into a temporary vendored directory first.
+# Only replace server/lib after the hashed install succeeds.
+uv pip install --require-hashes -r requirements.txt --target "${TEMP_VENDOR_DIR}"
+rm -rf -- "${VENDOR_DIR}"
+mv -- "${TEMP_VENDOR_DIR}" "${VENDOR_DIR}"
+TEMP_VENDOR_DIR=""
+
+# Build the MCP bundle with the exact pinned CLI without installing it globally.
+npm exec --yes --package "@anthropic-ai/mcpb@${MCPB_VERSION}" -- mcpb pack
 
 # Find the first generated .mcpb file (prefer the most recently modified).
 # Use a non-failing capture to avoid set -e aborting if no files are found.

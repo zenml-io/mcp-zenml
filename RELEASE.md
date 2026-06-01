@@ -34,6 +34,9 @@ Note: This workflow runs only when manually triggered via 'Run workflow'.
   - Runs `python scripts/generate_manifest_fields.py` to analyze `server/zenml_server.py` and regenerate the `tools` and `prompts` arrays in `manifest.json`.
 - Bundle build
   - Runs `bash scripts/build_mcpb.sh` to install dependencies deterministically and pack the MCP bundle:
+    - Cleans `server/lib` before vendoring so stale packages cannot leak into the bundle.
+    - Installs Python dependencies from `requirements.txt` with hashes enforced.
+    - Installs the exact pinned MCPB npm CLI configured in `scripts/build_mcpb.sh` for packing.
     - Produces `mcp-zenml.mcpb` at the repo root.
 - Commit, push, and tag (skipped if `dry_run: true`)
   - Commits `VERSION`, `manifest.json`, `server.json`, and `mcp-zenml.mcpb` with message:
@@ -87,7 +90,7 @@ If something goes wrong:
 ## Notes
 
 - Versioning: Strict SemVer is enforced by `scripts/bump_version.py`.
-- Reproducibility: `scripts/build_mcpb.sh` installs dependencies into `server/lib` for deterministic packaging.
+- Reproducibility: `scripts/build_mcpb.sh` cleans `server/lib`, installs hashed Python dependencies there, then packs with the exact pinned MCPB npm CLI.
 - Security: Use `GH_RELEASE_PAT` for the checkout token to ensure push/tag operations and triggering downstream workflows work correctly.
 
 

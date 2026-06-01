@@ -12,6 +12,12 @@ version = "1.2.0"
 description = "MCP server for ZenML API access"
 requires-python = ">=3.12"
 
+[tool.uv]
+# Supply chain security: ignore packages published within the last 7 days.
+# Most compromised packages are detected and yanked within this window.
+# Override for a single install: uv add <pkg> --exclude-newer "0 days"
+exclude-newer = "7 days"
+
 [tool.ty]
 # Type checker configuration
 # Documentation: https://docs.astral.sh/ty/
