@@ -1,4 +1,6 @@
 # MCP Server for ZenML
+
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.zenml-io%2Fmcp-zenml.svg)](https://mcptoplist.com/server/io.github.zenml-io%2Fmcp-zenml)
 [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/zenml-io/mcp-zenml)](https://archestra.ai/mcp-catalog/zenml-io__mcp-zenml)
 
 This project implements a [Model Context Protocol
