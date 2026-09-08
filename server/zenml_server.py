@@ -7,6 +7,10 @@
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.ty.rules]
+# # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
+# unresolved-import = "ignore"
 # ///
 
 # Ensure setuptools is imported first to provide distutils compatibility

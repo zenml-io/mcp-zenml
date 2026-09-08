@@ -8,6 +8,13 @@
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.ty.rules]
+# # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
+# unresolved-import = "ignore"
+#
+# [tool.ty.environment]
+# extra-paths = ["../server"]
 # ///
 """
 Unit tests for datetime filter normalization and exception classification.
