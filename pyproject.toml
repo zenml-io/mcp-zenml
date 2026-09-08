@@ -46,10 +46,10 @@ exclude = [
 # Default: most rules are "error", some are "warn", some are "ignore"
 # See: https://docs.astral.sh/ty/reference/rules/
 
-# Ignore unresolved imports for third-party libraries.
-# This project uses PEP 723 inline script metadata for dependencies,
-# which are installed on-the-fly by `uv run`. ty runs in isolation
-# and doesn't see these deps, so we ignore import errors for them.
+# Ignore unresolved imports for third-party libraries (installed on the fly
+# by `uv run`, so ty cannot see them). NOTE: since ty 0.0.62 this section only
+# applies to files WITHOUT a PEP 723 header (e.g. server/zenml_mcp_analytics.py).
+# Each PEP 723 script carries its own [tool.ty.rules] block in its header.
 unresolved-import = "ignore"
 
 [tool.ty.terminal]

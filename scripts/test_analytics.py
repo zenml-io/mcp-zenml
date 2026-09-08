@@ -4,6 +4,13 @@
 # dependencies = [
 #     "httpx",
 # ]
+#
+# [tool.ty.rules]
+# # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
+# unresolved-import = "ignore"
+#
+# [tool.ty.environment]
+# extra-paths = ["../server"]
 # ///
 """
 Diagnostic script to test ZenML MCP analytics pipeline.
