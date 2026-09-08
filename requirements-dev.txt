@@ -1,0 +1,3 @@
+# Dev tool pins used as uvx constraints (see scripts/format.sh and pr-test.yml).
+# Dependabot bumps these (pip ecosystem in .github/dependabot.yml).
+ty==0.0.79

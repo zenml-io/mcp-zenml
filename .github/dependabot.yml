@@ -16,3 +16,14 @@ updates:
     # Prevent Dependabot from flooding the repo with PRs
     cooldown:
       default-days: 7
+
+  # Keep dev tool pins in requirements-dev.txt (currently just ty) updated.
+  # Restricted to ty so Dependabot never rewrites the hashed requirements.txt.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: ty
+    cooldown:
+      default-days: 7

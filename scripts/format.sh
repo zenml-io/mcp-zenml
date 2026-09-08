@@ -21,4 +21,4 @@ ruff format $SRC
 # Type checking with ty (pinned; PEP 723 scripts carry their own [tool.ty] config in their header)
 echo ""
 echo "Running type checks with ty..."
-uvx ty@0.0.79 check
+uvx --constraints requirements-dev.txt ty check
