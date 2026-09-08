@@ -10,14 +10,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run unit tests**: `uv run scripts/test_datetime_normalization.py`
 - **Format code**: `./scripts/format.sh` (uses ruff for linting/formatting + ty for type checking)
 - **Run MCP server locally**: `uv run server/zenml_server.py`
-- **Type check only**: `uvx ty check` (runs type checking without formatting)
+- **Type check only**: `uvx ty@0.0.79 check` (runs type checking without formatting)
 - **Check PEP 723 dependency drift**: `python scripts/check_pep723_requirements.py`
 - **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv (CI creates a throwaway Python 3.12 environment under the runner temp directory for this check)
 - **Run workflow security scan**: `GH_TOKEN=$(gh auth token) uvx zizmor==1.25.2 --format=github --config=.github/zizmor.yml .github/workflows/`
 
 ### Code Quality
 - **Format + Type Check**: `bash scripts/format.sh` (runs ruff + ty)
-- **Type Check Only**: `uvx ty check` (uses configuration from `pyproject.toml`)
+- **Type Check Only**: `uvx ty@0.0.79 check` (rule config lives in each file's PEP 723 header, see below)
 - **Recompile requirements**: `uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt`
 - **Check PEP 723 dependency drift**: use the canonical command listed under Testing and Development above.
 - **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv
@@ -259,7 +259,7 @@ This prints a public URL like `https://random-words.trycloudflare.com`.
 
 The project uses [ty](https://docs.astral.sh/ty/) for static type checking - an extremely fast Python type checker from Astral (creators of uv and ruff).
 
-**Configuration**: `pyproject.toml` under `[tool.ty]`
+**Configuration**: `pyproject.toml` under `[tool.ty]` (applies to files without a PEP 723 header; scripts carry their own `[tool.ty]` blocks in their header, see the note below)
 - Python version: 3.12
 - Extra paths: `server/` (allows `import zenml_mcp_analytics` to resolve)
 - Include patterns: `server/**/*.py`, `scripts/**/*.py`
@@ -267,8 +267,8 @@ The project uses [ty](https://docs.astral.sh/ty/) for static type checking - an 
 
 **Running type checks**:
 ```bash
-uvx ty check                    # Basic check
-uvx ty check --output-format=github  # For CI (annotations)
+uvx ty@0.0.79 check             # Basic check (same pin as CI)
+uvx ty@0.0.79 check --output-format=github  # For CI (annotations)
 bash scripts/format.sh          # Runs ruff + ty together
 ```
 
@@ -276,7 +276,7 @@ bash scripts/format.sh          # Runs ruff + ty together
 
 **CI Integration**: Type checking runs as a separate job in PR tests (`.github/workflows/pr-test.yml`).
 
-**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. The `unresolved-import = "ignore"` setting handles this. First-party imports (like `zenml_mcp_analytics`) are still checked.
+**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked. When adding a new PEP 723 script, copy those blocks into its header. ty is pinned in CI and `scripts/format.sh`; bump both together.
 
 ### Important Implementation Details
 

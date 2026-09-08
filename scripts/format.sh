@@ -18,7 +18,7 @@ ruff check $SRC --select F401,F841 --fix --exclude "__init__.py" --isolated
 ruff check $SRC --select I --fix --ignore D
 ruff format $SRC
 
-# Type checking with ty (uses pyproject.toml configuration)
+# Type checking with ty (pinned; PEP 723 scripts carry their own [tool.ty] config in their header)
 echo ""
 echo "Running type checks with ty..."
-uvx ty check
+uvx ty@0.0.79 check
