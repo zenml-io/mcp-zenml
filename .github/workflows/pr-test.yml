@@ -144,4 +144,4 @@ jobs:
       - name: Run ty type checker
         run: |
           echo "Running ty type checker..."
-          uvx ty@0.0.79 check --output-format=github
+          uvx --constraints requirements-dev.txt ty check --output-format=github
