@@ -27,27 +27,9 @@ from typing import Any, TypedDict, cast
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-CONTRACT_FIXTURE = Path(__file__).parent / "fixtures" / "legacy_tool_schemas.json"
-COMPACT_REQUIRED_TOOLS = frozenset(
-    {
-        "diagnose_zenml_setup",
-        "get_active_project",
-        "get_active_user",
-        "get_deployment_logs",
-        "get_step_code",
-        "get_step_logs",
-        "open_pipeline_run_dashboard",
-        "open_run_activity_chart",
-        "trigger_pipeline",
-        "zenml_action_resource",
-        "zenml_create_resource",
-        "zenml_delete_resource",
-        "zenml_describe_resources",
-        "zenml_get_resource",
-        "zenml_list_resources",
-        "zenml_update_resource",
-    }
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+
+from zenml_tool_catalog import tool_names  # noqa: E402
 
 
 class ToolInfo(TypedDict):
@@ -229,38 +211,57 @@ def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
     return None
 
 
-def _required_tools_for_profile(profile: str) -> frozenset[str]:
+def _required_tools_for_profile(profile: str, write_policy: str) -> frozenset[str]:
     """Return the minimum advertised tool set for a registration profile."""
-    if profile == "legacy":
-        fixture = json.loads(CONTRACT_FIXTURE.read_text(encoding="utf-8"))
-        return frozenset(fixture["tool_names"])
-    if profile == "compact":
-        return COMPACT_REQUIRED_TOOLS
-    raise ValueError(f"Unknown MCP tool profile: {profile}")
+    if profile not in {"compact", "legacy"}:
+        raise ValueError(f"Unknown MCP tool profile: {profile}")
+    if write_policy not in {"read_write", "read_only"}:
+        raise ValueError(f"Unknown MCP write policy: {write_policy}")
+    return frozenset(tool_names(profile, write_policy))  # type: ignore[arg-type]
 
 
-def _profile_inventory_errors(profile: str, available_tools: set[str]) -> list[str]:
+def _profile_inventory_errors(
+    profile: str, write_policy: str, available_tools: set[str]
+) -> list[str]:
     """Describe required tools missing from an advertised profile."""
-    missing_tools = sorted(_required_tools_for_profile(profile) - available_tools)
-    if not missing_tools:
-        return []
-    return [
-        f"MCP tool profile {profile!r} is missing required tools: "
-        + ", ".join(missing_tools)
-    ]
+    required_tools = _required_tools_for_profile(profile, write_policy)
+    missing_tools = sorted(required_tools - available_tools)
+    unexpected_tools = sorted(available_tools - required_tools)
+    errors = []
+    if missing_tools:
+        errors.append(
+            f"MCP tool profile {profile!r} is missing required tools: "
+            + ", ".join(missing_tools)
+        )
+    if unexpected_tools:
+        errors.append(
+            f"MCP tool profile {profile!r} has unexpected tools: "
+            + ", ".join(unexpected_tools)
+        )
+    return errors
 
 
 class MCPSmokeTest:
-    def __init__(self, server_path: str, expected_profile: str = "legacy"):
+    def __init__(
+        self,
+        server_path: str,
+        expected_profile: str = "compact",
+        expected_write_policy: str = "read_write",
+    ):
         """Initialize the smoke test with the server path."""
         self.server_path = Path(server_path)
         self.expected_profile = expected_profile
+        self.expected_write_policy = expected_write_policy
         # Explicitly pass environment variables to the subprocess
         # This ensures ZENML_STORE_URL, ZENML_STORE_API_KEY, etc. are available
+        server_env = dict(os.environ)
+        server_env["ZENML_MCP_PROFILE"] = expected_profile
+        server_env["ZENML_MCP_WRITE_POLICY"] = expected_write_policy
+        server_env.pop("ZENML_MCP_READ_ONLY", None)
         self.server_params = StdioServerParameters(
             command="uv",
             args=["run", str(self.server_path)],
-            env=dict(os.environ),  # Pass all env vars to subprocess
+            env=server_env,
         )
 
     async def run_smoke_test(self) -> SmokeTestResults:
@@ -309,7 +310,9 @@ class MCPSmokeTest:
 
                     available_tools = {tool.name for tool in tools_result.tools or []}
                     inventory_errors = _profile_inventory_errors(
-                        self.expected_profile, available_tools
+                        self.expected_profile,
+                        self.expected_write_policy,
+                        available_tools,
                     )
                     for error in inventory_errors:
                         print(f"❌ {error}")
@@ -469,17 +472,6 @@ class MCPSmokeTest:
                         {"success": False, "error": str(e)},
                     )
                     results["errors"].append(error_msg)
-            else:
-                error_msg = (
-                    f"Required {self.expected_profile!r} smoke tool "
-                    f"{tool_name!r} is missing from discovery"
-                )
-                print(f"❌ {error_msg}")
-                results["tool_test_results"][tool_name] = cast(
-                    ToolTestResult,
-                    {"success": False, "error": error_msg},
-                )
-                results["errors"].append(error_msg)
 
     def print_summary(self, results: SmokeTestResults) -> None:
         """Print a summary of the smoke test results."""
@@ -529,8 +521,14 @@ async def main():
     parser.add_argument(
         "--profile",
         choices=("legacy", "compact"),
-        default=os.environ.get("ZENML_MCP_TOOL_PROFILE", "legacy"),
+        default=os.environ.get("ZENML_MCP_PROFILE", "compact"),
         help="Registration profile whose required tools must be advertised",
+    )
+    parser.add_argument(
+        "--write-policy",
+        choices=("read_write", "read_only"),
+        default=os.environ.get("ZENML_MCP_WRITE_POLICY", "read_write"),
+        help="Write policy whose exact tool inventory must be advertised",
     )
     args = parser.parse_args()
     server_path = args.server_path
@@ -540,7 +538,11 @@ async def main():
         print(f"❌ Server file not found: {server_path}")
         sys.exit(1)
 
-    smoke_test = MCPSmokeTest(server_path, expected_profile=args.profile)
+    smoke_test = MCPSmokeTest(
+        server_path,
+        expected_profile=args.profile,
+        expected_write_policy=args.write_policy,
+    )
     results = await smoke_test.run_smoke_test()
     smoke_test.print_summary(results)
 

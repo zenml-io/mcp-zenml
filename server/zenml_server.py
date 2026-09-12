@@ -75,6 +75,12 @@ from zenml_resource_registry import (
     ResourceRegistryError,
     describe_resources,
 )
+from zenml_tool_catalog import (
+    ALL_TOOL_NAMES,
+    configured_profile,
+    configured_write_policy,
+    tool_names,
+)
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
@@ -727,12 +733,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     resource_type=generic_resource_type,
                     operation=generic_operation,
                     action=generic_action,
-                    profile=(
-                        profile
-                        if (profile := os.getenv("ZENML_MCP_PROFILE", "legacy"))
-                        in {"compact", "legacy"}
-                        else "unknown"
-                    ),
+                    profile=ACTIVE_TOOL_PROFILE,
                     outcome=reported_outcome,
                 )
             except Exception:
@@ -808,6 +809,10 @@ mcp = MCPServer(
     log_level=cast(Any, logging.getLevelName(log_level)),
 )
 logger.debug("MCP server initialized successfully")
+
+ACTIVE_TOOL_PROFILE = configured_profile()
+ACTIVE_WRITE_POLICY = configured_write_policy()
+ACTIVE_TOOL_NAMES = frozenset(tool_names(ACTIVE_TOOL_PROFILE, ACTIVE_WRITE_POLICY))
 
 # ZenML's Client and REST session are singletons. Tool and resource handlers
 # execute in MCP worker threads, so serialize access until the SDK guarantees
@@ -3110,14 +3115,11 @@ def open_pipeline_run_dashboard() -> str:
     The dashboard fetches its own data dynamically.
     """
 
-    # Return a short message only — no data payload.
-    # The iframe fetches its own data via callServerTool("list_pipeline_runs").
-    # This prevents Claude from re-rendering the runs as a table below the app.
     return (
-        "Opened interactive pipeline runs dashboard. "
-        "The dashboard loads data automatically — "
-        "do not summarize or re-present pipeline run data below, "
-        "the interactive UI above handles all display."
+        "Requested the ZenML pipeline runs dashboard. An MCP Apps-capable host "
+        "can render it and load current data. If no interactive view appears, "
+        "use zenml_list_resources for pipeline_run and run_step resources, then "
+        "use get_step_logs for a selected step."
     )
 
 
@@ -3137,11 +3139,16 @@ def open_run_activity_chart() -> str:
     """
 
     return (
-        "Opened pipeline run activity chart. "
-        "The chart loads data automatically — "
-        "do not summarize or re-present pipeline run data below, "
-        "the interactive chart above handles all display."
+        "Requested the ZenML pipeline run activity chart. An MCP Apps-capable "
+        "host can render it and load current data. If no interactive view appears, "
+        "use zenml_list_resources for pipeline_run resources with a descending "
+        "created-time sort."
     )
+
+
+for _tool_name in ALL_TOOL_NAMES:
+    if _tool_name not in ACTIVE_TOOL_NAMES:
+        mcp.remove_tool(_tool_name)
 
 
 @mcp.resource(uri="resource://zenml_server/most_recent_runs?run_count={run_count}")

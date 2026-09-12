@@ -70,79 +70,73 @@ The server also allows you to **trigger new pipeline runs** using snapshots (pre
 Please join our [Slack community](https://zenml.io/slack) to share your experience
 and help us make it even better!*
 
-## Available Tools
+## Tool profiles and write policy
 
-The MCP server exposes the following tools, grouped by category:
+The default `compact` profile advertises 16 tools. Seven generic tools cover the
+resource catalog, reads, ordinary mutations, and finite lifecycle actions:
 
-### Pipeline Execution (New in v1.2)
-| Tool | Description |
-|------|-------------|
-| `get_snapshot` | Get a frozen pipeline configuration by name/ID |
-| `list_snapshots` | List snapshots with filters (runnable, deployable, deployed, tag) |
-| `get_deployment` | Get a deployment's runtime status and URL |
-| `list_deployments` | List deployments with filters (status, pipeline, tag) |
-| `get_deployment_logs` | Get bounded logs from a deployment (tail=100 default, max 1000) |
-| `trigger_pipeline` | Trigger a pipeline run (prefer `snapshot_name_or_id` parameter) |
+| Tool | Purpose |
+|------|---------|
+| `zenml_describe_resources` | Discover supported resource types and bounded operation schemas |
+| `zenml_list_resources` | List one resource type with validated filters and pagination |
+| `zenml_get_resource` | Get one resource, with parent and project scope where required |
+| `zenml_create_resource` | Create a supported resource from a typed payload |
+| `zenml_update_resource` | Update one exact resource UUID |
+| `zenml_delete_resource` | Delete or archive one exact resource UUID |
+| `zenml_action_resource` | Run an allowlisted lifecycle or relation action without retries |
 
-### Organization (New in v1.2)
-| Tool | Description |
-|------|-------------|
-| `get_active_project` | Get the currently active project |
-| `get_project` | Get project details by name/ID |
-| `list_projects` | List all projects |
-| `get_tag` | Get tag details (exclusive, colors) |
-| `list_tags` | List tags with filters (resource_type) |
-| `get_build` | Get build details (image, code embedding) |
-| `list_builds` | List builds with filters (is_local, contains_code) |
+Nine focused tools remain because they provide diagnostics, active context,
+streamed logs or code, pipeline execution, or an interactive App:
 
-### Core Entities
-| Tool | Description |
-|------|-------------|
-| `get_user`, `list_users`, `get_active_user` | User management |
-| `get_stack`, `list_stacks` | Stack configurations |
-| `get_stack_component`, `list_stack_components` | Stack components |
-| `get_flavor`, `list_flavors` | Component flavors |
-| `get_service_connector`, `list_service_connectors` | Cloud connectors |
-| `get_pipeline_run`, `list_pipeline_runs` | Pipeline runs |
-| `get_run_step`, `list_run_steps` | Step details |
-| `get_step_logs`, `get_step_code` | Step logs and source code |
-| `list_pipelines`, `get_pipeline_details` | Pipeline definitions |
-| `get_schedule`, `list_schedules` | Schedules |
-| `list_artifacts` | Artifact metadata |
-| `list_secrets` | Secret names (not values) |
-| `get_service`, `list_services` | Model services |
-| `get_model`, `list_models` | Model registry |
-| `get_model_version`, `list_model_versions` | Model versions |
+- `diagnose_zenml_setup`
+- `get_active_user` and `get_active_project`
+- `trigger_pipeline`
+- `get_step_logs`, `get_step_code`, and `get_deployment_logs`
+- `open_pipeline_run_dashboard` and `open_run_activity_chart`
 
-### Interactive Apps (Experimental)
-| Tool | Description |
-|------|-------------|
-| `open_pipeline_run_dashboard` | Open interactive pipeline runs dashboard (MCP App) |
-| `open_run_activity_chart` | Open 30-day run activity bar chart (MCP App) |
+Use `ZENML_MCP_PROFILE=legacy` when an existing client still depends on the old
+entity-specific names such as `list_pipeline_runs`. This retains the
+characterized tool-name and schema compatibility layer for ZenML 0.96.4. It
+does not add support for older ZenML server versions.
 
-### Analysis Tools
-| Tool | Description |
-|------|-------------|
-| `stack_components_analysis` | Analyze stack component usage |
-| `recent_runs_analysis` | Analyze recent pipeline runs |
-| `most_recent_runs` | Get N most recent runs |
+Registration and write access are independent:
 
-### Diagnostics
-| Tool | Description |
-|------|-------------|
-| `diagnose_zenml_setup` | Diagnose server setup (env vars, SDK, connectivity, auth). Works even when misconfigured. |
+| Profile | Policy | Advertised tools |
+|---------|--------|-----------------:|
+| `compact` | `read_write` | 16 |
+| `compact` | `read_only` | 11 |
+| `legacy` | `read_write` | 57 |
+| `legacy` | `read_only` | 52 |
+
+Set `ZENML_MCP_WRITE_POLICY=read_only` to remove all four generic mutation tools
+and `trigger_pipeline` from MCP discovery and dispatch. Resource discovery also
+omits create, update, delete, and action schemas. The older
+`ZENML_MCP_READ_ONLY=true` setting remains accepted; invalid policy values fail
+closed to read-only mode. An invalid `ZENML_MCP_PROFILE` stops startup with a
+configuration error.
+
+Start a generic workflow by discovering the precise schema, then calling it:
+
+```text
+zenml_describe_resources(resource_type="pipeline_run", operation="list")
+zenml_list_resources(
+    resource_type="pipeline_run",
+    filters={"status": "completed", "sort_by": "desc:created"},
+    page=1,
+    size=10,
+)
+```
+
+Prompts and resources remain available in both profiles. The analysis prompts,
+the bounded resource-schema endpoints, and `most_recent_runs` are MCP prompts or
+resources rather than tools.
 
 ### Run-template compatibility
 
 ZenML 0.96.4 retains run-template CRUD APIs. Snapshots are preferred for new
 workflows. Pipeline convenience creation and the template-based trigger
-parameter are deprecated.
-
-| Compatibility path | Preferred new pattern |
-|--------------------|-----------------------|
-| `get_run_template` | `get_snapshot` |
-| `list_run_templates` | `list_snapshots` |
-| `trigger_pipeline(template_id=...)` | `trigger_pipeline(snapshot_name_or_id=...)` |
+parameter are deprecated. In the legacy profile, `get_run_template` and
+`list_run_templates` remain available for existing clients.
 
 The legacy `tag` input remains in `list_run_templates` for schema compatibility,
 but ZenML 0.96.4 has no equivalent server-side filter. A non-null value is
@@ -156,10 +150,10 @@ while new code should use snapshots.
 
 ### Quick Migration Guide
 
-| Old Pattern (Templates) | New Pattern (Snapshots) |
-|------------------------|------------------------|
-| `list_run_templates()` | `list_snapshots(runnable=True, named_only=True)` |
-| `get_run_template(name)` | `get_snapshot(name, include_config_schema=True)` |
+| Legacy Pattern (Templates) | Compact Pattern (Snapshots) |
+|----------------------------|-----------------------------|
+| `list_run_templates()` | `zenml_list_resources(resource_type="snapshot", filters={"runnable": true, "named_only": true})` |
+| `get_run_template(name)` | `zenml_get_resource(resource_type="snapshot", resource_id=id)` |
 | `trigger_pipeline(template_id=...)` | `trigger_pipeline(snapshot_name_or_id=...)` |
 
 ### Example Workflow (Snapshot-First)
@@ -169,13 +163,13 @@ while new code should use snapshots.
    → get_active_project()
 
 2. Find runnable snapshots:
-   → list_snapshots(runnable=True, named_only=True)
+   → zenml_list_resources(resource_type="snapshot", filters={"runnable": true, "named_only": true})
 
 3. Trigger a run:
    → trigger_pipeline(pipeline_name_or_id="my-pipeline", snapshot_name_or_id="my-snapshot")
 
 4. Check deployments:
-   → list_deployments(status="running")
+   → zenml_list_resources(resource_type="deployment", filters={"status": "running"})
    → get_deployment_logs(name_id_or_prefix="my-deployment", tail=100)
 ```
 
@@ -255,6 +249,8 @@ docker build -t mcp-zenml:apps .
 docker run --rm -d --name mcp-zenml-apps -p 8001:8001 \
   -e ZENML_STORE_URL="https://your-zenml-server.example.com" \
   -e ZENML_STORE_API_KEY="your-api-key" \
+  -e ZENML_MCP_PROFILE="compact" \
+  -e ZENML_MCP_WRITE_POLICY="read_write" \
   -e ZENML_ACTIVE_PROJECT_ID="your-project-id" \
   mcp-zenml:apps --transport streamable-http --host 0.0.0.0 --port 8001 \
   --disable-dns-rebinding-protection
@@ -427,6 +423,8 @@ You will need to specify your ZenML MCP server in the following format:
                 "ZENML_LOGGING_COLORS_DISABLED": "true",
                 "ZENML_LOGGING_VERBOSITY": "WARN",
                 "ZENML_ENABLE_RICH_TRACEBACK": "false",
+                "ZENML_MCP_PROFILE": "compact",
+                "ZENML_MCP_WRITE_POLICY": "read_write",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONIOENCODING": "UTF-8",
                 "ZENML_STORE_URL": "https://your-zenml-server-goes-here.com",
@@ -544,6 +542,8 @@ docker run -i --rm \
         "-e", "ZENML_STORE_URL=https://...",
         "-e", "ZENML_STORE_API_KEY=ZENKEY_...",
         "-e", "ZENML_ACTIVE_PROJECT_ID=...",
+        "-e", "ZENML_MCP_PROFILE=compact",
+        "-e", "ZENML_MCP_WRITE_POLICY=read_write",
         "-e", "LOGLEVEL=WARNING",
         "-e", "NO_COLOR=1",
         "-e", "ZENML_LOGGING_COLORS_DISABLED=true",

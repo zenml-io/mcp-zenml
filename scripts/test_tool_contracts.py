@@ -58,6 +58,9 @@ sys.path.insert(0, str(REPO_ROOT / "server"))
 sys.path.insert(0, str(SCRIPT_DIR))
 
 os.environ.setdefault("ZENML_MCP_ANALYTICS_ENABLED", "false")
+os.environ["ZENML_MCP_PROFILE"] = "legacy"
+os.environ["ZENML_MCP_WRITE_POLICY"] = "read_write"
+os.environ.pop("ZENML_MCP_READ_ONLY", None)
 
 import zenml_server as server  # noqa: E402
 from test_mcp_server import (  # noqa: E402
@@ -87,6 +90,15 @@ def _normalize_schema(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_schema(item) for item in value]
     return value
+
+
+async def test_app_openers_have_truthful_text_fallbacks() -> None:
+    dashboard = server.open_pipeline_run_dashboard()
+    chart = server.open_run_activity_chart()
+    assert "MCP Apps-capable host" in dashboard
+    assert "zenml_list_resources" in dashboard
+    assert "MCP Apps-capable" in chart
+    assert "zenml_list_resources" in chart
 
 
 def _structured_payload(result: Any) -> dict[str, Any]:
@@ -349,8 +361,11 @@ async def test_legacy_inventory_and_schemas() -> None:
 
     missing = set(actual_names)
     missing.remove("get_pipeline_details")
-    errors = _profile_inventory_errors("legacy", missing)
+    errors = _profile_inventory_errors("legacy", "read_write", missing)
     assert errors and "get_pipeline_details" in errors[0]
+    unexpected = set(actual_names) | {"unregistered_tool"}
+    errors = _profile_inventory_errors("legacy", "read_write", unexpected)
+    assert errors and "unregistered_tool" in errors[0]
 
 
 async def test_discovery_does_not_initialize_zenml_client() -> None:
@@ -680,6 +695,10 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
 
 async def main() -> int:
     tests: list[tuple[str, Callable[[], Any]]] = [
+        (
+            "test_app_openers_have_truthful_text_fallbacks",
+            test_app_openers_have_truthful_text_fallbacks,
+        ),
         ("test_legacy_inventory_and_schemas", test_legacy_inventory_and_schemas),
         (
             "test_discovery_does_not_initialize_zenml_client",

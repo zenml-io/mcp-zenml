@@ -25,6 +25,7 @@ from zenml_resource_registry import (
     validate_filter_value,
     validate_mutation_payload,
 )
+from zenml_tool_catalog import configured_write_policy
 
 
 class ResourceDispatchError(ValueError):
@@ -401,19 +402,7 @@ def _exact_uuid(field: str, value: str | None) -> uuid.UUID:
 
 def writes_are_disabled() -> bool:
     """Return the operator-selected write policy."""
-    legacy = os.getenv("ZENML_MCP_READ_ONLY")
-    if legacy is not None:
-        normalized_legacy = legacy.strip().lower()
-        if normalized_legacy in {"1", "true", "yes", "on"}:
-            return True
-        if normalized_legacy not in {"0", "false", "no", "off"}:
-            return True
-    policy = os.getenv("ZENML_MCP_WRITE_POLICY", "read_write").strip().lower()
-    if policy == "read_write":
-        return False
-    if policy == "read_only":
-        return True
-    return True
+    return configured_write_policy() == "read_only"
 
 
 def ensure_writes_enabled(*, read_only: bool | None = None) -> None:

@@ -51,6 +51,9 @@ jobs:
       - name: Check PEP 723 dependency drift
         run: python scripts/check_pep723_requirements.py
 
+      - name: Install Apps browser
+        run: uv run --with playwright==1.55.0 playwright install --with-deps chromium
+
       - name: Verify hashed requirements
         run: |
           uv venv --python 3.12 "${RUNNER_TEMP}/requirements-hash-check"
@@ -87,6 +90,9 @@ jobs:
           uv run scripts/test_sdk_contracts.py
           uv run scripts/test_tool_contracts.py
           uv run scripts/test_mcp_transport.py
+          uv run scripts/test_tool_profiles.py
+          uv run scripts/test_mcp_apps.py
+          uv run scripts/generate_manifest_fields.py --check
 
   docker-build:
     runs-on: ubuntu-latest

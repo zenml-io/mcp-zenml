@@ -761,6 +761,7 @@
     // Auto-detect: try callServerTool on first use, disable after repeated failures.
     let serverToolCallsEnabled = true;
     let consecutiveFailures = 0;
+    let lastToolErrorMessage = null;
     const MAX_FAILURES = 3;
 
     /** Check if a parsed result is a structured error envelope. */
@@ -775,6 +776,7 @@
     /** Call a server tool with a timeout. Returns parsed result or null. */
     async function callServerToolSafe(toolName, args, timeoutMs = 10000) {
       if (!serverToolCallsEnabled) return null;
+      lastToolErrorMessage = null;
       let timeoutId;
       try {
         const result = await Promise.race([
@@ -786,17 +788,19 @@
         consecutiveFailures = 0; // Reset on success
         const parsed = parseToolResult(result);
         if (isErrorEnvelope(parsed)) {
+          lastToolErrorMessage = parsed.error.message;
           console.warn(`[ZenML] Tool ${toolName} error:`, parsed.error.message);
           return null;
         }
         return parsed;
-      } catch (e) {
+      } catch {
+        lastToolErrorMessage = "The tool call failed or timed out.";
         consecutiveFailures++;
         if (consecutiveFailures >= MAX_FAILURES) {
           serverToolCallsEnabled = false;
-          console.warn("[ZenML] callServerTool disabled after repeated failures:", e.message);
+          console.warn("[ZenML] callServerTool disabled after repeated failures");
         } else {
-          console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES}):`, e.message);
+          console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES})`);
         }
         return null;
       } finally {
@@ -810,7 +814,11 @@
       state.steps[runId] = undefined;
       render();
 
-      const data = await callServerToolSafe("list_run_steps", { pipeline_run_id: runId, size: 200 });
+      const data = await callServerToolSafe("zenml_list_resources", {
+        resource_type: "run_step",
+        filters: { pipeline_run_id: runId },
+        size: 200,
+      });
       state.stepsLoading[runId] = false;
       if (data?.items) {
         state.steps[runId] = data.items;
@@ -856,20 +864,24 @@
       state.logs = {};
       render();
 
-      const params = {
+      const filters = {
         sort_by: "desc:created",
+      };
+      if (state.pipelineFilter) filters.pipeline_name = state.pipelineFilter;
+      if (state.statusFilter) filters.status = state.statusFilter;
+      const params = {
+        resource_type: "pipeline_run",
+        filters,
         page: state.page,
         size: state.size,
       };
-      if (state.pipelineFilter) params.pipeline_name = state.pipelineFilter;
-      if (state.statusFilter) params.status = state.statusFilter;
 
-      const data = await callServerToolSafe("list_pipeline_runs", params);
+      const data = await callServerToolSafe("zenml_list_resources", params);
 
       if (data == null) {
-        state.error = serverToolCallsEnabled
+        state.error = lastToolErrorMessage || (serverToolCallsEnabled
           ? "Could not load pipeline runs. The request timed out or returned an error."
-          : "Could not load pipeline runs. Your MCP host may not support callServerTool yet.";
+          : "Could not load pipeline runs. Your MCP host may not support callServerTool yet.");
         state.runs = [];
         state.total = 0;
         state.loading = false;

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, cast
 
+from zenml_tool_catalog import configured_write_policy
+
 Operation = Literal["list", "get", "create", "update", "delete"]
 ScopeKind = Literal["global", "project"]
 
@@ -1926,9 +1928,27 @@ def get_resource_spec(resource_type: str) -> ResourceSpec:
 
 
 def describe_resources(
-    resource_type: str | None = None, operation: str | None = None
+    resource_type: str | None = None,
+    operation: str | None = None,
+    *,
+    write_policy: str | None = None,
 ) -> dict[str, Any]:
     """Return the bounded catalog or one operation schema."""
+    effective_policy = write_policy or configured_write_policy()
+    read_only = effective_policy == "read_only"
+
+    def available_operations(spec: ResourceSpec) -> list[str]:
+        operations: list[str] = [
+            str(item)
+            for item in spec.operations
+            if not (read_only and item in {"create", "update", "delete"})
+        ]
+        if not read_only and any(
+            key[0] == spec.resource_type for key in ACTION_REGISTRY
+        ):
+            operations.append("action")
+        return operations
+
     if resource_type is None:
         if operation is not None:
             raise ResourceRegistryError("operation requires resource_type")
@@ -1936,18 +1956,11 @@ def describe_resources(
             "resources": [
                 {
                     "resource_type": spec.resource_type,
-                    "operations": [
-                        *spec.operations,
-                        *(
-                            ["action"]
-                            if any(
-                                key[0] == spec.resource_type for key in ACTION_REGISTRY
-                            )
-                            else []
-                        ),
-                    ],
+                    "operations": available_operations(spec),
                     "scope": spec.scope,
-                    "policy": (
+                    "policy": "read_only"
+                    if read_only
+                    else (
                         "read_write"
                         if any(
                             item in spec.operations
@@ -1965,21 +1978,18 @@ def describe_resources(
     if operation is None:
         return {
             "resource_type": spec.resource_type,
-            "operations": [
-                *spec.operations,
-                *(
-                    ["action"]
-                    if any(key[0] == resource_type for key in ACTION_REGISTRY)
-                    else []
-                ),
-            ],
-            "actions": [
+            "operations": available_operations(spec),
+            "actions": []
+            if read_only
+            else [
                 action
                 for candidate, action in ACTION_REGISTRY
                 if candidate == resource_type
             ],
             "scope": spec.scope,
-            "policy": (
+            "policy": "read_only"
+            if read_only
+            else (
                 "read_write"
                 if any(
                     item in spec.operations for item in ("create", "update", "delete")
@@ -1989,6 +1999,10 @@ def describe_resources(
             "description": spec.description,
         }
 
+    if read_only and operation in {"create", "update", "delete", "action"}:
+        raise ResourceRegistryError(
+            f"Operation {operation!r} is disabled by the read-only policy"
+        )
     if operation == "action":
         actions = [
             action_spec
