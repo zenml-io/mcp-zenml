@@ -10,9 +10,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "artifact"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -60,9 +65,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "artifact"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -122,9 +132,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "artifact_version"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "artifact_id"
@@ -177,9 +192,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "artifact_version"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "artifact_id",
@@ -216,9 +236,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "build"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -262,9 +287,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "code_repository"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -306,9 +336,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "code_repository"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -349,9 +384,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "code_repository"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -402,9 +442,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "deployment"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -459,9 +504,14 @@
             "component_type"
           ],
           "type": "object"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "flavor"
         }
       },
       "required": [
+        "resource_type",
         "payload"
       ],
       "type": "object"
@@ -504,9 +554,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "flavor"
         }
       },
       "required": [
+        "resource_type",
         "resource_id"
       ],
       "type": "object"
@@ -525,9 +580,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "hook_invocation"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -587,9 +647,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "model"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -647,9 +712,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "model"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -718,9 +788,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "model"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -805,9 +880,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "model_version"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "model_id"
       ],
@@ -846,9 +926,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "model_version"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "model_id"
@@ -913,9 +998,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "model_version"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "model_id",
@@ -971,9 +1061,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "pipeline"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -993,9 +1088,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "pipeline_run"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -1057,9 +1157,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "platform_event_trigger"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -1119,9 +1224,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "platform_event_trigger"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -1182,9 +1292,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "platform_event_trigger"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -1249,9 +1364,14 @@
             "description"
           ],
           "type": "object"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "project"
         }
       },
       "required": [
+        "resource_type",
         "payload"
       ],
       "type": "object"
@@ -1277,9 +1397,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "project"
         }
       },
       "required": [
+        "resource_type",
         "resource_id"
       ],
       "type": "object"
@@ -1309,9 +1434,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "project"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "payload"
       ],
@@ -1364,9 +1494,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "run_template"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -1408,9 +1543,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "run_template"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -1461,9 +1601,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "run_template"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -1552,9 +1697,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "schedule_trigger"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -1615,9 +1765,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "schedule_trigger"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -1682,9 +1837,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "schedule_trigger"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -1808,9 +1968,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "service"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -1892,9 +2057,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "service"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -1960,9 +2130,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "service"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -2070,9 +2245,14 @@
             "connector_type"
           ],
           "type": "object"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "service_connector"
         }
       },
       "required": [
+        "resource_type",
         "payload"
       ],
       "type": "object"
@@ -2136,9 +2316,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "service_connector"
         }
       },
       "required": [
+        "resource_type",
         "resource_id"
       ],
       "type": "object"
@@ -2208,9 +2393,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "service_connector"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "payload"
       ],
@@ -2279,9 +2469,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "snapshot"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -2332,9 +2527,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "snapshot"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -2405,9 +2605,14 @@
             "components"
           ],
           "type": "object"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "stack"
         }
       },
       "required": [
+        "resource_type",
         "payload"
       ],
       "type": "object"
@@ -2449,9 +2654,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "stack"
         }
       },
       "required": [
+        "resource_type",
         "resource_id"
       ],
       "type": "object"
@@ -2500,9 +2710,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "stack"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "payload"
       ],
@@ -2586,9 +2801,14 @@
             "configuration"
           ],
           "type": "object"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "stack_component"
         }
       },
       "required": [
+        "resource_type",
         "payload"
       ],
       "type": "object"
@@ -2661,9 +2881,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "stack_component"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "component_type"
       ],
@@ -2724,9 +2949,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "stack_component"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "component_type",
         "payload"
@@ -2790,9 +3020,14 @@
             "name"
           ],
           "type": "object"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "tag"
         }
       },
       "required": [
+        "resource_type",
         "payload"
       ],
       "type": "object"
@@ -2833,9 +3068,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "tag"
         }
       },
       "required": [
+        "resource_type",
         "resource_id"
       ],
       "type": "object"
@@ -2880,9 +3120,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "tag"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "payload"
       ],
@@ -2947,9 +3192,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "webhook"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -2988,9 +3238,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "webhook"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -3024,9 +3279,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "webhook"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"
@@ -3083,9 +3343,14 @@
         "project_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "webhook_trigger"
         }
       },
       "required": [
+        "resource_type",
         "project_id",
         "payload"
       ],
@@ -3131,9 +3396,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "webhook_trigger"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id"
       ],
@@ -3177,9 +3447,14 @@
         "resource_id": {
           "format": "uuid",
           "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "const": "webhook_trigger"
         }
       },
       "required": [
+        "resource_type",
         "resource_id",
         "project_id",
         "payload"

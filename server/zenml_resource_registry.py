@@ -360,9 +360,12 @@ class OperationSpec:
 
     def schema(self) -> dict[str, Any]:
         properties: dict[str, Any] = {
-            field: {"type": "string"}
-            for field in self.fields
-            if field not in {"page", "size"}
+            "resource_type": {"type": "string", "const": self.resource_type},
+            **{
+                field: {"type": "string"}
+                for field in self.fields
+                if field not in {"page", "size"}
+            },
         }
         if self.property_schemas:
             properties.update(self.property_schemas)
@@ -387,7 +390,7 @@ class OperationSpec:
         return {
             "type": "object",
             "properties": properties,
-            "required": list(self.required_fields),
+            "required": ["resource_type", *self.required_fields],
             "additionalProperties": False,
         }
 

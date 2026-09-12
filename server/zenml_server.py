@@ -605,12 +605,13 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     if candidate_resource_type in RESOURCE_REGISTRY
                     else "unknown"
                 )
-                candidate_action = bound.arguments.get("action")
-                generic_action = (
-                    candidate_action
-                    if (generic_resource_type, candidate_action) in ACTION_REGISTRY
-                    else "unknown"
-                )
+                if generic_operation == "action":
+                    candidate_action = bound.arguments.get("action")
+                    generic_action = (
+                        candidate_action
+                        if (generic_resource_type, candidate_action) in ACTION_REGISTRY
+                        else "unknown"
+                    )
             except Exception:
                 pass
 

@@ -701,6 +701,50 @@ def test_analytics_resource_metadata_is_allowlisted() -> None:
     }
 
 
+def test_generic_action_analytics_only_for_action_calls() -> None:
+    recorded: list[dict[str, Any]] = []
+
+    def generic_stub(resource_type: str) -> dict[str, Any]:
+        del resource_type
+        return {}
+
+    def action_stub(resource_type: str, action: str) -> dict[str, Any]:
+        del resource_type, action
+        return {}
+
+    with patch.object(
+        server.analytics,
+        "track_tool_call",
+        side_effect=lambda **properties: recorded.append(properties),
+    ):
+        for tool_name in (
+            "zenml_describe_resources",
+            "zenml_list_resources",
+            "zenml_get_resource",
+            "zenml_create_resource",
+            "zenml_update_resource",
+            "zenml_delete_resource",
+        ):
+            generic_stub.__name__ = tool_name
+            server.handle_tool_exceptions(generic_stub)("pipeline")
+
+        action_stub.__name__ = "zenml_action_resource"
+        action_call = server.handle_tool_exceptions(action_stub)
+        action_call("schedule_trigger", "attach")
+        action_call("schedule_trigger", "unsupported")
+
+    assert [(event["operation"], event["action"]) for event in recorded] == [
+        ("describe", None),
+        ("list", None),
+        ("get", None),
+        ("create", None),
+        ("update", None),
+        ("delete", None),
+        ("action", "attach"),
+        ("action", "unknown"),
+    ]
+
+
 def test_upstream_categories_cross_the_mcp_boundary() -> None:
     from zenml.exceptions import (
         DoesNotExistException,

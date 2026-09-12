@@ -94,6 +94,30 @@ def test_operation_schemas_match_invocation_policy() -> None:
     assert "component_type" in component_schema["required"]
 
 
+def test_all_operation_schemas_require_exact_resource_type() -> None:
+    operation_kinds: set[str] = set()
+    for resource_type, resource in RESOURCE_REGISTRY.items():
+        for operation in resource.operations:
+            schema = describe_resources(
+                resource_type, operation, write_policy="read_write"
+            )["input_schema"]
+            assert schema["properties"]["resource_type"] == {
+                "type": "string",
+                "const": resource_type,
+            }
+            assert "resource_type" in schema["required"]
+            operation_kinds.add(operation)
+
+    assert operation_kinds == {"list", "get", "create", "update", "delete"}
+    connector_filters = describe_resources(
+        "service_connector", "list", write_policy="read_write"
+    )["input_schema"]["properties"]["filters"]["properties"]
+    assert connector_filters["resource_type"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+
+
 def test_filter_schemas_are_typed() -> None:
     user_filters = describe_resources("user", "list")["input_schema"]["properties"][
         "filters"
@@ -149,6 +173,7 @@ def main() -> int:
         test_catalog_is_bounded,
         test_action_only_resource_policy_matches_advertised_operations,
         test_operation_schemas_match_invocation_policy,
+        test_all_operation_schemas_require_exact_resource_type,
         test_filter_schemas_are_typed,
         test_aliases_and_unsupported_operations_are_rejected,
     ]
