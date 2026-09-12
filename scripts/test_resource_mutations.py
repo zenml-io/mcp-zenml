@@ -141,8 +141,10 @@ class Recorder:
             if name == "create_webhook":
                 return {
                     "id": TARGET,
-                    "body": {"project_id": PROJECT},
-                    "secret": "issued-once-marker",
+                    "body": {
+                        "project_id": PROJECT,
+                        "secret": "issued-once-marker",
+                    },
                 }
             return self._item(name, kwargs)
 

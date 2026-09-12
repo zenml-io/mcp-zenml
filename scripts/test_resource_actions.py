@@ -160,7 +160,11 @@ class Recorder:
             if name == "resolve_run_wait_condition":
                 return Model(id=TARGET, status="resolved", project_id=PROJECT)
             if name == "rotate_webhook_secret":
-                return Model(id=TARGET, secret="issued-once-marker", project_id=PROJECT)
+                return Model(
+                    id=TARGET,
+                    body=Model(secret="issued-once-marker"),
+                    project_id=PROJECT,
+                )
             return None
 
         return action

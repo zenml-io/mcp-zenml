@@ -32,6 +32,30 @@ def test_catalog_is_bounded() -> None:
     )
 
 
+def test_action_only_resource_policy_matches_advertised_operations() -> None:
+    read_write_catalog = describe_resources(write_policy="read_write")["resources"]
+    wait_condition = next(
+        item
+        for item in read_write_catalog
+        if item["resource_type"] == "run_wait_condition"
+    )
+    assert wait_condition["operations"] == ["list", "action"]
+    assert wait_condition["policy"] == "read_write"
+
+    read_write_detail = describe_resources(
+        "run_wait_condition", write_policy="read_write"
+    )
+    assert read_write_detail["actions"] == ["resolve"]
+    assert read_write_detail["policy"] == "read_write"
+
+    read_only_detail = describe_resources(
+        "run_wait_condition", write_policy="read_only"
+    )
+    assert read_only_detail["operations"] == ["list"]
+    assert read_only_detail["actions"] == []
+    assert read_only_detail["policy"] == "read_only"
+
+
 def test_operation_schemas_match_invocation_policy() -> None:
     project_schema = describe_resources("pipeline_run", "list")["input_schema"]
     global_schema = describe_resources("user", "list")["input_schema"]
@@ -123,6 +147,7 @@ def main() -> int:
     tests = [
         test_exact_read_coverage,
         test_catalog_is_bounded,
+        test_action_only_resource_policy_matches_advertised_operations,
         test_operation_schemas_match_invocation_policy,
         test_filter_schemas_are_typed,
         test_aliases_and_unsupported_operations_are_rejected,

@@ -1937,6 +1937,11 @@ def describe_resources(
     effective_policy = write_policy or configured_write_policy()
     read_only = effective_policy == "read_only"
 
+    def has_write_operations(spec: ResourceSpec) -> bool:
+        return any(
+            item in spec.operations for item in ("create", "update", "delete")
+        ) or any(key[0] == spec.resource_type for key in ACTION_REGISTRY)
+
     def available_operations(spec: ResourceSpec) -> list[str]:
         operations: list[str] = [
             str(item)
@@ -1960,14 +1965,9 @@ def describe_resources(
                     "scope": spec.scope,
                     "policy": "read_only"
                     if read_only
-                    else (
-                        "read_write"
-                        if any(
-                            item in spec.operations
-                            for item in ("create", "update", "delete")
-                        )
-                        else "read_only"
-                    ),
+                    else "read_write"
+                    if has_write_operations(spec)
+                    else "read_only",
                     "description": spec.description,
                 }
                 for spec in RESOURCE_REGISTRY.values()
@@ -1989,13 +1989,9 @@ def describe_resources(
             "scope": spec.scope,
             "policy": "read_only"
             if read_only
-            else (
-                "read_write"
-                if any(
-                    item in spec.operations for item in ("create", "update", "delete")
-                )
-                else "read_only"
-            ),
+            else "read_write"
+            if has_write_operations(spec)
+            else "read_only",
             "description": spec.description,
         }
 

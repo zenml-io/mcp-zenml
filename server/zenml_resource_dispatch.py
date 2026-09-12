@@ -1475,9 +1475,9 @@ def mutate_resource(
     if result is not None:
         response["item"] = projected
     if resource_type == "webhook" and operation == "create":
-        dumped = _model_dump(result)
-        if isinstance(dumped, Mapping) and dumped.get("secret") is not None:
-            response["issued_secret"] = dumped["secret"]
+        issued_secret = _find_nested_value(result, "secret")
+        if issued_secret is not None:
+            response["issued_secret"] = issued_secret
     if resource_type == "deployment" and operation == "delete":
         response["force_requested"] = mutation_payload.get("force", False)
     if resource_type in _TRIGGER_TYPES and operation == "delete":
@@ -1959,9 +1959,9 @@ def action_resource(
         if resource_type == "pipeline_run" and result_id:
             response["new_run_id"] = result_id
     if resource_type == "webhook" and action == "rotate_secret":
-        dumped = _model_dump(result)
-        if isinstance(dumped, Mapping) and dumped.get("secret") is not None:
-            response["issued_secret"] = dumped["secret"]
+        issued_secret = _find_nested_value(result, "secret")
+        if issued_secret is not None:
+            response["issued_secret"] = issued_secret
     if resource_type == "tag" and action == "attach":
         response["exclusive_replacement_authorized"] = action_payload.get(
             "allow_exclusive_replace", False
