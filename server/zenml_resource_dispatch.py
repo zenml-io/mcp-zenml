@@ -1634,6 +1634,20 @@ def _action_reconciliation(
     project_id: str,
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if resource_type == "pipeline_run" and action == "replay":
+        return {
+            "operation": None,
+            "resource_type": resource_type,
+            "source_run_id": resource_id,
+            "project_id": project_id,
+            "new_run_id": None,
+            "reconcilable": False,
+            "note": (
+                "The replay may have created a new run, but its ID was lost with "
+                "the response. Reading the source run cannot confirm the replay "
+                "outcome; do not replay automatically."
+            ),
+        }
     if (
         resource_type in _TRIGGER_TYPES
         and action in {"attach", "detach"}
@@ -1934,7 +1948,12 @@ def action_resource(
                 "tool": "zenml_action_resource",
                 "message": (
                     "The connection was lost after action dispatch; the outcome is unknown. "
-                    "Use the supplied reconciliation read and do not repeat automatically."
+                    + (
+                        "The created run ID is unavailable, so reading the source run "
+                        "cannot reconcile the outcome; do not replay automatically."
+                        if resource_type == "pipeline_run" and action == "replay"
+                        else "Use the supplied reconciliation read and do not repeat automatically."
+                    )
                 ),
                 "type": "UnknownOutcome",
                 "details": unknown,
@@ -1958,6 +1977,15 @@ def action_resource(
             response["status"] = result_status
         if resource_type == "pipeline_run" and result_id:
             response["new_run_id"] = result_id
+            response["reconciliation"] = {
+                "operation": "get",
+                "resource_type": resource_type,
+                "resource_id": result_id,
+                "project_id": project,
+                "note": (
+                    "Inspect the replayed run status; do not replay automatically."
+                ),
+            }
     if resource_type == "webhook" and action == "rotate_secret":
         issued_secret = _find_nested_value(result, "secret")
         if issued_secret is not None:

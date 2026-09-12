@@ -358,6 +358,13 @@ def test_every_action_dispatches_once_with_exact_ids() -> None:
     )
     assert replay["new_run_id"] == NEW_RUN
     assert replay["status"] == "running"
+    assert replay["reconciliation"] == {
+        "operation": "get",
+        "resource_type": "pipeline_run",
+        "resource_id": NEW_RUN,
+        "project_id": PROJECT,
+        "note": "Inspect the replayed run status; do not replay automatically.",
+    }
 
 
 def test_trigger_wait_tag_and_webhook_semantics() -> None:
@@ -1050,6 +1057,49 @@ def test_deployment_timeout_and_connection_loss_are_not_retried() -> None:
     assert unknown["outcome"] == "unknown"
     assert "one-time-marker" not in repr(unknown)
     assert "cannot be recovered" in unknown["reconciliation"]["note"]
+
+
+def test_replay_connection_loss_does_not_offer_a_source_run_read() -> None:
+    client = Recorder()
+    attempts = 0
+
+    def lose_response(**kwargs: Any) -> None:
+        nonlocal attempts
+        del kwargs
+        attempts += 1
+        raise requests.ConnectionError("response lost")
+
+    setattr(client, "replay_pipeline_run", lose_response)
+    result = action_resource(
+        client,
+        "pipeline_run",
+        "replay",
+        TARGET,
+        project_id=PROJECT,
+        payload={},
+    )
+
+    assert attempts == 1
+    assert result["outcome"] == "unknown"
+    assert result["resource_id"] == TARGET
+    reconciliation = result["reconciliation"]
+    assert reconciliation == {
+        "operation": None,
+        "resource_type": "pipeline_run",
+        "source_run_id": TARGET,
+        "project_id": PROJECT,
+        "new_run_id": None,
+        "reconcilable": False,
+        "note": (
+            "The replay may have created a new run, but its ID was lost with the "
+            "response. Reading the source run cannot confirm the replay outcome; "
+            "do not replay automatically."
+        ),
+    }
+    assert reconciliation["operation"] is None
+    assert (
+        "reading the source run cannot reconcile" in result["error"]["message"].lower()
+    )
 
 
 def test_real_mcp_action_and_read_only_precheck() -> None:

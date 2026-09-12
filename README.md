@@ -122,9 +122,10 @@ those clients, then move each call to the generic resource tools.
 
 Mutation results distinguish `completed`, `accepted`, and `unknown` outcomes.
 The server does not retry a mutation after it may have reached ZenML. For an
-accepted or unknown result, use the reconciliation read named in the response
-before deciding whether to call again. Webhook creation and secret rotation can
-return a new signing secret once; later reads omit it. Delete schemas state
+accepted or unknown result, follow the reconciliation instructions in the
+response before deciding whether to call again. Use the named read when one is
+available. Webhook creation and secret rotation can return a new signing secret
+once; later reads omit it. Delete schemas state
 whether an operation archives metadata, removes metadata, deprovisions a live
 resource, or can delete stored artifact data.
 
