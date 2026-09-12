@@ -49,6 +49,7 @@ GENERIC_MUTATION_TOOLS = frozenset(
         "zenml_create_resource",
         "zenml_update_resource",
         "zenml_delete_resource",
+        "zenml_action_resource",
     }
 )
 GENERIC_TOOLS = GENERIC_READ_TOOLS | GENERIC_MUTATION_TOOLS

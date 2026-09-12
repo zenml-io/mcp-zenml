@@ -52,6 +52,9 @@ from zenml_resource_dispatch import (
     ensure_writes_enabled,
 )
 from zenml_resource_dispatch import (
+    action_resource as dispatch_action_resource,
+)
+from zenml_resource_dispatch import (
     create_resource as dispatch_create_resource,
 )
 from zenml_resource_dispatch import (
@@ -67,6 +70,7 @@ from zenml_resource_dispatch import (
     update_resource as dispatch_update_resource,
 )
 from zenml_resource_registry import (
+    ACTION_REGISTRY,
     RESOURCE_REGISTRY,
     ResourceRegistryError,
     describe_resources,
@@ -595,7 +599,12 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     if candidate_resource_type in RESOURCE_REGISTRY
                     else "unknown"
                 )
-                generic_action = bound.arguments.get("action")
+                candidate_action = bound.arguments.get("action")
+                generic_action = (
+                    candidate_action
+                    if (generic_resource_type, candidate_action) in ACTION_REGISTRY
+                    else "unknown"
+                )
             except Exception:
                 pass
 
@@ -640,6 +649,10 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                         is_error=True,
                     ),
                 )
+            if generic_operation and isinstance(result, dict):
+                outcome = result.get("outcome")
+                if outcome in {"accepted", "completed", "success"}:
+                    reported_outcome = outcome
             return result
         except requests.HTTPError as e:
             success = False
@@ -1158,6 +1171,7 @@ def zenml_get_resource(
     model_id: str | None = None,
     pipeline_run_id: str | None = None,
     component_type: str | None = None,
+    hydrate: bool | None = None,
 ) -> dict[str, Any]:
     """Get one allowlisted ZenML resource by its identifier.
 
@@ -1173,6 +1187,7 @@ def zenml_get_resource(
         model_id=model_id,
         pipeline_run_id=pipeline_run_id,
         component_type=component_type,
+        hydrate=hydrate,
     )
 
 
@@ -1268,6 +1283,39 @@ def zenml_delete_resource(
         artifact_id=artifact_id,
         model_id=model_id,
         component_type=component_type,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_action_resource(
+    resource_type: str,
+    action: str,
+    resource_id: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Run one finite ZenML lifecycle or relation action.
+
+    Inspect ``zenml_describe_resources(resource_type, "action")`` for the exact
+    action names and payload schema. Every identifier must be an exact UUID.
+    Actions may have effects outside the ZenML server and are never retried.
+    """
+    ensure_writes_enabled()
+    return dispatch_action_resource(
+        get_zenml_client(),
+        resource_type,
+        action,
+        resource_id,
+        payload=payload,
+        project_id=project_id,
     )
 
 

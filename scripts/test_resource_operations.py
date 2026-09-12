@@ -513,6 +513,27 @@ def test_safe_projection_and_connector_flags() -> None:
     )
     assert repository["metadata"] == {"source": "github"}
     assert "bad-" not in repr(repository)
+    deployment_client = Recorder()
+    deployment_client.item_factory = lambda name, kwargs: {
+        "id": "target",
+        "body": {"project_id": PROJECT_ID},
+        "metadata": {
+            "auth_key": "bad-deployment-auth-key",
+            "endpoint": "https://deployment.example.test",
+        },
+        "resources": {"tags": [{"id": "tag-id"}]},
+    }
+    deployment = get_resource(
+        deployment_client,
+        "deployment",
+        "target",
+        project_id=PROJECT_ID,
+        hydrate=True,
+    )
+    assert "bad-deployment-auth-key" not in repr(deployment)
+    assert deployment["item"]["metadata"]["endpoint"].startswith("https://")
+    assert deployment["item"]["resources"]["tags"] == [{"id": "tag-id"}]
+    assert deployment_client.calls[-1][1]["hydrate"] is True
     client = Recorder()
     list_resources(client, "service_connector")
     assert client.calls[-1][1]["expand_secrets"] is False
@@ -759,7 +780,11 @@ def test_public_mcp_invocations() -> None:
 
                 get_result = await client.call_tool(
                     "zenml_get_resource",
-                    {"resource_type": "user", "resource_id": "target"},
+                    {
+                        "resource_type": "user",
+                        "resource_id": "target",
+                        "hydrate": True,
+                    },
                 )
                 assert get_result.is_error is False
                 assert get_result.structured_content == {
@@ -767,6 +792,7 @@ def test_public_mcp_invocations() -> None:
                     "item": {"id": "target"},
                     "effective_scope": {"kind": "global"},
                 }
+                assert fake.calls[-1][1]["hydrate"] is True
 
                 error_result = await client.call_tool(
                     "zenml_list_resources",

@@ -28,12 +28,14 @@ from typing import Any
 import zenml
 from zenml.client import Client
 from zenml.zen_stores.base_zen_store import BaseZenStore
+from zenml.zen_stores.zen_store_interface import ZenStoreInterface
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = REPO_ROOT / "server" / "zenml_server.py"
 sys.path.insert(0, str(REPO_ROOT / "server"))
 
 from zenml_resource_registry import (  # noqa: E402
+    ACTION_REGISTRY,
     GET_SDK_METHODS,
     LIST_SDK_METHODS,
     RESOURCE_REGISTRY,
@@ -365,6 +367,59 @@ def test_resource_mutation_adapter_signatures() -> None:
         assert required <= set(parameters), method_name
 
 
+def test_resource_action_adapter_signatures() -> None:
+    """Every advertised action binds to the exact released public API."""
+    required_parameters = {
+        "replay_pipeline_run": {
+            "name_id_or_prefix",
+            "run_configuration",
+            "project",
+            "synchronous",
+        },
+        "attach_trigger_to_snapshot": {
+            "trigger_id",
+            "pipeline_snapshot_id",
+            "run_configuration",
+            "allow_replace",
+        },
+        "detach_trigger_from_snapshot": {"trigger_id", "pipeline_snapshot_id"},
+        "clear_trigger_dispatch_error": {"trigger_id", "pipeline_snapshot_id"},
+        "provision_deployment": {
+            "name_id_or_prefix",
+            "project",
+            "snapshot_id",
+            "timeout",
+        },
+        "deprovision_deployment": {"name_id_or_prefix", "project", "timeout"},
+        "refresh_deployment": {"name_id_or_prefix", "project"},
+        "resolve_run_wait_condition": {"run_wait_condition_id", "resolution", "result"},
+        "rotate_webhook_secret": {"name_id_or_prefix", "secret", "project"},
+    }
+    advertised = {
+        spec.sdk_method
+        for spec in ACTION_REGISTRY.values()
+        if spec.resource_type != "tag"
+    }
+    assert advertised == set(required_parameters)
+    for method_name, required in required_parameters.items():
+        parameters = inspect.signature(getattr(Client, method_name)).parameters
+        assert required <= set(parameters), method_name
+    for method_name in ("batch_create_tag_resource", "batch_delete_tag_resource"):
+        parameters = inspect.signature(
+            getattr(ZenStoreInterface, method_name)
+        ).parameters
+        assert "tag_resources" in parameters
+
+    from zenml.config.pipeline_run_configuration import ReplayRunConfiguration
+
+    assert {
+        "skip_successful_steps",
+        "steps_to_skip",
+        "step_input_overrides",
+        "step_default_input_overrides",
+    } <= set(ReplayRunConfiguration.model_fields)
+
+
 def test_representative_typed_filters_validate_in_released_models() -> None:
     """Schema-valid scalar filters survive ZenML runtime model validation."""
     from zenml.models import (
@@ -401,6 +456,10 @@ def main() -> int:
         (
             "test_resource_mutation_adapter_signatures",
             test_resource_mutation_adapter_signatures,
+        ),
+        (
+            "test_resource_action_adapter_signatures",
+            test_resource_action_adapter_signatures,
         ),
         (
             "test_representative_typed_filters_validate_in_released_models",

@@ -249,9 +249,15 @@ def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
             isinstance(value, int)
             and not isinstance(value, bool)
             and value >= schema.get("minimum", value)
+            and value <= schema.get("maximum", value)
         )
     if expected == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= schema.get("minimum", value)
+            and value <= schema.get("maximum", value)
+        )
     if expected == "array":
         return (
             isinstance(value, list)
@@ -424,9 +430,10 @@ class ResourceSpec:
                 resource_type=self.resource_type,
                 operation="get",
                 sdk_method=GET_SDK_METHODS[self.resource_type],
-                fields=(*scope_fields, *self.get_fields),
+                fields=(*scope_fields, *self.get_fields, "hydrate"),
                 required_fields=self.get_required,
                 description=f"Get one {self.description.lower()} by an identifier.",
+                property_schemas=MappingProxyType({"hydrate": {"type": "boolean"}}),
             )
         mutation = self.mutations.get(operation)
         if mutation is not None:
@@ -493,6 +500,75 @@ class MutationSpec:
             or f"{self.operation.title()} {resource.description.lower()}.",
             property_schemas=MappingProxyType(properties),
         )
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    """Static contract for one explicitly supported resource action."""
+
+    resource_type: str
+    action: str
+    sdk_method: str
+    payload_properties: Mapping[str, dict[str, Any]] = MappingProxyType({})
+    required_payload: tuple[str, ...] = ()
+    prerequisites: tuple[str, ...] = ()
+
+    def schema(self, *, project_scoped: bool = True) -> dict[str, Any]:
+        payload_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": dict(self.payload_properties),
+            "required": list(self.required_payload),
+            "additionalProperties": False,
+        }
+        if self.resource_type == "tag":
+            payload_schema["oneOf"] = [
+                {
+                    "properties": {"target_type": {"const": "artifact_version"}},
+                    "required": ["target_type", "artifact_id"],
+                    "not": {"required": ["model_id"]},
+                },
+                {
+                    "properties": {"target_type": {"const": "model_version"}},
+                    "required": ["target_type", "model_id"],
+                    "not": {"required": ["artifact_id"]},
+                },
+                {
+                    "properties": {
+                        "target_type": {
+                            "enum": [
+                                value
+                                for value in _TAGGABLE_RESOURCE["enum"]
+                                if value not in {"artifact_version", "model_version"}
+                            ]
+                        }
+                    },
+                    "required": ["target_type"],
+                    "not": {
+                        "anyOf": [
+                            {"required": ["artifact_id"]},
+                            {"required": ["model_id"]},
+                        ]
+                    },
+                },
+            ]
+        properties: dict[str, Any] = {
+            "resource_type": {"type": "string", "const": self.resource_type},
+            "action": {"type": "string", "const": self.action},
+            "resource_id": {"type": "string", "format": "uuid"},
+            "payload": payload_schema,
+        }
+        required = ["resource_type", "action", "resource_id"]
+        if self.required_payload:
+            required.append("payload")
+        if project_scoped:
+            properties["project_id"] = {"type": "string", "format": "uuid"}
+            required.append("project_id")
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        }
 
 
 _STR = {"type": "string"}
@@ -1527,6 +1603,248 @@ RESOURCE_REGISTRY: Mapping[str, ResourceSpec] = MappingProxyType(
     {spec.resource_type: spec for spec in _RESOURCE_SPECS}
 )
 
+_REPLAY_CONFIGURATION = {
+    "type": "object",
+    "properties": {
+        "skip_successful_steps": _BOOL,
+        "steps_to_skip": {"type": "array", "items": _NONEMPTY, "uniqueItems": True},
+        "step_input_overrides": {
+            "type": "object",
+            "additionalProperties": _CONFIG_MAP,
+        },
+        "step_default_input_overrides": {
+            "type": "object",
+            "additionalProperties": _CONFIG_MAP,
+        },
+    },
+    "additionalProperties": False,
+}
+_TRIGGER_RUN_CONFIGURATION = {
+    "type": "object",
+    "properties": {
+        "run_name": _NONEMPTY,
+        "enable_cache": _BOOL,
+        "enable_artifact_metadata": _BOOL,
+        "enable_artifact_visualization": _BOOL,
+        "enable_step_logs": _BOOL,
+        "enable_pipeline_logs": _BOOL,
+        "enable_heartbeat": _BOOL,
+        "substitutions": _STRING_MAP,
+        "execution_mode": {
+            "type": "string",
+            "enum": ["fail_fast", "stop_on_failure", "continue_on_failure"],
+        },
+    },
+    "additionalProperties": False,
+}
+_TAGGABLE_RESOURCE = {
+    "type": "string",
+    "enum": [
+        "artifact",
+        "artifact_version",
+        "model",
+        "model_version",
+        "pipeline",
+        "pipeline_run",
+        "run_template",
+        "pipeline_snapshot",
+        "deployment",
+    ],
+}
+_ACTION_TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 300}
+
+
+def _action(
+    resource_type: str,
+    action: str,
+    sdk_method: str,
+    properties: Mapping[str, dict[str, Any]] | None = None,
+    *,
+    required: tuple[str, ...] = (),
+    prerequisites: tuple[str, ...] = (),
+) -> ActionSpec:
+    return ActionSpec(
+        resource_type=resource_type,
+        action=action,
+        sdk_method=sdk_method,
+        payload_properties=MappingProxyType(dict(properties or {})),
+        required_payload=required,
+        prerequisites=prerequisites,
+    )
+
+
+_TRIGGER_ACTIONS = (
+    tuple(
+        _action(
+            resource_type,
+            "attach",
+            "attach_trigger_to_snapshot",
+            {
+                "snapshot_id": _UUID,
+                "allow_replace": _BOOL,
+                "run_configuration": _TRIGGER_RUN_CONFIGURATION,
+            },
+            required=("snapshot_id",),
+        )
+        for resource_type in (
+            "schedule_trigger",
+            "platform_event_trigger",
+            "webhook_trigger",
+        )
+    )
+    + tuple(
+        _action(
+            resource_type,
+            "detach",
+            "detach_trigger_from_snapshot",
+            {"snapshot_id": _UUID},
+            required=("snapshot_id",),
+        )
+        for resource_type in (
+            "schedule_trigger",
+            "platform_event_trigger",
+            "webhook_trigger",
+        )
+    )
+    + tuple(
+        _action(
+            resource_type,
+            "clear_dispatch_error",
+            "clear_trigger_dispatch_error",
+            {"snapshot_id": _UUID},
+        )
+        for resource_type in (
+            "schedule_trigger",
+            "platform_event_trigger",
+            "webhook_trigger",
+        )
+    )
+)
+
+_ACTION_SPECS = (
+    _action(
+        "pipeline_run",
+        "replay",
+        "replay_pipeline_run",
+        {"run_configuration": _REPLAY_CONFIGURATION},
+    ),
+    *_TRIGGER_ACTIONS,
+    _action(
+        "deployment",
+        "provision",
+        "provision_deployment",
+        {"snapshot_id": _UUID, "timeout": _ACTION_TIMEOUT},
+        prerequisites=(
+            "An installed deployer integration and its external credentials are required.",
+        ),
+    ),
+    _action(
+        "deployment",
+        "deprovision",
+        "deprovision_deployment",
+        {"timeout": _ACTION_TIMEOUT},
+        prerequisites=(
+            "The deployment must retain an installed deployer integration and its external credentials.",
+        ),
+    ),
+    _action(
+        "deployment",
+        "refresh",
+        "refresh_deployment",
+        prerequisites=(
+            "The deployment must retain an installed deployer integration and its external credentials.",
+        ),
+    ),
+    _action(
+        "run_wait_condition",
+        "resolve",
+        "resolve_run_wait_condition",
+        {
+            "resolution": {"type": "string", "enum": ["CONTINUE", "ABORT"]},
+            "result": {},
+        },
+        required=("resolution",),
+    ),
+    _action(
+        "tag",
+        "attach",
+        "zen_store.batch_create_tag_resource",
+        {
+            "target_id": _UUID,
+            "target_type": _TAGGABLE_RESOURCE,
+            "allow_exclusive_replace": _BOOL,
+            "artifact_id": _UUID,
+            "model_id": _UUID,
+        },
+        required=("target_id", "target_type"),
+    ),
+    _action(
+        "tag",
+        "detach",
+        "zen_store.batch_delete_tag_resource",
+        {
+            "target_id": _UUID,
+            "target_type": _TAGGABLE_RESOURCE,
+            "artifact_id": _UUID,
+            "model_id": _UUID,
+        },
+        required=("target_id", "target_type"),
+    ),
+    _action(
+        "webhook",
+        "rotate_secret",
+        "rotate_webhook_secret",
+        {"secret": _NONEMPTY},
+    ),
+)
+
+ACTION_REGISTRY: Mapping[tuple[str, str], ActionSpec] = MappingProxyType(
+    {(spec.resource_type, spec.action): spec for spec in _ACTION_SPECS}
+)
+
+
+def get_action_spec(resource_type: str, action: str) -> ActionSpec:
+    """Return one exact action pair, rejecting aliases and inferred methods."""
+    try:
+        return ACTION_REGISTRY[(resource_type, action)]
+    except KeyError as error:
+        supported = sorted(
+            candidate.action
+            for candidate in ACTION_REGISTRY.values()
+            if candidate.resource_type == resource_type
+        )
+        suffix = f"; supported actions: {', '.join(supported)}" if supported else ""
+        raise ResourceRegistryError(
+            f"Unsupported action {action!r} for {resource_type!r}{suffix}"
+        ) from error
+
+
+def validate_action_payload(
+    resource_type: str, action: str, payload: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Validate action input before any client or SDK method is inspected."""
+    spec = get_action_spec(resource_type, action)
+    value = dict(payload or {})
+    unsupported = sorted(set(value) - set(spec.payload_properties))
+    if unsupported:
+        allowed = ", ".join(spec.payload_properties) or "none"
+        raise ResourceRegistryError(
+            f"Unsupported fields for {resource_type!r} {action}: "
+            f"{', '.join(unsupported)}. Allowed fields: {allowed}"
+        )
+    missing = sorted(set(spec.required_payload) - set(value))
+    if missing:
+        raise ResourceRegistryError(
+            f"{resource_type!r} {action} requires fields: {', '.join(missing)}"
+        )
+    for field, item in value.items():
+        if not _matches_schema(item, spec.payload_properties[field]):
+            raise ResourceRegistryError(
+                f"Invalid value for {resource_type!r} {action} field {field!r}"
+            )
+    return value
+
+
 LIST_SDK_METHODS: Mapping[str, str] = MappingProxyType(
     {
         "project": "list_projects",
@@ -1618,7 +1936,16 @@ def describe_resources(
             "resources": [
                 {
                     "resource_type": spec.resource_type,
-                    "operations": list(spec.operations),
+                    "operations": [
+                        *spec.operations,
+                        *(
+                            ["action"]
+                            if any(
+                                key[0] == spec.resource_type for key in ACTION_REGISTRY
+                            )
+                            else []
+                        ),
+                    ],
                     "scope": spec.scope,
                     "policy": (
                         "read_write"
@@ -1638,7 +1965,19 @@ def describe_resources(
     if operation is None:
         return {
             "resource_type": spec.resource_type,
-            "operations": list(spec.operations),
+            "operations": [
+                *spec.operations,
+                *(
+                    ["action"]
+                    if any(key[0] == resource_type for key in ACTION_REGISTRY)
+                    else []
+                ),
+            ],
+            "actions": [
+                action
+                for candidate, action in ACTION_REGISTRY
+                if candidate == resource_type
+            ],
             "scope": spec.scope,
             "policy": (
                 "read_write"
@@ -1650,6 +1989,40 @@ def describe_resources(
             "description": spec.description,
         }
 
+    if operation == "action":
+        actions = [
+            action_spec
+            for (candidate, _), action_spec in ACTION_REGISTRY.items()
+            if candidate == resource_type
+        ]
+        if not actions:
+            raise ResourceRegistryError(
+                f"Unsupported operation 'action' for {resource_type!r}"
+            )
+        return {
+            "resource_type": resource_type,
+            "operation": "action",
+            "scope": "project",
+            "resource_scope": spec.scope,
+            "scope_note": (
+                "project_id selects and verifies the affected resource or relation target; "
+                "it does not change the client's active project."
+            ),
+            "actions": [
+                {
+                    "action": action_spec.action,
+                    "sdk_method": action_spec.sdk_method,
+                    "input_schema": action_spec.schema(),
+                    "prerequisites": list(action_spec.prerequisites),
+                }
+                for action_spec in actions
+            ],
+            "output_projection": (
+                "Credential keys and opaque configuration, environment, parameter, "
+                "settings, secret, and value containers are omitted recursively. "
+                "A newly issued webhook secret is returned once."
+            ),
+        }
     operation_spec = spec.operation_spec(operation)
     example: dict[str, Any] = {"resource_type": resource_type}
     if operation == "list":

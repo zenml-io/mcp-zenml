@@ -13,12 +13,15 @@ from typing import Any
 
 import requests
 from zenml_resource_registry import (
+    ACTION_REGISTRY,
     DATETIME_FILTERS,
     MAX_PAGE_SIZE,
     RESOURCE_REGISTRY,
     ResourceRegistryError,
     ResourceSpec,
+    get_action_spec,
     get_resource_spec,
+    validate_action_payload,
     validate_filter_value,
     validate_mutation_payload,
 )
@@ -149,6 +152,7 @@ _SENSITIVE_KEY_PARTS = frozenset(
     {
         "accesskey",
         "apikey",
+        "authkey",
         "credential",
         "databaseurl",
         "password",
@@ -637,12 +641,15 @@ def get_resource(
     model_id: str | None = None,
     pipeline_run_id: str | None = None,
     component_type: str | None = None,
+    hydrate: bool | None = None,
 ) -> dict[str, Any]:
     """Validate and run one allowlisted get adapter."""
     spec = get_resource_spec(resource_type)
     spec.operation_spec("get")
     if not isinstance(resource_id, str) or not resource_id.strip():
         raise ResourceDispatchError("resource_id must be a non-empty identifier")
+    if hydrate is not None and not isinstance(hydrate, bool):
+        raise ResourceDispatchError("hydrate must be a boolean")
     supplied_parents = {
         "artifact_id": _normalize_parent_id("artifact_id", artifact_id),
         "model_id": _normalize_parent_id("model_id", model_id),
@@ -675,7 +682,9 @@ def get_resource(
         kwargs["component_type"] = component_type
     elif resource_type == "model_version":
         kwargs["model_name_or_id"] = model_id
-    kwargs["hydrate"] = resource_type == "run_step"
+    kwargs["hydrate"] = (
+        resource_type in {"run_step", "tag"} if hydrate is None else hydrate
+    )
     if resource_type == "service_connector":
         kwargs["expand_secrets"] = False
     if resource_type in {"service_connector_type", "resource_request"}:
@@ -1512,7 +1521,469 @@ def delete_resource(
     )
 
 
+_ACTION_PROJECT_RESOURCES = frozenset(
+    {
+        "pipeline_run",
+        "schedule_trigger",
+        "platform_event_trigger",
+        "webhook_trigger",
+        "deployment",
+        "run_wait_condition",
+        "tag",
+        "webhook",
+    }
+)
+_TAG_TARGET_RESOURCES = MappingProxyType(
+    {
+        "artifact": "artifact",
+        "artifact_version": "artifact_version",
+        "model": "model",
+        "model_version": "model_version",
+        "pipeline": "pipeline",
+        "pipeline_run": "pipeline_run",
+        "run_template": "run_template",
+        "pipeline_snapshot": "snapshot",
+        "deployment": "deployment",
+    }
+)
+
+
+def _action_scope(
+    client: Any, resource_type: str, project_id: str | None
+) -> tuple[dict[str, Any], str]:
+    if resource_type not in _ACTION_PROJECT_RESOURCES:
+        raise ResourceDispatchError(f"Unsupported action resource {resource_type!r}")
+    if project_id is None:
+        raise ResourceDispatchError(
+            f"project_id is required for {resource_type!r} actions"
+        )
+    project = str(_exact_uuid("project_id", project_id))
+    return {
+        "kind": "project",
+        "project_id": project,
+        "source": "requested",
+    }, project
+
+
+def _validate_tag_parent_payload(action: str, payload: Mapping[str, Any]) -> None:
+    target_type = payload["target_type"]
+    expected_parent = {
+        "artifact_version": "artifact_id",
+        "model_version": "model_id",
+    }.get(target_type)
+    supplied_parents = {
+        field for field in ("artifact_id", "model_id") if payload.get(field) is not None
+    }
+    if expected_parent and expected_parent not in supplied_parents:
+        raise ResourceDispatchError(
+            f"tag {action} for {target_type!r} requires {expected_parent}"
+        )
+    allowed_parents = {expected_parent} if expected_parent else set()
+    unexpected_parents = supplied_parents - allowed_parents
+    if unexpected_parents:
+        raise ResourceDispatchError(
+            "Unexpected tag target parent identifiers: "
+            + ", ".join(sorted(unexpected_parents))
+        )
+
+
+def _validate_listed_action_target(
+    client: Any, resource_type: str, resource_id: str, project_id: str
+) -> dict[str, Any]:
+    target = _exact_uuid("target_id", resource_id)
+    if resource_type == "artifact_version":
+        item = _invoke_adapter(
+            lambda: client.get_artifact_version(
+                name_id_or_prefix=target,
+                project=project_id,
+                hydrate=False,
+            )
+        )
+    elif resource_type == "model_version":
+        item = _invoke_adapter(
+            lambda: client.get_model_version(
+                model_version_name_or_number_or_id=target,
+                project=project_id,
+                hydrate=False,
+            )
+        )
+    else:
+        item = None
+    if item is not None:
+        observed_id = _find_nested_id(item, "id", "id")
+        observed_project = _find_nested_id(item, "project_id", "project")
+        if observed_id != resource_id or observed_project != project_id:
+            raise ResourceNotFound(
+                f"{resource_type!r} was not found in the effective project"
+            )
+        return {"item": safe_project(item, resource_type=resource_type)}
+
+    listed = list_resources(
+        client,
+        resource_type,
+        filters={"id": resource_id},
+        project_id=project_id,
+        page=1,
+        size=2,
+    )
+    exact = [
+        item
+        for item in listed["items"]
+        if _find_nested_id(item, "id", "id") == resource_id
+    ]
+    if len(exact) != 1:
+        raise ResourceNotFound(
+            f"{resource_type!r} was not found in the effective project"
+        )
+    return exact[0]
+
+
+def _action_reconciliation(
+    resource_type: str,
+    action: str,
+    resource_id: str,
+    project_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    if (
+        resource_type in _TRIGGER_TYPES
+        and action in {"attach", "detach"}
+        and payload.get("snapshot_id")
+    ):
+        return {
+            "operation": "list",
+            "resource_type": resource_type,
+            "project_id": project_id,
+            "filters": {"id": resource_id, "snapshot_id": payload["snapshot_id"]},
+            "note": (
+                "Confirm that the trigger attachment is present."
+                if action == "attach"
+                else "Confirm that the trigger attachment is absent."
+            ),
+        }
+    if resource_type in _TRIGGER_TYPES and action == "clear_dispatch_error":
+        reconciliation = {
+            "operation": "get",
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "project_id": project_id,
+            "hydrate": True,
+            "note": "Inspect snapshot_dispatch_states and confirm the dispatch error fields are empty; do not repeat automatically.",
+        }
+        if payload.get("snapshot_id"):
+            reconciliation["expected_snapshot_id"] = payload["snapshot_id"]
+        return reconciliation
+    if resource_type == "run_wait_condition":
+        return {
+            "operation": "list",
+            "resource_type": resource_type,
+            "project_id": project_id,
+            "filters": {"id": resource_id},
+            "note": "Inspect status and resolution; do not resolve again automatically.",
+        }
+    if resource_type == "tag":
+        target_type = payload["target_type"]
+        target_resource = _TAG_TARGET_RESOURCES[target_type]
+        reconciliation: dict[str, Any] = {
+            "operation": "get",
+            "resource_type": target_resource,
+            "resource_id": payload["target_id"],
+            "project_id": project_id,
+            "hydrate": True,
+            "expected_tag_id": resource_id,
+            "note": "Inspect the hydrated target tags for this exact tag ID; do not repeat automatically.",
+        }
+        if target_type == "artifact_version":
+            reconciliation["artifact_id"] = payload["artifact_id"]
+        elif target_type == "model_version":
+            reconciliation["model_id"] = payload["model_id"]
+        return reconciliation
+    note = "Inspect the resource state; do not repeat the action automatically."
+    if resource_type == "webhook" and action == "rotate_secret":
+        note = "The newly issued webhook secret cannot be recovered by a later read."
+    return {
+        "operation": "get",
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "project_id": project_id,
+        "note": note,
+    }
+
+
+def _run_action_call(
+    client: Any,
+    resource_type: str,
+    action: str,
+    target: uuid.UUID,
+    payload: Mapping[str, Any],
+    project: str,
+) -> Any:
+    if resource_type == "pipeline_run":
+        from zenml.config.pipeline_run_configuration import ReplayRunConfiguration
+
+        configuration = payload.get("run_configuration")
+        run_configuration = (
+            ReplayRunConfiguration.model_validate(configuration)
+            if configuration is not None
+            else None
+        )
+        return client.replay_pipeline_run(
+            name_id_or_prefix=target,
+            run_configuration=run_configuration,
+            project=project,
+            synchronous=False,
+        )
+    if resource_type in _TRIGGER_TYPES:
+        snapshot_id = payload.get("snapshot_id")
+        snapshot = (
+            _exact_uuid("snapshot_id", snapshot_id) if snapshot_id is not None else None
+        )
+        if action == "attach":
+            from zenml.config.pipeline_run_configuration import PipelineRunConfiguration
+
+            configuration = payload.get("run_configuration")
+            run_configuration = (
+                PipelineRunConfiguration.model_validate(configuration)
+                if configuration is not None
+                else None
+            )
+            return client.attach_trigger_to_snapshot(
+                trigger_id=target,
+                pipeline_snapshot_id=snapshot,
+                run_configuration=run_configuration,
+                allow_replace=payload.get("allow_replace", False),
+            )
+        if action == "detach":
+            return client.detach_trigger_from_snapshot(
+                trigger_id=target, pipeline_snapshot_id=snapshot
+            )
+        return client.clear_trigger_dispatch_error(
+            trigger_id=target, pipeline_snapshot_id=snapshot
+        )
+    if resource_type == "deployment":
+        if action == "provision":
+            snapshot_id = payload.get("snapshot_id")
+            return client.provision_deployment(
+                name_id_or_prefix=target,
+                project=project,
+                snapshot_id=(
+                    _exact_uuid("snapshot_id", snapshot_id)
+                    if snapshot_id is not None
+                    else None
+                ),
+                timeout=payload.get("timeout", 300),
+            )
+        if action == "deprovision":
+            return client.deprovision_deployment(
+                name_id_or_prefix=target,
+                project=project,
+                timeout=payload.get("timeout", 300),
+            )
+        return client.refresh_deployment(name_id_or_prefix=target, project=project)
+    if resource_type == "run_wait_condition":
+        from zenml.enums import RunWaitConditionResolution
+
+        return client.resolve_run_wait_condition(
+            run_wait_condition_id=target,
+            resolution=RunWaitConditionResolution(payload["resolution"].lower()),
+            result=payload.get("result"),
+        )
+    if resource_type == "tag":
+        from zenml.enums import TaggableResourceTypes
+        from zenml.models import TagResourceRequest
+
+        request = TagResourceRequest(
+            tag_id=target,
+            resource_id=_exact_uuid("target_id", payload["target_id"]),
+            resource_type=TaggableResourceTypes(payload["target_type"]),
+        )
+        if action == "attach":
+            return client.zen_store.batch_create_tag_resource(tag_resources=[request])
+        return client.zen_store.batch_delete_tag_resource(tag_resources=[request])
+    return client.rotate_webhook_secret(
+        name_id_or_prefix=target,
+        secret=payload.get("secret"),
+        project=project,
+    )
+
+
+def action_resource(
+    client: Any,
+    resource_type: str,
+    action: str,
+    resource_id: str,
+    *,
+    payload: Mapping[str, Any] | None = None,
+    project_id: str | None = None,
+    read_only: bool | None = None,
+) -> dict[str, Any]:
+    """Validate and perform one finite lifecycle or relation action."""
+    ensure_writes_enabled(read_only=read_only)
+    try:
+        get_resource_spec(resource_type)
+        action_spec = get_action_spec(resource_type, action)
+        action_payload = validate_action_payload(resource_type, action, payload)
+    except ResourceRegistryError as error:
+        raise ResourceDispatchError(str(error)) from error
+    if resource_type == "tag":
+        _validate_tag_parent_payload(action, action_payload)
+    target = _exact_uuid("resource_id", resource_id)
+    effective_scope, project = _action_scope(client, resource_type, project_id)
+
+    if resource_type == "run_wait_condition":
+        _validate_listed_action_target(client, resource_type, str(target), project)
+    else:
+        existing = _validate_related(
+            client,
+            resource_type,
+            str(target),
+            project_id=None if resource_type == "tag" else project,
+        )
+        if resource_type == "tag" and action == "attach":
+            is_exclusive = bool(_find_nested_value(existing["item"], "exclusive"))
+            if is_exclusive and not action_payload.get(
+                "allow_exclusive_replace", False
+            ):
+                raise ResourceDispatchError(
+                    "Attaching an exclusive tag requires allow_exclusive_replace=true"
+                )
+
+    if (
+        resource_type in _TRIGGER_TYPES
+        and action in {"attach", "detach", "clear_dispatch_error"}
+        and action_payload.get("snapshot_id") is not None
+    ):
+        _validate_related(
+            client,
+            "snapshot",
+            str(_exact_uuid("snapshot_id", action_payload["snapshot_id"])),
+            project_id=project,
+        )
+    elif resource_type == "deployment" and action == "provision":
+        snapshot_id = action_payload.get("snapshot_id")
+        if snapshot_id is not None:
+            _validate_related(
+                client,
+                "snapshot",
+                str(_exact_uuid("snapshot_id", snapshot_id)),
+                project_id=project,
+            )
+    elif resource_type == "tag":
+        target_type = action_payload["target_type"]
+        target_resource = _TAG_TARGET_RESOURCES[target_type]
+        expected_parent = {
+            "artifact_version": "artifact_id",
+            "model_version": "model_id",
+        }.get(target_type)
+        if expected_parent:
+            _validate_related(
+                client,
+                target_resource,
+                action_payload["target_id"],
+                project_id=project,
+                artifact_id=action_payload.get("artifact_id"),
+                model_id=action_payload.get("model_id"),
+            )
+        else:
+            _validate_listed_action_target(
+                client, target_resource, action_payload["target_id"], project
+            )
+
+    reconciliation = _action_reconciliation(
+        resource_type, action, str(target), project, action_payload
+    )
+    from zenml.deployers.exceptions import DeploymentTimeoutError
+
+    try:
+        result = _invoke_adapter(
+            lambda: _run_action_call(
+                client, resource_type, action, target, action_payload, project
+            )
+        )
+    except DeploymentTimeoutError:
+        if resource_type != "deployment" or action not in {"provision", "deprovision"}:
+            raise
+        return {
+            "resource_type": resource_type,
+            "action": action,
+            "resource_id": str(target),
+            "outcome": "accepted",
+            "status": "timed_out",
+            "effective_scope": effective_scope,
+            "reconciliation": reconciliation,
+        }
+    except (
+        requests.ReadTimeout,
+        requests.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ContentDecodingError,
+    ) as error:
+        if isinstance(error, requests.ConnectTimeout):
+            raise
+        cause_names = {
+            type(item).__name__
+            for item in (error, error.__cause__, error.__context__)
+            if item is not None
+        }
+        if cause_names & {
+            "NewConnectionError",
+            "NameResolutionError",
+            "ConnectionRefusedError",
+        }:
+            raise
+        unknown = {
+            "resource_type": resource_type,
+            "action": action,
+            "resource_id": str(target),
+            "outcome": "unknown",
+            "effective_scope": effective_scope,
+            "reconciliation": reconciliation,
+        }
+        return {
+            **unknown,
+            "error": {
+                "tool": "zenml_action_resource",
+                "message": (
+                    "The connection was lost after action dispatch; the outcome is unknown. "
+                    "Use the supplied reconciliation read and do not repeat automatically."
+                ),
+                "type": "UnknownOutcome",
+                "details": unknown,
+            },
+        }
+
+    response: dict[str, Any] = {
+        "resource_type": resource_type,
+        "action": action,
+        "resource_id": str(target),
+        "outcome": "accepted" if resource_type == "pipeline_run" else "completed",
+        "effective_scope": effective_scope,
+        "reconciliation": reconciliation,
+        "sdk_method": action_spec.sdk_method,
+    }
+    if result is not None:
+        response["item"] = safe_project(result, resource_type=resource_type)
+        result_id = _find_nested_id(result, "id", "id")
+        result_status = _find_nested_value(result, "status")
+        if result_status is not None:
+            response["status"] = result_status
+        if resource_type == "pipeline_run" and result_id:
+            response["new_run_id"] = result_id
+    if resource_type == "webhook" and action == "rotate_secret":
+        dumped = _model_dump(result)
+        if isinstance(dumped, Mapping) and dumped.get("secret") is not None:
+            response["issued_secret"] = dumped["secret"]
+    if resource_type == "tag" and action == "attach":
+        response["exclusive_replacement_authorized"] = action_payload.get(
+            "allow_exclusive_replace", False
+        )
+    return response
+
+
 assert set(LIST_ADAPTERS) == set(RESOURCE_REGISTRY)
 assert set(GET_ADAPTERS) == {
     name for name, spec in RESOURCE_REGISTRY.items() if "get" in spec.operations
+}
+assert set(ACTION_REGISTRY) == {
+    (spec.resource_type, spec.action) for spec in ACTION_REGISTRY.values()
 }
