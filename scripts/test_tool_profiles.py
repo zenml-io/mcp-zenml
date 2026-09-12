@@ -226,6 +226,18 @@ async def main() -> int:
             rendered_env = rendered["server"]["mcp_config"]["env"]
             assert rendered_env["ZENML_MCP_PROFILE"] == profile
             assert rendered_env["ZENML_MCP_WRITE_POLICY"] == policy
+    configurable = _updated_manifest(
+        manifest,
+        manifest["tools"],
+        manifest["prompts"],
+        "compact",
+        "read_write",
+        update_runtime_env=False,
+    )
+    assert (
+        configurable["server"]["mcp_config"]["env"]
+        == manifest["server"]["mcp_config"]["env"]
+    )
     await _inspect_profile(None, None)
     print("PASS: absent profile and policy use compact/read_write defaults")
     receipts: dict[tuple[str, str], tuple[int, int]] = {}

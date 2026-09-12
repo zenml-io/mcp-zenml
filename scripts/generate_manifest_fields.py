@@ -101,15 +101,20 @@ def _updated_manifest(
     prompts: List[Dict[str, Any]],
     profile: str,
     write_policy: str,
+    *,
+    update_runtime_env: bool = True,
 ) -> Dict[str, Any]:
     """Return manifest fields aligned with one runtime registration mode."""
     server = {**data["server"]}
     mcp_config = {**server["mcp_config"]}
-    env = {
-        **mcp_config["env"],
-        "ZENML_MCP_PROFILE": profile,
-        "ZENML_MCP_WRITE_POLICY": write_policy,
-    }
+    env = {**mcp_config["env"]}
+    if update_runtime_env:
+        env.update(
+            {
+                "ZENML_MCP_PROFILE": profile,
+                "ZENML_MCP_WRITE_POLICY": write_policy,
+            }
+        )
     mcp_config["env"] = env
     server["mcp_config"] = mcp_config
     return {**data, "server": server, "tools": tools, "prompts": prompts}
@@ -119,11 +124,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate profile-aware manifest fields"
     )
-    parser.add_argument("--profile", choices=("compact", "legacy"), default="compact")
+    parser.add_argument("--profile", choices=("compact", "legacy"))
     parser.add_argument(
         "--write-policy",
         choices=("read_write", "read_only"),
-        default="read_write",
     )
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
@@ -153,7 +157,9 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    tools = [by_name[name] for name in tool_names(args.profile, args.write_policy)]
+    profile = args.profile or "compact"
+    write_policy = args.write_policy or "read_write"
+    tools = [by_name[name] for name in tool_names(profile, write_policy)]
 
     data: Dict[str, Any] = json.loads(MANIFEST_JSON.read_text(encoding="utf-8"))
     # Validate schema before replacing arrays
@@ -164,7 +170,14 @@ def main() -> int:
         )
         return 1
 
-    updated = _updated_manifest(data, tools, prompts, args.profile, args.write_policy)
+    updated = _updated_manifest(
+        data,
+        tools,
+        prompts,
+        profile,
+        write_policy,
+        update_runtime_env=args.profile is not None or args.write_policy is not None,
+    )
 
     if args.check:
         if data != updated:
