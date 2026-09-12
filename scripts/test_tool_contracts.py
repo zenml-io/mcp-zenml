@@ -37,6 +37,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 SERVER_PATH = REPO_ROOT / "server" / "zenml_server.py"
 CONTRACT_PATH = SCRIPT_DIR / "fixtures" / "legacy_tool_schemas.json"
+GENERIC_READ_TOOLS = frozenset(
+    {
+        "zenml_describe_resources",
+        "zenml_get_resource",
+        "zenml_list_resources",
+    }
+)
 
 sys.path.insert(0, str(REPO_ROOT / "server"))
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -324,8 +331,12 @@ async def test_legacy_inventory_and_schemas() -> None:
     actual_schemas = {
         tool.name: _normalize_schema(tool.input_schema) for tool in result.tools
     }
-    assert actual_names == expected["tool_names"]
-    assert actual_schemas == expected["input_schemas"]
+    legacy_names = [name for name in actual_names if name not in GENERIC_READ_TOOLS]
+    assert legacy_names == expected["tool_names"]
+    assert set(actual_names) == set(expected["tool_names"]) | GENERIC_READ_TOOLS
+    assert {name: actual_schemas[name] for name in expected["tool_names"]} == expected[
+        "input_schemas"
+    ]
 
     missing = set(actual_names)
     missing.remove("get_pipeline_details")
@@ -359,6 +370,21 @@ async def test_discovery_does_not_initialize_zenml_client() -> None:
             assert "missing_store_url" in {
                 issue["code"] for issue in diagnostics["issues"]
             }
+            description = _structured_payload(
+                await session.call_tool("zenml_describe_resources", {})
+            )
+            assert len(description["resources"]) == 30
+            catalog_result = await session.read_resource(
+                "resource://zenml_server/resources"
+            )
+            catalog = json.loads(catalog_result.contents[0].text)
+            assert len(catalog["resources"]) == 30
+            schema_result = await session.read_resource(
+                "resource://zenml_server/resource-schemas/pipeline/list"
+            )
+            schema = json.loads(schema_result.contents[0].text)
+            assert schema["resource_type"] == "pipeline"
+            assert schema["operation"] == "list"
     finally:
         setattr(server, "get_zenml_client", original_get_client)
         os.environ.update(original_credentials)
@@ -580,7 +606,11 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
             await session.initialize()
             tools = await session.list_tools()
             expected = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-            assert [tool.name for tool in tools.tools] == expected["tool_names"]
+            actual_names = [tool.name for tool in tools.tools]
+            assert [
+                name for name in actual_names if name not in GENERIC_READ_TOOLS
+            ] == expected["tool_names"]
+            assert set(actual_names) == set(expected["tool_names"]) | GENERIC_READ_TOOLS
 
             tool_meta = {tool.name: tool.meta for tool in tools.tools}
             assert tool_meta["open_pipeline_run_dashboard"] == {
@@ -604,6 +634,7 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
                 server.DASHBOARD_UI_URI,
                 server.CHART_UI_URI,
                 "resource://zenml_server/apps",
+                "resource://zenml_server/resources",
             }
             assert resource_by_uri[server.DASHBOARD_UI_URI].mime_type == (
                 "text/html;profile=mcp-app"
@@ -615,7 +646,10 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
             templates = await session.list_resource_templates()
             assert [
                 str(item.uri_template) for item in templates.resource_templates
-            ] == ["resource://zenml_server/most_recent_runs?run_count={run_count}"]
+            ] == [
+                "resource://zenml_server/resource-schemas/{resource_type}/{operation}",
+                "resource://zenml_server/most_recent_runs?run_count={run_count}",
+            ]
 
             app_manifest = await session.read_resource("resource://zenml_server/apps")
             manifest = json.loads(app_manifest.contents[0].text)

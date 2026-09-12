@@ -649,6 +649,11 @@ def track_tool_call(
     http_status_code: int | None = None,
     mcp_client_name: str | None = None,
     mcp_client_version: str | None = None,
+    resource_type: str | None = None,
+    operation: str | None = None,
+    action: str | None = None,
+    profile: str | None = None,
+    outcome: str | None = None,
 ) -> None:
     """Track a tool call with session stats.
 
@@ -684,6 +689,16 @@ def track_tool_call(
             properties["mcp_client_name"] = mcp_client_name
         if mcp_client_version:
             properties["mcp_client_version"] = mcp_client_version
+        if resource_type:
+            properties["resource_type"] = resource_type
+        if operation:
+            properties["operation"] = operation
+        if action:
+            properties["action"] = action
+        if profile:
+            properties["profile"] = profile
+        if outcome:
+            properties["outcome"] = outcome
 
         track_event("Tool Called", properties)
     except Exception:

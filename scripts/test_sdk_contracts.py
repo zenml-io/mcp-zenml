@@ -21,14 +21,24 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
 from pathlib import Path
 from typing import Any
 
 import zenml
 from zenml.client import Client
+from zenml.zen_stores.base_zen_store import BaseZenStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = REPO_ROOT / "server" / "zenml_server.py"
+sys.path.insert(0, str(REPO_ROOT / "server"))
+
+from zenml_resource_registry import (  # noqa: E402
+    GET_SDK_METHODS,
+    LIST_SDK_METHODS,
+    RESOURCE_REGISTRY,
+)
+
 EXPECTED_ZENML_VERSION = "0.96.4"
 
 
@@ -155,11 +165,134 @@ def test_expected_released_signatures() -> None:
         assert "tag" not in parameters, method_name
 
 
+def test_resource_list_adapter_signatures() -> None:
+    """Every advertised list adapter's complete allowlist binds to the SDK."""
+    for resource_type, spec in RESOURCE_REGISTRY.items():
+        method_name = LIST_SDK_METHODS[resource_type]
+        if resource_type == "resource_request":
+            inspect.signature(BaseZenStore.list_resource_requests).bind(
+                object(), filter_model=object(), hydrate=False
+            )
+            continue
+        kwargs = {field: object() for field in spec.list_filters}
+        if resource_type == "artifact_version":
+            kwargs["artifact"] = kwargs.pop("artifact_id")
+        elif resource_type == "model_version":
+            kwargs["model"] = kwargs.pop("model_id")
+        if spec.scope == "project":
+            kwargs["project"] = object()
+        if not spec.non_paginated:
+            kwargs.update(page=1, size=20, hydrate=False)
+        if resource_type == "service_connector":
+            kwargs["expand_secrets"] = False
+        if resource_type in {"schedule_trigger", "platform_event_trigger"}:
+            kwargs["flavor"] = object()
+        inspect.signature(getattr(Client, method_name)).bind(object(), **kwargs)
+
+
+def test_resource_get_adapter_signatures() -> None:
+    """Every advertised get adapter's exact keywords bind to the SDK."""
+    identifier_keywords = {
+        "project": "name_id_or_prefix",
+        "user": "name_id_or_prefix",
+        "stack": "name_id_or_prefix",
+        "stack_component": "name_id_or_prefix",
+        "flavor": "name_id_or_prefix",
+        "service": "name_id_or_prefix",
+        "pipeline": "name_id_or_prefix",
+        "pipeline_run": "name_id_or_prefix",
+        "run_step": "step_run_id",
+        "snapshot": "name_id_or_prefix",
+        "build": "id_or_prefix",
+        "run_template": "name_id_or_prefix",
+        "deployment": "name_id_or_prefix",
+        "schedule": "name_id_or_prefix",
+        "artifact": "name_id_or_prefix",
+        "artifact_version": "name_id_or_prefix",
+        "model": "model_name_or_id",
+        "model_version": "model_version_name_or_number_or_id",
+        "tag": "tag_name_or_id",
+        "service_connector": "name_id_or_prefix",
+        "service_connector_type": "connector_type",
+        "code_repository": "name_id_or_prefix",
+        "webhook": "name_id_or_prefix",
+        "schedule_trigger": "trigger_name_id_or_prefix",
+        "platform_event_trigger": "trigger_name_id_or_prefix",
+        "webhook_trigger": "trigger_name_id_or_prefix",
+        "hook_invocation": "hook_invocation_id",
+    }
+    for resource_type, method_name in GET_SDK_METHODS.items():
+        if resource_type == "resource_request":
+            inspect.signature(BaseZenStore.get_resource_request).bind(
+                object(), resource_request_id=object(), hydrate=False
+            )
+            continue
+        kwargs: dict[str, Any] = {identifier_keywords[resource_type]: object()}
+        if resource_type not in {"service_connector_type"}:
+            kwargs["hydrate"] = False
+        if RESOURCE_REGISTRY[
+            resource_type
+        ].scope == "project" and resource_type not in {"run_step", "hook_invocation"}:
+            kwargs["project"] = object()
+        if resource_type == "stack_component":
+            kwargs["component_type"] = object()
+        elif resource_type == "model_version":
+            kwargs["model_name_or_id"] = object()
+        elif resource_type == "service_connector":
+            kwargs["expand_secrets"] = False
+        inspect.signature(getattr(Client, method_name)).bind(object(), **kwargs)
+
+
+def test_resource_membership_response_nesting() -> None:
+    """Released response models expose every relation the dispatcher verifies."""
+    from zenml.models.v2.base.scoped import ProjectScopedResponseBody
+    from zenml.models.v2.core.artifact_version import ArtifactVersionResponseBody
+    from zenml.models.v2.core.model_version import ModelVersionResponseBody
+    from zenml.models.v2.core.step_run import StepRunResponseMetadata
+
+    assert "project_id" in ProjectScopedResponseBody.model_fields
+    assert "artifact" in ArtifactVersionResponseBody.model_fields
+    assert "model" in ModelVersionResponseBody.model_fields
+    assert "pipeline_run_id" in StepRunResponseMetadata.model_fields
+
+
+def test_representative_typed_filters_validate_in_released_models() -> None:
+    """Schema-valid scalar filters survive ZenML runtime model validation."""
+    from zenml.models import (
+        ArtifactVersionFilter,
+        PipelineFilter,
+        PipelineSnapshotFilter,
+        ServiceConnectorFilter,
+    )
+
+    ArtifactVersionFilter(artifact="artifact-name")
+    PipelineFilter(latest_run_status="running", latest_run_user="user-name")
+    PipelineSnapshotFilter(trigger_id="11111111-1111-4111-8111-111111111111")
+    ServiceConnectorFilter(
+        resource_type="s3",
+        resource_id="bucket-name",
+        labels={"team": "ml", "region": None},
+    )
+
+
 def main() -> int:
     tests: list[tuple[str, Any]] = [
         ("test_direct_calls_bind", test_direct_calls_bind),
         ("test_dynamic_calls_bind", test_dynamic_calls_bind),
         ("test_expected_released_signatures", test_expected_released_signatures),
+        (
+            "test_resource_list_adapter_signatures",
+            test_resource_list_adapter_signatures,
+        ),
+        ("test_resource_get_adapter_signatures", test_resource_get_adapter_signatures),
+        (
+            "test_resource_membership_response_nesting",
+            test_resource_membership_response_nesting,
+        ),
+        (
+            "test_representative_typed_filters_validate_in_released_models",
+            test_representative_typed_filters_validate_in_released_models,
+        ),
     ]
     for name, test in tests:
         test()

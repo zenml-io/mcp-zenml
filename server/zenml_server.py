@@ -45,6 +45,23 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from zenml_resource_dispatch import (
+    ResourceDispatchError,
+    ResourceFeatureUnavailable,
+    ResourceNotFound,
+    ResourcePermissionDenied,
+)
+from zenml_resource_dispatch import (
+    get_resource as dispatch_get_resource,
+)
+from zenml_resource_dispatch import (
+    list_resources as dispatch_list_resources,
+)
+from zenml_resource_registry import (
+    RESOURCE_REGISTRY,
+    ResourceRegistryError,
+    describe_resources,
+)
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
@@ -317,6 +334,19 @@ def _classify_exception(
     raw_type = type(exc).__name__
     details: dict[str, Any] = {"raw_type": raw_type}
 
+    if isinstance(exc, ResourcePermissionDenied):
+        return ("PermissionDenied", "Permission denied for this resource.", details)
+    if isinstance(exc, ResourceFeatureUnavailable):
+        return (
+            "FeatureUnavailable",
+            "This ZenML server feature is disabled or unavailable.",
+            details,
+        )
+    if isinstance(exc, ResourceNotFound):
+        return ("NotFound", str(exc), details)
+    if isinstance(exc, (ResourceDispatchError, ResourceRegistryError)):
+        return ("ValidationError", str(exc), details)
+
     if isinstance(exc, FilterSyntaxError):
         return ("ValidationError", str(exc), details)
 
@@ -333,6 +363,12 @@ def _classify_exception(
                 details,
             )
         if status == 403:
+            if tool_name.startswith("zenml_"):
+                return (
+                    "PermissionDenied",
+                    "Permission denied for this resource.",
+                    details,
+                )
             return (
                 "AuthenticationError",
                 "Authorization failed. Your API key may not have access.",
@@ -529,6 +565,29 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
         success = True
         error_type: str | None = None
         http_status_code: int | None = None
+        generic_operation = {
+            "zenml_describe_resources": "describe",
+            "zenml_list_resources": "list",
+            "zenml_get_resource": "get",
+            "zenml_create_resource": "create",
+            "zenml_update_resource": "update",
+            "zenml_delete_resource": "delete",
+            "zenml_action_resource": "action",
+        }.get(func_name)
+        generic_resource_type: str | None = None
+        generic_action: str | None = None
+        if generic_operation:
+            try:
+                bound = inspect.signature(func).bind_partial(*args, **kwargs)
+                candidate_resource_type = bound.arguments.get("resource_type")
+                generic_resource_type = (
+                    candidate_resource_type
+                    if candidate_resource_type in RESOURCE_REGISTRY
+                    else "unknown"
+                )
+                generic_action = bound.arguments.get("action")
+            except Exception:
+                pass
 
         client = _get_mcp_client_info_safe(ctx)
         try:
@@ -613,7 +672,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             )
             error_type = category
 
-            print(message, file=sys.stderr)
+            print(f"Error in {func_name}: {category}", file=sys.stderr)
 
             return cast(
                 T,
@@ -639,6 +698,16 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     http_status_code=http_status_code,
                     mcp_client_name=(client or {}).get("name"),
                     mcp_client_version=(client or {}).get("version"),
+                    resource_type=generic_resource_type,
+                    operation=generic_operation,
+                    action=generic_action,
+                    profile=(
+                        profile
+                        if (profile := os.getenv("ZENML_MCP_PROFILE", "legacy"))
+                        in {"compact", "legacy"}
+                        else "unknown"
+                    ),
+                    outcome="success" if success else "error",
                 )
             except Exception:
                 pass
@@ -1025,6 +1094,96 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
 
     # Get the logs using the access token
     return make_step_logs_request(server_url, step_run_id, access_token)
+
+
+# =============================================================================
+# Generic resource discovery and reads
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def zenml_describe_resources(
+    resource_type: str | None = None,
+    operation: str | None = None,
+) -> dict[str, Any]:
+    """Discover supported generic ZenML resources or one operation schema.
+
+    With no arguments this returns a short catalog. Pass a canonical singular
+    resource type to inspect its operations, and add ``operation`` (``list`` or
+    ``get``) for the bounded input schema and a small example.
+    """
+    return describe_resources(resource_type=resource_type, operation=operation)
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def zenml_list_resources(
+    resource_type: str,
+    filters: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    page: int = 1,
+    size: int | None = None,
+) -> dict[str, Any]:
+    """List one allowlisted ZenML resource type with validated filters.
+
+    Use ``zenml_describe_resources(resource_type, "list")`` to discover the
+    accepted filters. Page sizes are capped at 200. Project-scoped reads use
+    ``project_id`` when supplied and otherwise report the active project used.
+    """
+    return dispatch_list_resources(
+        get_zenml_client(),
+        resource_type,
+        filters=filters,
+        project_id=project_id,
+        page=page,
+        size=size,
+    )
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def zenml_get_resource(
+    resource_type: str,
+    resource_id: str,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    pipeline_run_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    """Get one allowlisted ZenML resource by its identifier.
+
+    Artifact versions, model versions, and run steps require their parent
+    identifier. Stack components require their fixed component type.
+    """
+    return dispatch_get_resource(
+        get_zenml_client(),
+        resource_type,
+        resource_id,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        pipeline_run_id=pipeline_run_id,
+        component_type=component_type,
+    )
+
+
+@mcp.resource(uri="resource://zenml_server/resources", mime_type="application/json")
+@handle_exceptions
+def zenml_resource_catalog() -> str:
+    """Return the bounded generic-resource catalog without detailed schemas."""
+    return json.dumps(describe_resources())
+
+
+@mcp.resource(
+    uri="resource://zenml_server/resource-schemas/{resource_type}/{operation}",
+    mime_type="application/json",
+)
+@handle_exceptions
+def zenml_resource_operation_schema(resource_type: str, operation: str) -> str:
+    """Return one bounded generic-resource operation schema."""
+    return json.dumps(describe_resources(resource_type, operation))
 
 
 # Page-size defaults for list tools:

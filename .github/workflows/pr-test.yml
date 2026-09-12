@@ -77,8 +77,10 @@ jobs:
 
       - name: Run unit tests (no credentials needed)
         run: |
-          echo "Running datetime normalization, SDK, MCP contract, and transport tests..."
+          echo "Running datetime normalization, resource, SDK, MCP contract, and transport tests..."
           uv run scripts/test_datetime_normalization.py
+          uv run scripts/test_resource_registry.py
+          uv run scripts/test_resource_operations.py
           uv run scripts/test_sdk_contracts.py
           uv run scripts/test_tool_contracts.py
           uv run scripts/test_mcp_transport.py
