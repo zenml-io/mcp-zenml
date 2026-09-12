@@ -71,6 +71,13 @@ EXPECTED_MCPB_LAUNCH_ARGS = (
     "python",
     "${__dirname}/server/zenml_server.py",
 )
+EXPECTED_MCPB_USER_SETTINGS = {
+    "zenml_mcp_profile": ("${user_config.zenml_mcp_profile}", "compact"),
+    "zenml_mcp_write_policy": (
+        "${user_config.zenml_mcp_write_policy}",
+        "read_write",
+    ),
+}
 
 REQUIRED_PACKAGE_PATHS = (
     "manifest.json",
@@ -635,6 +642,18 @@ async def verify_unpacked(bundle_dir: Path, uv: str, timeout: float) -> None:
         or tuple(launch_args) != EXPECTED_MCPB_LAUNCH_ARGS
     ):
         raise DistributionError("packaged manifest has an unexpected uv launch command")
+    user_config = manifest.get("user_config", {})
+    environment = mcp_config.get("env", {})
+    for setting, (reference, default) in EXPECTED_MCPB_USER_SETTINGS.items():
+        config = user_config.get(setting, {})
+        if (
+            environment.get(setting.upper()) != reference
+            or config.get("type") != "string"
+            or config.get("default") != default
+        ):
+            raise DistributionError(
+                f"packaged manifest does not expose configurable {setting}"
+            )
     try:
         project = tomllib.loads((bundle_dir / "pyproject.toml").read_text())["project"]
         packaged_version = (bundle_dir / "VERSION").read_text().strip()

@@ -34,8 +34,8 @@
         "NO_COLOR": "1",
         "ZENML_LOGGING_COLORS_DISABLED": "true",
         "ZENML_LOGGING_VERBOSITY": "WARN",
-        "ZENML_MCP_PROFILE": "compact",
-        "ZENML_MCP_WRITE_POLICY": "read_write",
+        "ZENML_MCP_PROFILE": "${user_config.zenml_mcp_profile}",
+        "ZENML_MCP_WRITE_POLICY": "${user_config.zenml_mcp_write_policy}",
         "ZENML_ENABLE_RICH_TRACEBACK": "false",
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "UTF-8",
@@ -67,6 +67,20 @@
       "description": "Your ZenML server API key",
       "required": true,
       "sensitive": true
+    },
+    "zenml_mcp_profile": {
+      "type": "string",
+      "title": "Tool profile",
+      "description": "Tool registration profile: compact or legacy",
+      "required": false,
+      "default": "compact"
+    },
+    "zenml_mcp_write_policy": {
+      "type": "string",
+      "title": "Write policy",
+      "description": "Mutation policy: read_write or read_only",
+      "required": false,
+      "default": "read_write"
     }
   },
   "tools": [
