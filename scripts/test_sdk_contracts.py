@@ -256,6 +256,115 @@ def test_resource_membership_response_nesting() -> None:
     assert "pipeline_run_id" in StepRunResponseMetadata.model_fields
 
 
+def test_resource_mutation_adapter_signatures() -> None:
+    """Every advertised mutation method and critical keyword exists."""
+    required_parameters = {
+        "create_project": {"name", "description"},
+        "update_project": {"name_id_or_prefix", "new_name", "new_description"},
+        "delete_project": {"name_id_or_prefix"},
+        "create_stack": {"name", "components"},
+        "update_stack": {"name_id_or_prefix", "component_updates"},
+        "delete_stack": {"name_id_or_prefix", "recursive"},
+        "create_stack_component": {"name", "flavor", "component_type", "configuration"},
+        "update_stack_component": {
+            "name_id_or_prefix",
+            "component_type",
+            "connector_id",
+        },
+        "delete_stack_component": {"name_id_or_prefix", "component_type"},
+        "create_flavor": {"source", "component_type"},
+        "delete_flavor": {"name_id_or_prefix"},
+        "create_service": {"config", "service_type", "model_version_id"},
+        "update_service": {"id", "model_version_id"},
+        "delete_service": {"name_id_or_prefix", "project"},
+        "delete_pipeline": {"name_id_or_prefix", "project"},
+        "delete_pipeline_run": {"name_id_or_prefix", "project"},
+        "update_snapshot": {"name_id_or_prefix", "project", "replace"},
+        "delete_snapshot": {"name_id_or_prefix", "project"},
+        "delete_build": {"id_or_prefix", "project"},
+        "create_run_template": {"name", "snapshot_id"},
+        "update_run_template": {"name_id_or_prefix", "hidden", "project"},
+        "delete_run_template": {"name_id_or_prefix", "project"},
+        "delete_deployment": {"name_id_or_prefix", "project", "force", "timeout"},
+        "update_artifact": {
+            "name_id_or_prefix",
+            "new_name",
+            "has_custom_name",
+            "project",
+        },
+        "delete_artifact": {"name_id_or_prefix", "project"},
+        "update_artifact_version": {"name_id_or_prefix", "add_tags", "project"},
+        "delete_artifact_version": {
+            "name_id_or_prefix",
+            "delete_metadata",
+            "delete_from_artifact_store",
+            "server_side",
+        },
+        "create_model": {"name", "save_models_to_registry"},
+        "update_model": {"model_name_or_id", "save_models_to_registry", "project"},
+        "delete_model": {"model_name_or_id", "project"},
+        "create_model_version": {"model_name_or_id", "project"},
+        "update_model_version": {
+            "model_name_or_id",
+            "version_name_or_id",
+            "force",
+            "project",
+        },
+        "delete_model_version": {"model_version_id"},
+        "create_tag": {"name", "exclusive", "color"},
+        "update_tag": {"tag_name_or_id", "exclusive", "color"},
+        "delete_tag": {"tag_name_or_id"},
+        "create_service_connector": {
+            "name",
+            "connector_type",
+            "verify",
+            "list_resources",
+            "register",
+        },
+        "update_service_connector": {
+            "name_id_or_prefix",
+            "configuration",
+            "verify",
+            "list_resources",
+            "update",
+        },
+        "delete_service_connector": {"name_id_or_prefix"},
+        "create_code_repository": {"name", "config", "source"},
+        "update_code_repository": {"name_id_or_prefix", "config", "project"},
+        "delete_code_repository": {"name_id_or_prefix", "project"},
+        "create_webhook": {"name", "webhook_type", "secret"},
+        "update_webhook": {"name_id_or_prefix", "active", "project"},
+        "delete_webhook": {"name_id_or_prefix", "project"},
+        "create_schedule_trigger": {"name", "project_id", "interval"},
+        "update_schedule_trigger": {"trigger_name_id_or_prefix", "interval"},
+        "create_platform_event_trigger": {
+            "name",
+            "source_type",
+            "source_id",
+            "target_events",
+            "project_id",
+        },
+        "update_platform_event_trigger": {
+            "trigger_name_id_or_prefix",
+            "source_type",
+            "source_id",
+        },
+        "create_webhook_trigger": {"name", "webhook", "configuration", "project_id"},
+        "update_webhook_trigger": {"trigger_name_id_or_prefix", "configuration"},
+        "delete_trigger": {"trigger_id", "soft"},
+        "delete_hook_invocation": {"hook_invocation_id"},
+    }
+    advertised = {
+        mutation.sdk_method
+        for spec in RESOURCE_REGISTRY.values()
+        for mutation in spec.mutations.values()
+    }
+    assert advertised == set(required_parameters)
+    for method_name, required in required_parameters.items():
+        parameters = inspect.signature(getattr(Client, method_name)).parameters
+        assert required <= set(parameters), method_name
+
+
 def test_representative_typed_filters_validate_in_released_models() -> None:
     """Schema-valid scalar filters survive ZenML runtime model validation."""
     from zenml.models import (
@@ -288,6 +397,10 @@ def main() -> int:
         (
             "test_resource_membership_response_nesting",
             test_resource_membership_response_nesting,
+        ),
+        (
+            "test_resource_mutation_adapter_signatures",
+            test_resource_mutation_adapter_signatures,
         ),
         (
             "test_representative_typed_filters_validate_in_released_models",

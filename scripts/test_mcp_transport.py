@@ -103,6 +103,9 @@ def test_singleton_initialization_and_zero_retry_session() -> None:
         def __init__(self) -> None:
             self.config = type("Config", (), {"connection_pool_size": 7})()
             self.session = __import__("requests").Session()
+            self.adapter_ids = {
+                scheme: id(adapter) for scheme, adapter in self.session.adapters.items()
+            }
 
     class FakeClient:
         init_count = 0
@@ -117,11 +120,28 @@ def test_singleton_initialization_and_zero_retry_session() -> None:
     server.zenml_client = None
     server._client_init_failure_reported = False
     try:
-        with patch("zenml.client.Client", FakeClient):
+        original_configure = server._configure_zero_retry_rest_session
+
+        def configure_before_publish(client: Any) -> None:
+            assert server.zenml_client is None
+            original_configure(client)
+
+        with (
+            patch("zenml.client.Client", FakeClient),
+            patch.object(
+                server,
+                "_configure_zero_retry_rest_session",
+                side_effect=configure_before_publish,
+            ),
+        ):
             results: list[Any] = []
+            failures: list[BaseException] = []
 
             def initialize() -> None:
-                results.append(server.get_zenml_client())
+                try:
+                    results.append(server.get_zenml_client())
+                except BaseException as error:
+                    failures.append(error)
 
             threads = [threading.Thread(target=initialize) for _ in range(4)]
             for thread in threads:
@@ -130,9 +150,15 @@ def test_singleton_initialization_and_zero_retry_session() -> None:
                 thread.join()
 
         assert FakeClient.init_count == 1
+        assert failures == []
+        assert len(results) == len(threads) == 4
         assert len({id(item) for item in results}) == 1
         rest_session = results[0].zen_store.session
         for scheme in ("http://", "https://"):
+            assert (
+                id(rest_session.adapters[scheme])
+                == results[0].zen_store.adapter_ids[scheme]
+            )
             retries = rest_session.adapters[scheme].max_retries
             assert retries.total == 0
             assert retries.connect == 0

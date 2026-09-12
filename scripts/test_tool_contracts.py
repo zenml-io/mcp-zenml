@@ -44,6 +44,14 @@ GENERIC_READ_TOOLS = frozenset(
         "zenml_list_resources",
     }
 )
+GENERIC_MUTATION_TOOLS = frozenset(
+    {
+        "zenml_create_resource",
+        "zenml_update_resource",
+        "zenml_delete_resource",
+    }
+)
+GENERIC_TOOLS = GENERIC_READ_TOOLS | GENERIC_MUTATION_TOOLS
 
 sys.path.insert(0, str(REPO_ROOT / "server"))
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -331,9 +339,9 @@ async def test_legacy_inventory_and_schemas() -> None:
     actual_schemas = {
         tool.name: _normalize_schema(tool.input_schema) for tool in result.tools
     }
-    legacy_names = [name for name in actual_names if name not in GENERIC_READ_TOOLS]
+    legacy_names = [name for name in actual_names if name not in GENERIC_TOOLS]
     assert legacy_names == expected["tool_names"]
-    assert set(actual_names) == set(expected["tool_names"]) | GENERIC_READ_TOOLS
+    assert set(actual_names) == set(expected["tool_names"]) | GENERIC_TOOLS
     assert {name: actual_schemas[name] for name in expected["tool_names"]} == expected[
         "input_schemas"
     ]
@@ -608,9 +616,9 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
             expected = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
             actual_names = [tool.name for tool in tools.tools]
             assert [
-                name for name in actual_names if name not in GENERIC_READ_TOOLS
+                name for name in actual_names if name not in GENERIC_TOOLS
             ] == expected["tool_names"]
-            assert set(actual_names) == set(expected["tool_names"]) | GENERIC_READ_TOOLS
+            assert set(actual_names) == set(expected["tool_names"]) | GENERIC_TOOLS
 
             tool_meta = {tool.name: tool.meta for tool in tools.tools}
             assert tool_meta["open_pipeline_run_dashboard"] == {

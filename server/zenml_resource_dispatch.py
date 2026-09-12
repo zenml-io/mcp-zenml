@@ -1,8 +1,9 @@
-"""Validated dispatch for the generic ZenML resource read tools."""
+"""Validated dispatch for generic ZenML resource reads and mutations."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
 
+import requests
 from zenml_resource_registry import (
     DATETIME_FILTERS,
     MAX_PAGE_SIZE,
@@ -18,6 +20,7 @@ from zenml_resource_registry import (
     ResourceSpec,
     get_resource_spec,
     validate_filter_value,
+    validate_mutation_payload,
 )
 
 
@@ -35,6 +38,10 @@ class ResourcePermissionDenied(ResourceDispatchError):
 
 class ResourceNotFound(ResourceDispatchError):
     """An exact resource or required parent does not exist."""
+
+
+class ResourceReadOnly(ResourcePermissionDenied):
+    """The operator disabled all mutating tools."""
 
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -199,6 +206,13 @@ def _safe_project(value: Any, *, resource_type: str) -> Any:
                 "values",
                 "secrets",
                 "secret",
+            }:
+                continue
+            if resource_type == "service" and lowered in {
+                "config",
+                "endpoint",
+                "service_source",
+                "status",
             }:
                 continue
             projected[key] = _safe_project(
@@ -367,6 +381,41 @@ def _normalize_parent_id(field: str, value: str | None) -> str | None:
         return str(uuid.UUID(value.strip()))
     except (AttributeError, ValueError) as error:
         raise ResourceDispatchError(f"{field} must be a non-empty UUID") from error
+
+
+def _exact_uuid(field: str, value: str | None) -> uuid.UUID:
+    if not isinstance(value, str) or value != value.strip():
+        raise ResourceDispatchError(f"{field} must be an exact UUID")
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as error:
+        raise ResourceDispatchError(f"{field} must be an exact UUID") from error
+    if str(parsed) != value.lower():
+        raise ResourceDispatchError(f"{field} must be an exact UUID")
+    return parsed
+
+
+def writes_are_disabled() -> bool:
+    """Return the operator-selected write policy."""
+    legacy = os.getenv("ZENML_MCP_READ_ONLY")
+    if legacy is not None:
+        normalized_legacy = legacy.strip().lower()
+        if normalized_legacy in {"1", "true", "yes", "on"}:
+            return True
+        if normalized_legacy not in {"0", "false", "no", "off"}:
+            return True
+    policy = os.getenv("ZENML_MCP_WRITE_POLICY", "read_write").strip().lower()
+    if policy == "read_write":
+        return False
+    if policy == "read_only":
+        return True
+    return True
+
+
+def ensure_writes_enabled(*, read_only: bool | None = None) -> None:
+    """Reject every retained or generic mutation through one policy check."""
+    if writes_are_disabled() if read_only is None else read_only:
+        raise ResourceReadOnly("ZenML MCP mutations are disabled by operator policy")
 
 
 def _invoke_adapter(call: Callable[[], Any]) -> Any:
@@ -559,6 +608,25 @@ def _find_nested_id(value: Any, direct_key: str, nested_key: str) -> str | None:
     return None
 
 
+def _find_nested_value(value: Any, key: str) -> Any:
+    dumped = _model_dump(value)
+    if isinstance(dumped, Mapping):
+        if key in dumped:
+            return dumped[key]
+        for child in dumped.values():
+            found = _find_nested_value(child, key)
+            if found is not None:
+                return found
+    elif isinstance(dumped, Sequence) and not isinstance(
+        dumped, (str, bytes, bytearray)
+    ):
+        for child in dumped:
+            found = _find_nested_value(child, key)
+            if found is not None:
+                return found
+    return None
+
+
 def get_resource(
     client: Any,
     resource_type: str,
@@ -638,6 +706,810 @@ def get_resource(
         "item": safe_project(item, resource_type=resource_type),
         "effective_scope": effective_scope,
     }
+
+
+_PROJECT_ACTIVE_CREATES = frozenset(
+    {"service", "run_template", "model", "code_repository", "webhook"}
+)
+_TRIGGER_TYPES = frozenset(
+    {"schedule_trigger", "platform_event_trigger", "webhook_trigger"}
+)
+
+
+def _mutation_scope(
+    client: Any, resource_type: str, project_id: str | None, *, operation: str
+) -> tuple[dict[str, Any], str | None]:
+    spec = get_resource_spec(resource_type)
+    if spec.scope == "global" and resource_type not in _PROJECT_ACTIVE_CREATES:
+        return _effective_scope(client, spec, project_id)
+    if project_id is None:
+        raise ResourceDispatchError(
+            f"project_id is required for {resource_type!r} {operation}"
+        )
+    requested = str(_exact_uuid("project_id", project_id))
+    if operation == "create" and resource_type in _PROJECT_ACTIVE_CREATES:
+        active = str(client.active_project.id)
+        if active != requested:
+            raise ResourceDispatchError(
+                "The requested project is not the client's active project"
+            )
+    return {
+        "kind": "project",
+        "project_id": requested,
+        "source": "requested",
+    }, requested
+
+
+def _parse_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _allowed_import_source(source: str) -> None:
+    prefixes = tuple(
+        item.strip().rstrip(".")
+        for item in os.getenv("ZENML_MCP_ALLOWED_IMPORT_PREFIXES", "zenml.").split(",")
+        if item.strip()
+    )
+    module = source.split(":", 1)[0]
+    allowed = any(
+        module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes
+    )
+    if not allowed:
+        raise ResourceDispatchError(
+            "source is outside ZENML_MCP_ALLOWED_IMPORT_PREFIXES"
+        )
+
+
+def _validate_related(
+    client: Any,
+    resource_type: str,
+    resource_id: str,
+    *,
+    project_id: str | None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    result = get_resource(
+        client,
+        resource_type,
+        resource_id,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        component_type=component_type,
+    )
+    observed = _find_nested_id(result["item"], "id", "id")
+    if observed != resource_id:
+        raise ResourceNotFound(
+            f"{resource_type!r} did not resolve to the exact supplied UUID"
+        )
+    return result
+
+
+def _validate_model_version_project(
+    client: Any, model_version_id: str, project_id: str | None
+) -> None:
+    identifier = _exact_uuid("model_version_id", model_version_id)
+    item = _invoke_adapter(
+        lambda: client.get_model_version(
+            model_version_name_or_number_or_id=identifier,
+            project=project_id,
+            hydrate=False,
+        )
+    )
+    observed_id = _find_nested_id(item, "id", "id")
+    observed_project = _find_nested_id(item, "project_id", "project")
+    if observed_id != str(identifier) or observed_project != project_id:
+        raise ResourceNotFound(
+            "The model version was not found in the requested project"
+        )
+
+
+def _validate_create_relations(
+    client: Any,
+    resource_type: str,
+    payload: dict[str, Any],
+    project_id: str | None,
+    model_id: str | None,
+    *,
+    require_core_stack_components: bool = True,
+) -> None:
+    if resource_type == "run_template":
+        _validate_related(
+            client,
+            "snapshot",
+            str(_exact_uuid("snapshot_id", payload["snapshot_id"])),
+            project_id=project_id,
+        )
+    elif resource_type == "model_version":
+        _validate_related(
+            client,
+            "model",
+            str(_exact_uuid("model_id", model_id)),
+            project_id=project_id,
+        )
+    elif resource_type == "webhook_trigger":
+        _validate_related(
+            client,
+            "webhook",
+            str(_exact_uuid("webhook_id", payload["webhook_id"])),
+            project_id=project_id,
+        )
+    elif resource_type == "platform_event_trigger":
+        source_resource = {
+            "pipeline": "pipeline",
+            "pipeline_run": "pipeline_run",
+            "pipeline_snapshot": "snapshot",
+        }[payload["source_type"]]
+        _validate_related(
+            client,
+            source_resource,
+            str(_exact_uuid("source_id", payload["source_id"])),
+            project_id=project_id,
+        )
+    elif resource_type == "service" and payload.get("model_version_id"):
+        _validate_model_version_project(client, payload["model_version_id"], project_id)
+    elif resource_type == "stack":
+        from zenml.enums import StackComponentType
+
+        missing_types = {"orchestrator", "artifact_store"} - set(payload["components"])
+        if require_core_stack_components and missing_types:
+            raise ResourceDispatchError(
+                "stack create requires orchestrator and artifact_store component bindings"
+            )
+        for component_type, identifiers in payload["components"].items():
+            try:
+                StackComponentType(component_type)
+            except ValueError as error:
+                raise ResourceDispatchError(
+                    f"Invalid stack component type {component_type!r}"
+                ) from error
+            values = identifiers if isinstance(identifiers, list) else [identifiers]
+            for identifier in values:
+                _validate_related(
+                    client,
+                    "stack_component",
+                    str(_exact_uuid("component_id", identifier)),
+                    project_id=None,
+                    component_type=component_type,
+                )
+    elif resource_type == "stack_component" and payload.get("connector_id"):
+        _validate_related(
+            client,
+            "service_connector",
+            str(_exact_uuid("connector_id", payload["connector_id"])),
+            project_id=None,
+        )
+
+
+def _create_call(
+    client: Any,
+    resource_type: str,
+    payload: dict[str, Any],
+    project: str | None,
+    model_id: str | None,
+) -> Any:
+    if resource_type == "project":
+        return client.create_project(**payload)
+    if resource_type == "stack":
+        from zenml.enums import StackComponentType
+
+        components = {
+            StackComponentType(key): value
+            for key, value in payload["components"].items()
+        }
+        return client.create_stack(name=payload["name"], components=components)
+    if resource_type == "stack_component":
+        from zenml.enums import StackComponentType
+
+        kwargs = dict(payload)
+        kwargs["component_type"] = StackComponentType(kwargs["component_type"])
+        return client.create_stack_component(**kwargs)
+    if resource_type == "flavor":
+        from zenml.enums import StackComponentType
+
+        return client.create_flavor(
+            source=payload["source"],
+            component_type=StackComponentType(payload["component_type"]),
+        )
+    if resource_type == "service":
+        from zenml.models.v2.misc.service import ServiceType
+        from zenml.services import ServiceConfig
+
+        config = ServiceConfig(**payload["config"])
+        if not config.name and not config.model_name:
+            raise ResourceDispatchError("service config requires name or model_name")
+        return client.create_service(
+            config=config,
+            service_type=ServiceType(**payload["service_type"]),
+            model_version_id=(
+                _exact_uuid("model_version_id", payload["model_version_id"])
+                if payload.get("model_version_id")
+                else None
+            ),
+        )
+    if resource_type == "run_template":
+        kwargs = dict(payload)
+        kwargs["snapshot_id"] = _exact_uuid("snapshot_id", kwargs["snapshot_id"])
+        return client.create_run_template(**kwargs)
+    if resource_type == "model":
+        return client.create_model(**payload)
+    if resource_type == "model_version":
+        return client.create_model_version(
+            model_name_or_id=_exact_uuid("model_id", model_id),
+            project=project,
+            **payload,
+        )
+    if resource_type == "tag":
+        return client.create_tag(**payload)
+    if resource_type == "service_connector":
+        kwargs = dict(payload)
+        if "expires_at" in kwargs:
+            kwargs["expires_at"] = _parse_datetime(kwargs["expires_at"])
+        result, _ = client.create_service_connector(
+            **kwargs,
+            auto_configure=False,
+            verify=False,
+            list_resources=False,
+            register=True,
+        )
+        return result
+    if resource_type == "code_repository":
+        from zenml.config.source import Source
+
+        kwargs = dict(payload)
+        kwargs["source"] = Source.from_import_path(kwargs["source"])
+        return client.create_code_repository(**kwargs)
+    if resource_type == "webhook":
+        return client.create_webhook(**payload)
+    if resource_type == "schedule_trigger":
+        from zenml.enums import TriggerRunConcurrency
+
+        modes = [
+            key
+            for key in ("cron_expression", "interval", "run_once_start_time")
+            if key in payload
+        ]
+        if len(modes) != 1:
+            raise ResourceDispatchError("Exactly one schedule mode is required")
+        if "interval" in payload and "start_time" not in payload:
+            raise ResourceDispatchError("Interval schedules require start_time")
+        kwargs = _trigger_kwargs(payload)
+        kwargs["concurrency"] = TriggerRunConcurrency(kwargs.get("concurrency", "skip"))
+        return client.create_schedule_trigger(project_id=project, **kwargs)
+    if resource_type == "platform_event_trigger":
+        from zenml.enums import SourceType, TriggerRunConcurrency
+
+        kwargs = dict(payload)
+        kwargs["source_type"] = SourceType(kwargs["source_type"])
+        kwargs["source_id"] = _exact_uuid("source_id", kwargs["source_id"])
+        kwargs["concurrency"] = TriggerRunConcurrency(kwargs.get("concurrency", "skip"))
+        return client.create_platform_event_trigger(project_id=project, **kwargs)
+    if resource_type == "webhook_trigger":
+        from zenml.enums import TriggerRunConcurrency
+
+        kwargs = dict(payload)
+        kwargs["webhook"] = _exact_uuid("webhook_id", kwargs.pop("webhook_id"))
+        kwargs["concurrency"] = TriggerRunConcurrency(kwargs.get("concurrency", "skip"))
+        return client.create_webhook_trigger(project_id=project, **kwargs)
+    raise ResourceDispatchError(f"Unsupported create for {resource_type!r}")
+
+
+def _trigger_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+    kwargs = dict(payload)
+    modes = [
+        key
+        for key in ("cron_expression", "interval", "run_once_start_time")
+        if key in kwargs
+    ]
+    if len(modes) > 1:
+        raise ResourceDispatchError("Only one schedule mode may be supplied")
+    for field in ("run_once_start_time", "start_time", "end_time"):
+        if field in kwargs:
+            kwargs[field] = _parse_datetime(kwargs[field])
+    return kwargs
+
+
+def _update_call(
+    client: Any,
+    resource_type: str,
+    target: uuid.UUID,
+    payload: dict[str, Any],
+    project: str | None,
+    *,
+    model_id: str | None,
+    component_type: str | None,
+) -> Any:
+    kwargs = dict(payload)
+    if resource_type == "project":
+        return client.update_project(
+            name_id_or_prefix=target,
+            new_name=kwargs.get("name"),
+            new_description=kwargs.get("description"),
+        )
+    if resource_type == "stack":
+        from zenml.enums import StackComponentType
+
+        updates = kwargs.get("component_updates")
+        if updates is not None:
+            kwargs["component_updates"] = {
+                StackComponentType(key): value for key, value in updates.items()
+            }
+        return client.update_stack(name_id_or_prefix=target, **kwargs)
+    if resource_type == "stack_component":
+        from zenml.enums import StackComponentType
+
+        if kwargs.get("connector_id"):
+            kwargs["connector_id"] = _exact_uuid("connector_id", kwargs["connector_id"])
+        return client.update_stack_component(
+            name_id_or_prefix=target,
+            component_type=StackComponentType(component_type),
+            **kwargs,
+        )
+    if resource_type == "service":
+        if "admin_state" in kwargs:
+            from zenml.enums import ServiceState
+
+            kwargs["admin_state"] = ServiceState(kwargs["admin_state"])
+        if kwargs.get("model_version_id"):
+            kwargs["model_version_id"] = _exact_uuid(
+                "model_version_id", kwargs["model_version_id"]
+            )
+        return client.update_service(id=target, **kwargs)
+    if resource_type == "snapshot":
+        return client.update_snapshot(
+            name_id_or_prefix=target, project=project, **kwargs
+        )
+    if resource_type == "run_template":
+        return client.update_run_template(
+            name_id_or_prefix=target, project=project, **kwargs
+        )
+    if resource_type == "artifact":
+        if "name" in kwargs:
+            kwargs["new_name"] = kwargs.pop("name")
+        return client.update_artifact(
+            name_id_or_prefix=target, project=project, **kwargs
+        )
+    if resource_type == "artifact_version":
+        return client.update_artifact_version(
+            name_id_or_prefix=target, project=project, **kwargs
+        )
+    if resource_type == "model":
+        return client.update_model(model_name_or_id=target, project=project, **kwargs)
+    if resource_type == "model_version":
+        return client.update_model_version(
+            model_name_or_id=_exact_uuid("model_id", model_id),
+            version_name_or_id=target,
+            project=project,
+            **kwargs,
+        )
+    if resource_type == "tag":
+        return client.update_tag(tag_name_or_id=target, **kwargs)
+    if resource_type == "service_connector":
+        if "expires_at" in kwargs:
+            kwargs["expires_at"] = _parse_datetime(kwargs["expires_at"])
+        result, _ = client.update_service_connector(
+            name_id_or_prefix=target,
+            **kwargs,
+            verify=False,
+            list_resources=False,
+            update=True,
+        )
+        return result
+    if resource_type == "code_repository":
+        return client.update_code_repository(
+            name_id_or_prefix=target, project=project, **kwargs
+        )
+    if resource_type == "webhook":
+        return client.update_webhook(
+            name_id_or_prefix=target, project=project, **kwargs
+        )
+    if resource_type == "schedule_trigger":
+        from zenml.enums import TriggerRunConcurrency
+
+        kwargs = _trigger_kwargs(kwargs)
+        if "concurrency" in kwargs:
+            kwargs["concurrency"] = TriggerRunConcurrency(kwargs["concurrency"])
+        return client.update_schedule_trigger(
+            trigger_name_id_or_prefix=target, **kwargs
+        )
+    if resource_type == "platform_event_trigger":
+        from zenml.enums import SourceType, TriggerRunConcurrency
+
+        if "source_type" in kwargs:
+            kwargs["source_type"] = SourceType(kwargs["source_type"])
+        if "source_id" in kwargs:
+            kwargs["source_id"] = _exact_uuid("source_id", kwargs["source_id"])
+        if "concurrency" in kwargs:
+            kwargs["concurrency"] = TriggerRunConcurrency(kwargs["concurrency"])
+        return client.update_platform_event_trigger(
+            trigger_name_id_or_prefix=target, **kwargs
+        )
+    if resource_type == "webhook_trigger":
+        from zenml.enums import TriggerRunConcurrency
+
+        if "concurrency" in kwargs:
+            kwargs["concurrency"] = TriggerRunConcurrency(kwargs["concurrency"])
+        return client.update_webhook_trigger(trigger_name_id_or_prefix=target, **kwargs)
+    raise ResourceDispatchError(f"Unsupported update for {resource_type!r}")
+
+
+def _delete_call(
+    client: Any,
+    resource_type: str,
+    target: uuid.UUID,
+    payload: dict[str, Any],
+    project: str | None,
+    *,
+    component_type: str | None,
+) -> None:
+    if resource_type == "project":
+        if str(client.active_project.id) == str(target):
+            raise ResourceDispatchError("The active project cannot be deleted")
+        return client.delete_project(name_id_or_prefix=str(target))
+    if resource_type == "stack":
+        return client.delete_stack(name_id_or_prefix=target, recursive=False)
+    if resource_type == "stack_component":
+        from zenml.enums import StackComponentType
+
+        return client.delete_stack_component(
+            name_id_or_prefix=target, component_type=StackComponentType(component_type)
+        )
+    if resource_type == "flavor":
+        return client.delete_flavor(name_id_or_prefix=str(target))
+    if resource_type in {
+        "service",
+        "pipeline",
+        "pipeline_run",
+        "snapshot",
+        "run_template",
+        "artifact",
+        "model",
+        "code_repository",
+        "webhook",
+    }:
+        keyword = {
+            "service": "name_id_or_prefix",
+            "pipeline": "name_id_or_prefix",
+            "pipeline_run": "name_id_or_prefix",
+            "snapshot": "name_id_or_prefix",
+            "run_template": "name_id_or_prefix",
+            "artifact": "name_id_or_prefix",
+            "model": "model_name_or_id",
+            "code_repository": "name_id_or_prefix",
+            "webhook": "name_id_or_prefix",
+        }[resource_type]
+        return getattr(client, f"delete_{resource_type}")(
+            **{keyword: target, "project": project}
+        )
+    if resource_type == "build":
+        return client.delete_build(id_or_prefix=str(target), project=project)
+    if resource_type == "deployment":
+        return client.delete_deployment(
+            name_id_or_prefix=target, project=project, **payload
+        )
+    if resource_type == "artifact_version":
+        delete_metadata = payload.get("delete_metadata", True)
+        delete_data = payload.get("delete_from_artifact_store", False)
+        if not delete_metadata and not delete_data:
+            raise ResourceDispatchError(
+                "At least one artifact-version deletion option must be true"
+            )
+        return client.delete_artifact_version(
+            name_id_or_prefix=target,
+            delete_metadata=delete_metadata,
+            delete_from_artifact_store=delete_data,
+            project=project,
+            server_side=delete_data,
+        )
+    if resource_type == "model_version":
+        return client.delete_model_version(model_version_id=target)
+    if resource_type == "tag":
+        return client.delete_tag(tag_name_or_id=target)
+    if resource_type == "service_connector":
+        return client.delete_service_connector(name_id_or_prefix=target)
+    if resource_type in _TRIGGER_TYPES:
+        return client.delete_trigger(trigger_id=target, soft=True)
+    if resource_type == "hook_invocation":
+        return client.delete_hook_invocation(hook_invocation_id=target)
+    raise ResourceDispatchError(f"Unsupported delete for {resource_type!r}")
+
+
+def _reconciliation(
+    resource_type: str,
+    operation: str,
+    *,
+    resource_id: str | None,
+    project_id: str | None,
+    payload: Mapping[str, Any],
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    if resource_type in _TRIGGER_TYPES and operation == "delete":
+        return {
+            "operation": "list",
+            "resource_type": resource_type,
+            "filters": {"id": resource_id, "is_archived": True},
+            **({"project_id": project_id} if project_id else {}),
+            "note": "Confirm that the trigger is archived.",
+        }
+    if resource_id:
+        result = {
+            "operation": "get",
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            **({"project_id": project_id} if project_id else {}),
+            **({"artifact_id": artifact_id} if artifact_id else {}),
+            **({"model_id": model_id} if model_id else {}),
+            **({"component_type": component_type} if component_type else {}),
+        }
+        if resource_type == "artifact_version" and operation == "delete":
+            result["note"] = (
+                "A remaining metadata record cannot prove whether stored data was deleted."
+            )
+        elif resource_type == "deployment" and operation == "delete":
+            result["note"] = (
+                "Metadata absence does not prove that external infrastructure was removed."
+            )
+        return result
+    filters = {"name": payload["name"]} if "name" in payload else {}
+    if resource_type == "model_version" and model_id:
+        filters["model_id"] = model_id
+    return {
+        "operation": "list",
+        "resource_type": resource_type,
+        "filters": filters,
+        **({"project_id": project_id} if project_id else {}),
+        "note": (
+            "An auto-generated webhook secret cannot be recovered after an unknown create outcome."
+            if resource_type == "webhook" and "secret" not in payload
+            else "Confirm the mutation by reading the resource; do not repeat it automatically."
+        ),
+    }
+
+
+def mutate_resource(
+    client: Any,
+    resource_type: str,
+    operation: str,
+    *,
+    resource_id: str | None = None,
+    payload: Mapping[str, Any] | None = None,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+    read_only: bool | None = None,
+) -> dict[str, Any]:
+    """Validate and perform exactly one allowlisted ordinary mutation."""
+    ensure_writes_enabled(read_only=read_only)
+    spec = get_resource_spec(resource_type)
+    try:
+        spec.operation_spec(operation)
+        mutation_payload = validate_mutation_payload(resource_type, operation, payload)
+    except ResourceRegistryError as error:
+        raise ResourceDispatchError(str(error)) from error
+    if operation not in {"create", "update", "delete"}:
+        raise ResourceDispatchError(f"Unsupported mutation operation {operation!r}")
+    effective_scope, project = _mutation_scope(
+        client, resource_type, project_id, operation=operation
+    )
+    target = None if operation == "create" else _exact_uuid("resource_id", resource_id)
+    expected_parents = set(spec.mutations[operation].parent_fields)
+    supplied_parents = {
+        "artifact_id": artifact_id,
+        "model_id": model_id,
+        "component_type": component_type,
+    }
+    missing = sorted(field for field in expected_parents if not supplied_parents[field])
+    unexpected = sorted(
+        field
+        for field, value in supplied_parents.items()
+        if value is not None and field not in expected_parents
+    )
+    if missing:
+        raise ResourceDispatchError(
+            f"{resource_type!r} {operation} requires: {', '.join(missing)}"
+        )
+    if unexpected:
+        raise ResourceDispatchError(
+            f"Unexpected identifiers for {resource_type!r} {operation}: {', '.join(unexpected)}"
+        )
+    if "component_type" in expected_parents:
+        from zenml.enums import StackComponentType
+
+        try:
+            StackComponentType(component_type)
+        except ValueError as error:
+            raise ResourceDispatchError("Invalid component_type") from error
+    if resource_type in {"flavor", "code_repository"} and "source" in mutation_payload:
+        _allowed_import_source(mutation_payload["source"])
+    if operation == "create":
+        _validate_create_relations(
+            client, resource_type, mutation_payload, project, model_id
+        )
+    else:
+        existing = _validate_related(
+            client,
+            resource_type,
+            str(target),
+            project_id=project,
+            artifact_id=artifact_id,
+            model_id=model_id,
+            component_type=component_type,
+        )
+        if resource_type == "stack" and "component_updates" in mutation_payload:
+            _validate_create_relations(
+                client,
+                "stack",
+                {"components": mutation_payload["component_updates"]},
+                None,
+                None,
+                require_core_stack_components=False,
+            )
+        if resource_type == "stack_component" and mutation_payload.get("connector_id"):
+            _validate_related(
+                client,
+                "service_connector",
+                mutation_payload["connector_id"],
+                project_id=None,
+            )
+        if resource_type == "service" and mutation_payload.get("model_version_id"):
+            _validate_model_version_project(
+                client, mutation_payload["model_version_id"], project
+            )
+        if resource_type == "platform_event_trigger" and operation == "update":
+            source_type = mutation_payload.get("source_type") or _find_nested_value(
+                existing["item"], "source_type"
+            )
+            source_id = mutation_payload.get("source_id") or _find_nested_value(
+                existing["item"], "source_id"
+            )
+            if source_type is None or source_id is None:
+                raise ResourceDispatchError(
+                    "Unable to validate the effective platform-event source"
+                )
+            source_resource = {
+                "pipeline": "pipeline",
+                "pipeline_run": "pipeline_run",
+                "pipeline_snapshot": "snapshot",
+            }.get(str(source_type))
+            if source_resource is None:
+                raise ResourceDispatchError("Invalid platform-event source_type")
+            _validate_related(
+                client,
+                source_resource,
+                str(_exact_uuid("source_id", str(source_id))),
+                project_id=project,
+            )
+    reconciliation = _reconciliation(
+        resource_type,
+        operation,
+        resource_id=str(target) if target else None,
+        project_id=project,
+        payload=mutation_payload,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        component_type=component_type,
+    )
+    try:
+        if operation == "create":
+            result = _invoke_adapter(
+                lambda: _create_call(
+                    client, resource_type, mutation_payload, project, model_id
+                )
+            )
+        elif operation == "update":
+            assert target is not None
+            result = _invoke_adapter(
+                lambda: _update_call(
+                    client,
+                    resource_type,
+                    target,
+                    mutation_payload,
+                    project,
+                    model_id=model_id,
+                    component_type=component_type,
+                )
+            )
+        else:
+            assert target is not None
+            result = _invoke_adapter(
+                lambda: _delete_call(
+                    client,
+                    resource_type,
+                    target,
+                    mutation_payload,
+                    project,
+                    component_type=component_type,
+                )
+            )
+    except (
+        requests.ReadTimeout,
+        requests.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ContentDecodingError,
+    ) as error:
+        if isinstance(error, requests.ConnectTimeout):
+            raise
+        cause_names = {
+            type(item).__name__
+            for item in (error, error.__cause__, error.__context__)
+            if item is not None
+        }
+        if cause_names & {
+            "NewConnectionError",
+            "NameResolutionError",
+            "ConnectionRefusedError",
+        }:
+            raise
+        unknown = {
+            "resource_type": resource_type,
+            "operation": operation,
+            "outcome": "unknown",
+            "effective_scope": effective_scope,
+            "reconciliation": reconciliation,
+        }
+        return {
+            **unknown,
+            "error": {
+                "tool": f"zenml_{operation}_resource",
+                "message": (
+                    "The connection was lost after mutation dispatch; the outcome is unknown. "
+                    "Use the supplied reconciliation read and do not repeat automatically."
+                ),
+                "type": "UnknownOutcome",
+                "details": unknown,
+            },
+        }
+    projected = safe_project(result, resource_type=resource_type)
+    result_id = _find_nested_id(result, "id", "id") if result is not None else None
+    response = {
+        "resource_type": resource_type,
+        "operation": operation,
+        "outcome": "completed",
+        "resource_id": result_id or (str(target) if target else None),
+        "effective_scope": effective_scope,
+        "reconciliation": reconciliation,
+    }
+    if result is not None:
+        response["item"] = projected
+    if resource_type == "webhook" and operation == "create":
+        dumped = _model_dump(result)
+        if isinstance(dumped, Mapping) and dumped.get("secret") is not None:
+            response["issued_secret"] = dumped["secret"]
+    if resource_type == "deployment" and operation == "delete":
+        response["force_requested"] = mutation_payload.get("force", False)
+    if resource_type in _TRIGGER_TYPES and operation == "delete":
+        response["archived"] = True
+    if resource_type == "artifact_version" and operation == "delete":
+        response["delete_metadata"] = mutation_payload.get("delete_metadata", True)
+        response["delete_from_artifact_store"] = mutation_payload.get(
+            "delete_from_artifact_store", False
+        )
+    return response
+
+
+def create_resource(client: Any, resource_type: str, **kwargs: Any) -> dict[str, Any]:
+    return mutate_resource(client, resource_type, "create", **kwargs)
+
+
+def update_resource(
+    client: Any, resource_type: str, resource_id: str, **kwargs: Any
+) -> dict[str, Any]:
+    return mutate_resource(
+        client, resource_type, "update", resource_id=resource_id, **kwargs
+    )
+
+
+def delete_resource(
+    client: Any, resource_type: str, resource_id: str, **kwargs: Any
+) -> dict[str, Any]:
+    return mutate_resource(
+        client, resource_type, "delete", resource_id=resource_id, **kwargs
+    )
 
 
 assert set(LIST_ADAPTERS) == set(RESOURCE_REGISTRY)

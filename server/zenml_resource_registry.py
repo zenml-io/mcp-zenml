@@ -10,9 +10,9 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, cast
 
-Operation = Literal["list", "get"]
+Operation = Literal["list", "get", "create", "update", "delete"]
 ScopeKind = Literal["global", "project"]
 
 MAX_PAGE_SIZE = 200
@@ -214,6 +214,128 @@ def validate_filter_value(resource_type: str, field: str, value: Any) -> None:
         )
 
 
+def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
+    alternatives = schema.get("anyOf")
+    if alternatives:
+        return any(_matches_schema(value, alternative) for alternative in alternatives)
+    expected = schema.get("type")
+    if expected == "null":
+        return value is None
+    if expected == "string":
+        if not isinstance(value, str):
+            return False
+        if len(value) < schema.get("minLength", 0):
+            return False
+        if "enum" in schema and value not in schema["enum"]:
+            return False
+        if schema.get("format") == "uuid":
+            try:
+                return str(uuid.UUID(value)) == value.lower()
+            except ValueError:
+                return False
+        if schema.get("format") == "date-time":
+            try:
+                datetime_value = value.replace("Z", "+00:00")
+                from datetime import datetime
+
+                datetime.fromisoformat(datetime_value)
+            except ValueError:
+                return False
+        return True
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= schema.get("minimum", value)
+        )
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "array":
+        return (
+            isinstance(value, list)
+            and len(value) >= schema.get("minItems", 0)
+            and all(_matches_schema(item, schema.get("items", {})) for item in value)
+        )
+    if expected == "object":
+        if not isinstance(value, dict):
+            return False
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False and set(value) - set(properties):
+            return False
+        if not set(schema.get("required", ())) <= set(value):
+            return False
+        additional = schema.get("additionalProperties")
+        return all(
+            _matches_schema(
+                item,
+                properties.get(key, additional if isinstance(additional, dict) else {}),
+            )
+            for key, item in value.items()
+        )
+    return True
+
+
+def validate_mutation_payload(
+    resource_type: str, operation: str, payload: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Validate a mutation payload against its advertised operation schema."""
+    resource = get_resource_spec(resource_type)
+    resource.operation_spec(operation)
+    mutation = resource.mutations[operation]
+    value = dict(payload or {})
+    if mutation.payload_required and payload is None:
+        raise ResourceRegistryError(f"{resource_type!r} {operation} requires payload")
+    unsupported = sorted(set(value) - set(mutation.payload_properties))
+    if unsupported:
+        allowed = ", ".join(mutation.payload_properties) or "none"
+        raise ResourceRegistryError(
+            f"Unsupported fields for {resource_type!r} {operation}: "
+            f"{', '.join(unsupported)}. Allowed fields: {allowed}"
+        )
+    missing = sorted(set(mutation.required_payload) - set(value))
+    if missing:
+        raise ResourceRegistryError(
+            f"{resource_type!r} {operation} requires fields: {', '.join(missing)}"
+        )
+    for field, item in value.items():
+        if not _matches_schema(item, mutation.payload_properties[field]):
+            raise ResourceRegistryError(
+                f"Invalid value for {resource_type!r} {operation} field {field!r}"
+            )
+    if operation == "update":
+        empty_collection_noops = {
+            "artifact": {"add_tags", "remove_tags"},
+            "artifact_version": {"add_tags", "remove_tags"},
+            "code_repository": {"config"},
+            "model": {"add_tags", "remove_tags"},
+            "model_version": {"add_tags", "remove_tags"},
+            "run_template": {"add_tags", "remove_tags"},
+            "service": {"endpoint", "labels", "status"},
+            "service_connector": {"labels"},
+            "snapshot": {"add_tags", "remove_tags"},
+            "stack": {"component_updates"},
+            "stack_component": {"configuration"},
+        }.get(resource_type, set())
+        false_noops = {
+            "model_version": {"force"},
+            "snapshot": {"replace"},
+            "stack_component": {"disconnect"},
+        }.get(resource_type, set())
+        effective_fields = {
+            field
+            for field, item in value.items()
+            if not (field in empty_collection_noops and not item)
+            and not (field in false_noops and item is False)
+        }
+        if not effective_fields:
+            raise ResourceRegistryError(
+                f"{resource_type!r} update requires at least one effective field"
+            )
+    return value
+
+
 @dataclass(frozen=True)
 class OperationSpec:
     """One public generic operation with a bounded input contract."""
@@ -226,6 +348,7 @@ class OperationSpec:
     filter_fields: tuple[str, ...] = ()
     required_filter_fields: tuple[str, ...] = ()
     description: str = ""
+    property_schemas: Mapping[str, dict[str, Any]] | None = None
 
     def schema(self) -> dict[str, Any]:
         properties: dict[str, Any] = {
@@ -233,6 +356,8 @@ class OperationSpec:
             for field in self.fields
             if field not in {"page", "size"}
         }
+        if self.property_schemas:
+            properties.update(self.property_schemas)
         if "page" in self.fields:
             properties["page"] = {"type": "integer", "minimum": 1}
         if "size" in self.fields:
@@ -272,10 +397,14 @@ class ResourceSpec:
     get_fields: tuple[str, ...] | None
     get_required: tuple[str, ...] = ("resource_id",)
     non_paginated: bool = False
+    mutations: Mapping[str, "MutationSpec"] = MappingProxyType({})
 
     @property
     def operations(self) -> tuple[Operation, ...]:
-        return ("list", "get") if self.get_fields is not None else ("list",)
+        reads: tuple[Operation, ...] = (
+            ("list", "get") if self.get_fields is not None else ("list",)
+        )
+        return (*reads, *(cast(Operation, operation) for operation in self.mutations))
 
     def operation_spec(self, operation: str) -> OperationSpec:
         scope_fields = ("project_id",) if self.scope == "project" else ()
@@ -299,10 +428,680 @@ class ResourceSpec:
                 required_fields=self.get_required,
                 description=f"Get one {self.description.lower()} by an identifier.",
             )
+        mutation = self.mutations.get(operation)
+        if mutation is not None:
+            return mutation.operation_spec(self)
         raise ResourceRegistryError(
             f"Unsupported operation {operation!r} for {self.resource_type!r}; "
             f"supported operations: {', '.join(self.operations)}"
         )
+
+
+@dataclass(frozen=True)
+class MutationSpec:
+    """Static contract for one ordinary create, update, or delete operation."""
+
+    operation: Literal["create", "update", "delete"]
+    sdk_method: str
+    payload_properties: Mapping[str, dict[str, Any]] = MappingProxyType({})
+    required_payload: tuple[str, ...] = ()
+    parent_fields: tuple[str, ...] = ()
+    payload_required: bool = False
+    description: str = ""
+
+    def operation_spec(self, resource: ResourceSpec) -> OperationSpec:
+        fields: list[str] = []
+        required: list[str] = []
+        properties: dict[str, dict[str, Any]] = {}
+        if self.operation != "create":
+            fields.append("resource_id")
+            required.append("resource_id")
+            properties["resource_id"] = {"type": "string", "format": "uuid"}
+        if (
+            resource.scope == "project"
+            or self.operation == "create"
+            and resource.resource_type in _PROJECT_CREATE_RESOURCES
+        ):
+            fields.append("project_id")
+            required.append("project_id")
+            properties["project_id"] = {"type": "string", "format": "uuid"}
+        for field in self.parent_fields:
+            fields.append(field)
+            required.append(field)
+            properties[field] = (
+                _COMPONENT_TYPE
+                if field == "component_type"
+                else {"type": "string", "format": "uuid"}
+            )
+        if self.payload_properties or self.payload_required:
+            fields.append("payload")
+            if self.payload_required:
+                required.append("payload")
+            properties["payload"] = {
+                "type": "object",
+                "properties": dict(self.payload_properties),
+                "required": list(self.required_payload),
+                "additionalProperties": False,
+            }
+        return OperationSpec(
+            resource_type=resource.resource_type,
+            operation=self.operation,
+            sdk_method=self.sdk_method,
+            fields=tuple(fields),
+            required_fields=tuple(required),
+            description=self.description
+            or f"{self.operation.title()} {resource.description.lower()}.",
+            property_schemas=MappingProxyType(properties),
+        )
+
+
+_STR = {"type": "string"}
+_NONEMPTY = {"type": "string", "minLength": 1}
+_UUID = {"type": "string", "format": "uuid"}
+_BOOL = {"type": "boolean"}
+_POSITIVE_INT = {"type": "integer", "minimum": 1}
+_NONNEGATIVE_INT = {"type": "integer", "minimum": 0}
+_STRING_LIST = {"type": "array", "items": _NONEMPTY}
+_STRING_MAP = {"type": "object", "additionalProperties": {"type": "string"}}
+_CONFIG_MAP = {"type": "object", "additionalProperties": True}
+_NULLABLE_STRING_MAP = {
+    "type": "object",
+    "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+}
+_ANY_MAP = {"type": "object"}
+_COMPONENT_TYPE = {
+    "type": "string",
+    "enum": [
+        "alerter",
+        "annotator",
+        "artifact_store",
+        "container_registry",
+        "data_validator",
+        "deployer",
+        "experiment_tracker",
+        "feature_store",
+        "image_builder",
+        "log_store",
+        "model_deployer",
+        "model_registry",
+        "orchestrator",
+        "sandbox",
+        "step_operator",
+    ],
+}
+_COLOR = {"type": "string", "enum": list(_ENUM_FILTERS[("tag", "color")])}
+_CONCURRENCY = {"type": "string", "enum": ["skip", "submit"]}
+_MODEL_STAGE = {
+    "type": "string",
+    "enum": ["none", "staging", "production", "archived"],
+}
+_SOURCE_TYPE = {
+    "type": "string",
+    "enum": ["pipeline", "pipeline_run", "pipeline_snapshot"],
+}
+_DATETIME = {"type": "string", "format": "date-time"}
+
+
+def _mutation(
+    operation: Literal["create", "update", "delete"],
+    sdk_method: str,
+    properties: Mapping[str, dict[str, Any]] | None = None,
+    *,
+    required: tuple[str, ...] = (),
+    parents: tuple[str, ...] = (),
+    payload_required: bool | None = None,
+) -> MutationSpec:
+    return MutationSpec(
+        operation=operation,
+        sdk_method=sdk_method,
+        payload_properties=MappingProxyType(dict(properties or {})),
+        required_payload=required,
+        parent_fields=parents,
+        payload_required=bool(properties)
+        if payload_required is None
+        else payload_required,
+    )
+
+
+_CARD_FIELDS = {
+    "name": _NONEMPTY,
+    "license": _STR,
+    "description": _STR,
+    "audience": _STR,
+    "use_cases": _STR,
+    "limitations": _STR,
+    "trade_offs": _STR,
+    "ethics": _STR,
+}
+_TAG_UPDATES = {"add_tags": _STRING_LIST, "remove_tags": _STRING_LIST}
+_TRIGGER_COMMON = {
+    "name": _NONEMPTY,
+    "active": _BOOL,
+    "concurrency": _CONCURRENCY,
+}
+
+_MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
+    {
+        "project": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_project",
+                    {"name": _NONEMPTY, "description": _STR},
+                    required=("name", "description"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_project",
+                    {"name": _NONEMPTY, "description": _NONEMPTY},
+                ),
+                "delete": _mutation("delete", "delete_project", payload_required=False),
+            }
+        ),
+        "stack": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_stack",
+                    {
+                        "name": _NONEMPTY,
+                        "components": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "anyOf": [
+                                    _UUID,
+                                    {"type": "array", "items": _UUID, "minItems": 1},
+                                ]
+                            },
+                        },
+                    },
+                    required=("name", "components"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_stack",
+                    {
+                        "name": _NONEMPTY,
+                        "description": _NONEMPTY,
+                        "component_updates": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "anyOf": [
+                                    _UUID,
+                                    {"type": "array", "items": _UUID, "minItems": 1},
+                                ]
+                            },
+                        },
+                    },
+                ),
+                "delete": _mutation("delete", "delete_stack", payload_required=False),
+            }
+        ),
+        "stack_component": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_stack_component",
+                    {
+                        "name": _NONEMPTY,
+                        "flavor": _NONEMPTY,
+                        "component_type": _COMPONENT_TYPE,
+                        "configuration": _CONFIG_MAP,
+                    },
+                    required=("name", "flavor", "component_type", "configuration"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_stack_component",
+                    {
+                        "name": _NONEMPTY,
+                        "configuration": _CONFIG_MAP,
+                        "disconnect": _BOOL,
+                        "connector_id": _UUID,
+                        "connector_resource_id": _STR,
+                    },
+                    parents=("component_type",),
+                ),
+                "delete": _mutation(
+                    "delete",
+                    "delete_stack_component",
+                    parents=("component_type",),
+                    payload_required=False,
+                ),
+            }
+        ),
+        "flavor": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_flavor",
+                    {"source": _NONEMPTY, "component_type": _COMPONENT_TYPE},
+                    required=("source", "component_type"),
+                ),
+                "delete": _mutation("delete", "delete_flavor", payload_required=False),
+            }
+        ),
+        "service": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_service",
+                    {
+                        "config": {
+                            "type": "object",
+                            "properties": {
+                                field: _STR
+                                for field in (
+                                    "name",
+                                    "description",
+                                    "pipeline_name",
+                                    "pipeline_step_name",
+                                    "model_name",
+                                    "model_version",
+                                    "service_name",
+                                )
+                            },
+                            "additionalProperties": False,
+                        },
+                        "service_type": {
+                            "type": "object",
+                            "properties": {
+                                "type": _NONEMPTY,
+                                "flavor": _NONEMPTY,
+                                "name": _STR,
+                                "description": _STR,
+                                "logo_url": _STR,
+                            },
+                            "required": ["type", "flavor"],
+                            "additionalProperties": False,
+                        },
+                        "model_version_id": _UUID,
+                    },
+                    required=("config", "service_type"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_service",
+                    {
+                        "name": _NONEMPTY,
+                        "admin_state": {
+                            "type": "string",
+                            "enum": [
+                                "inactive",
+                                "active",
+                                "pending_startup",
+                                "pending_shutdown",
+                                "error",
+                                "scaled_to_zero",
+                            ],
+                        },
+                        "status": _ANY_MAP,
+                        "endpoint": _ANY_MAP,
+                        "labels": _STRING_MAP,
+                        "prediction_url": _NONEMPTY,
+                        "health_check_url": _NONEMPTY,
+                        "model_version_id": _UUID,
+                    },
+                ),
+                "delete": _mutation("delete", "delete_service", payload_required=False),
+            }
+        ),
+        "pipeline": MappingProxyType(
+            {"delete": _mutation("delete", "delete_pipeline", payload_required=False)}
+        ),
+        "pipeline_run": MappingProxyType(
+            {
+                "delete": _mutation(
+                    "delete", "delete_pipeline_run", payload_required=False
+                )
+            }
+        ),
+        "snapshot": MappingProxyType(
+            {
+                "update": _mutation(
+                    "update",
+                    "update_snapshot",
+                    {
+                        "name": _NONEMPTY,
+                        "description": _STR,
+                        "replace": _BOOL,
+                        **_TAG_UPDATES,
+                    },
+                ),
+                "delete": _mutation(
+                    "delete", "delete_snapshot", payload_required=False
+                ),
+            }
+        ),
+        "build": MappingProxyType(
+            {"delete": _mutation("delete", "delete_build", payload_required=False)}
+        ),
+        "run_template": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_run_template",
+                    {
+                        "name": _NONEMPTY,
+                        "snapshot_id": _UUID,
+                        "description": _STR,
+                        "tags": _STRING_LIST,
+                    },
+                    required=("name", "snapshot_id"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_run_template",
+                    {
+                        "name": _NONEMPTY,
+                        "description": _STR,
+                        "hidden": _BOOL,
+                        **_TAG_UPDATES,
+                    },
+                ),
+                "delete": _mutation(
+                    "delete", "delete_run_template", payload_required=False
+                ),
+            }
+        ),
+        "deployment": MappingProxyType(
+            {
+                "delete": _mutation(
+                    "delete",
+                    "delete_deployment",
+                    {"force": _BOOL, "timeout": _POSITIVE_INT},
+                    payload_required=False,
+                )
+            }
+        ),
+        "artifact": MappingProxyType(
+            {
+                "update": _mutation(
+                    "update",
+                    "update_artifact",
+                    {"name": _NONEMPTY, "has_custom_name": _BOOL, **_TAG_UPDATES},
+                ),
+                "delete": _mutation(
+                    "delete", "delete_artifact", payload_required=False
+                ),
+            }
+        ),
+        "artifact_version": MappingProxyType(
+            {
+                "update": _mutation(
+                    "update",
+                    "update_artifact_version",
+                    _TAG_UPDATES,
+                    parents=("artifact_id",),
+                ),
+                "delete": _mutation(
+                    "delete",
+                    "delete_artifact_version",
+                    {"delete_metadata": _BOOL, "delete_from_artifact_store": _BOOL},
+                    parents=("artifact_id",),
+                    payload_required=False,
+                ),
+            }
+        ),
+        "model": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_model",
+                    {
+                        **_CARD_FIELDS,
+                        "tags": _STRING_LIST,
+                        "save_models_to_registry": _BOOL,
+                    },
+                    required=("name",),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_model",
+                    {**_CARD_FIELDS, **_TAG_UPDATES, "save_models_to_registry": _BOOL},
+                ),
+                "delete": _mutation("delete", "delete_model", payload_required=False),
+            }
+        ),
+        "model_version": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_model_version",
+                    {"name": _NONEMPTY, "description": _STR, "tags": _STRING_LIST},
+                    parents=("model_id",),
+                    payload_required=False,
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_model_version",
+                    {
+                        "stage": _MODEL_STAGE,
+                        "force": _BOOL,
+                        "name": _NONEMPTY,
+                        "description": _STR,
+                        **_TAG_UPDATES,
+                    },
+                    parents=("model_id",),
+                ),
+                "delete": _mutation(
+                    "delete",
+                    "delete_model_version",
+                    parents=("model_id",),
+                    payload_required=False,
+                ),
+            }
+        ),
+        "tag": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_tag",
+                    {"name": _NONEMPTY, "exclusive": _BOOL, "color": _COLOR},
+                    required=("name",),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_tag",
+                    {"name": _NONEMPTY, "exclusive": _BOOL, "color": _COLOR},
+                ),
+                "delete": _mutation("delete", "delete_tag", payload_required=False),
+            }
+        ),
+        "service_connector": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_service_connector",
+                    {
+                        "name": _NONEMPTY,
+                        "connector_type": _NONEMPTY,
+                        "resource_type": _STR,
+                        "auth_method": _NONEMPTY,
+                        "configuration": _STRING_MAP,
+                        "resource_id": _STR,
+                        "description": _STR,
+                        "expiration_seconds": _NONNEGATIVE_INT,
+                        "expires_at": _DATETIME,
+                        "expires_skew_tolerance": _NONNEGATIVE_INT,
+                        "labels": _STRING_MAP,
+                    },
+                    required=("name", "connector_type"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_service_connector",
+                    {
+                        "name": _NONEMPTY,
+                        "auth_method": _NONEMPTY,
+                        "resource_type": _STR,
+                        "configuration": _STRING_MAP,
+                        "resource_id": _STR,
+                        "description": _STR,
+                        "expiration_seconds": _NONNEGATIVE_INT,
+                        "expires_at": _DATETIME,
+                        "expires_skew_tolerance": _NONNEGATIVE_INT,
+                        "labels": _NULLABLE_STRING_MAP,
+                    },
+                ),
+                "delete": _mutation(
+                    "delete", "delete_service_connector", payload_required=False
+                ),
+            }
+        ),
+        "code_repository": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_code_repository",
+                    {
+                        "name": _NONEMPTY,
+                        "source": _NONEMPTY,
+                        "config": _ANY_MAP,
+                        "description": _STR,
+                        "logo_url": _STR,
+                    },
+                    required=("name", "source", "config"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_code_repository",
+                    {
+                        "name": _NONEMPTY,
+                        "description": _STR,
+                        "logo_url": _STR,
+                        "config": {"type": "object", "additionalProperties": True},
+                    },
+                ),
+                "delete": _mutation(
+                    "delete", "delete_code_repository", payload_required=False
+                ),
+            }
+        ),
+        "webhook": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_webhook",
+                    {
+                        "name": _NONEMPTY,
+                        "webhook_type": _NONEMPTY,
+                        "active": _BOOL,
+                        "secret": _NONEMPTY,
+                    },
+                    required=("name", "webhook_type"),
+                ),
+                "update": _mutation(
+                    "update", "update_webhook", {"name": _NONEMPTY, "active": _BOOL}
+                ),
+                "delete": _mutation("delete", "delete_webhook", payload_required=False),
+            }
+        ),
+        "schedule_trigger": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_schedule_trigger",
+                    {
+                        **_TRIGGER_COMMON,
+                        "cron_expression": _NONEMPTY,
+                        "interval": {"type": "integer", "minimum": 60},
+                        "run_once_start_time": _DATETIME,
+                        "start_time": _DATETIME,
+                        "end_time": _DATETIME,
+                        "max_runs": _POSITIVE_INT,
+                    },
+                    required=("name",),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_schedule_trigger",
+                    {
+                        **_TRIGGER_COMMON,
+                        "cron_expression": _NONEMPTY,
+                        "interval": {"type": "integer", "minimum": 60},
+                        "run_once_start_time": _DATETIME,
+                        "start_time": _DATETIME,
+                        "end_time": _DATETIME,
+                        "max_runs": _POSITIVE_INT,
+                    },
+                ),
+                "delete": _mutation("delete", "delete_trigger", payload_required=False),
+            }
+        ),
+        "platform_event_trigger": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_platform_event_trigger",
+                    {
+                        **_TRIGGER_COMMON,
+                        "source_type": _SOURCE_TYPE,
+                        "source_id": _UUID,
+                        "target_events": {
+                            "type": "array",
+                            "items": _NONEMPTY,
+                            "minItems": 1,
+                        },
+                    },
+                    required=("name", "source_type", "source_id", "target_events"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_platform_event_trigger",
+                    {
+                        **_TRIGGER_COMMON,
+                        "source_type": _SOURCE_TYPE,
+                        "source_id": _UUID,
+                        "target_events": {
+                            "type": "array",
+                            "items": _NONEMPTY,
+                            "minItems": 1,
+                        },
+                    },
+                ),
+                "delete": _mutation("delete", "delete_trigger", payload_required=False),
+            }
+        ),
+        "webhook_trigger": MappingProxyType(
+            {
+                "create": _mutation(
+                    "create",
+                    "create_webhook_trigger",
+                    {**_TRIGGER_COMMON, "webhook_id": _UUID, "configuration": _ANY_MAP},
+                    required=("name", "webhook_id", "configuration"),
+                ),
+                "update": _mutation(
+                    "update",
+                    "update_webhook_trigger",
+                    {**_TRIGGER_COMMON, "configuration": _ANY_MAP},
+                ),
+                "delete": _mutation("delete", "delete_trigger", payload_required=False),
+            }
+        ),
+        "hook_invocation": MappingProxyType(
+            {
+                "delete": _mutation(
+                    "delete", "delete_hook_invocation", payload_required=False
+                )
+            }
+        ),
+    }
+)
+
+_PROJECT_CREATE_RESOURCES = frozenset(
+    {
+        "service",
+        "run_template",
+        "model",
+        "model_version",
+        "code_repository",
+        "webhook",
+        "schedule_trigger",
+        "platform_event_trigger",
+        "webhook_trigger",
+    }
+)
 
 
 def _filters(*fields: str) -> tuple[str, ...]:
@@ -331,6 +1130,7 @@ def _spec(
         get_fields=get_fields,
         get_required=get_required,
         non_paginated=non_paginated,
+        mutations=_MUTATION_SPECS.get(resource_type, MappingProxyType({})),
     )
 
 
@@ -820,7 +1620,14 @@ def describe_resources(
                     "resource_type": spec.resource_type,
                     "operations": list(spec.operations),
                     "scope": spec.scope,
-                    "policy": "read_only" if spec.operations == ("list",) else "read",
+                    "policy": (
+                        "read_write"
+                        if any(
+                            item in spec.operations
+                            for item in ("create", "update", "delete")
+                        )
+                        else "read_only"
+                    ),
                     "description": spec.description,
                 }
                 for spec in RESOURCE_REGISTRY.values()
@@ -833,7 +1640,13 @@ def describe_resources(
             "resource_type": spec.resource_type,
             "operations": list(spec.operations),
             "scope": spec.scope,
-            "policy": "read_only" if spec.operations == ("list",) else "read",
+            "policy": (
+                "read_write"
+                if any(
+                    item in spec.operations for item in ("create", "update", "delete")
+                )
+                else "read_only"
+            ),
             "description": spec.description,
         }
 
@@ -849,10 +1662,17 @@ def describe_resources(
                 },
             }
         )
-    else:
+    elif operation == "get":
         example.update(
             {field: f"<{field}>" for field in operation_spec.required_fields}
         )
+    else:
+        for field in operation_spec.required_fields:
+            if field == "payload":
+                mutation = spec.mutations[operation]
+                example[field] = {key: f"<{key}>" for key in mutation.required_payload}
+            else:
+                example[field] = f"<{field}>"
     return {
         "resource_type": resource_type,
         "operation": operation,

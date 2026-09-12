@@ -43,19 +43,28 @@ import requests
 import zenml_mcp_analytics as analytics
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent
-from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from zenml_resource_dispatch import (
     ResourceDispatchError,
     ResourceFeatureUnavailable,
     ResourceNotFound,
     ResourcePermissionDenied,
+    ensure_writes_enabled,
+)
+from zenml_resource_dispatch import (
+    create_resource as dispatch_create_resource,
+)
+from zenml_resource_dispatch import (
+    delete_resource as dispatch_delete_resource,
 )
 from zenml_resource_dispatch import (
     get_resource as dispatch_get_resource,
 )
 from zenml_resource_dispatch import (
     list_resources as dispatch_list_resources,
+)
+from zenml_resource_dispatch import (
+    update_resource as dispatch_update_resource,
 )
 from zenml_resource_registry import (
     RESOURCE_REGISTRY,
@@ -563,6 +572,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
 
         start_time = time.perf_counter()
         success = True
+        reported_outcome = "success"
         error_type: str | None = None
         http_status_code: int | None = None
         generic_operation = {
@@ -621,6 +631,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                 success = False
                 error_type = cast(dict[str, Any], result)["error"]["type"]
                 error = cast(dict[str, Any], result)["error"]
+                reported_outcome = cast(dict[str, Any], result).get("outcome", "error")
                 return cast(
                     T,
                     CallToolResult(
@@ -632,6 +643,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             return result
         except requests.HTTPError as e:
             success = False
+            reported_outcome = "error"
             http_status_code = (
                 e.response.status_code
                 if getattr(e, "response", None) is not None
@@ -666,6 +678,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             )
         except Exception as e:
             success = False
+            reported_outcome = "error"
             category, message, details = _classify_exception(
                 tool_name=func_name,
                 exc=e,
@@ -707,7 +720,7 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                         in {"compact", "legacy"}
                         else "unknown"
                     ),
-                    outcome="success" if success else "error",
+                    outcome=reported_outcome,
                 )
             except Exception:
                 pass
@@ -808,7 +821,6 @@ def _configure_zero_retry_rest_session(client: Any) -> None:
     if not isinstance(session, requests.Session):
         return
 
-    pool_size = int(getattr(getattr(store, "config", None), "connection_pool_size", 10))
     retries = Retry(
         total=0,
         connect=0,
@@ -818,15 +830,9 @@ def _configure_zero_retry_rest_session(client: Any) -> None:
         other=0,
     )
     for scheme in ("http://", "https://"):
-        previous_adapter = session.adapters.get(scheme)
-        session.mount(
-            scheme,
-            HTTPAdapter(
-                max_retries=retries, pool_connections=pool_size, pool_maxsize=pool_size
-            ),
-        )
-        if previous_adapter is not None:
-            previous_adapter.close()
+        adapter = session.adapters.get(scheme)
+        if adapter is not None:
+            adapter.max_retries = retries
 
 
 def get_zenml_client():
@@ -844,8 +850,9 @@ def get_zenml_client():
 
         logger.debug("Initializing ZenML client...")
         try:
-            zenml_client = Client()
-            _configure_zero_retry_rest_session(zenml_client)
+            initialized_client = Client()
+            _configure_zero_retry_rest_session(initialized_client)
+            zenml_client = initialized_client
             logger.debug("ZenML client initialized successfully")
         except Exception as e:
             logger.error("ZenML client initialization failed: %s", type(e).__name__)
@@ -1097,7 +1104,7 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
 
 
 # =============================================================================
-# Generic resource discovery and reads
+# Generic resource discovery, reads, and ordinary mutations
 # =============================================================================
 
 
@@ -1110,8 +1117,8 @@ def zenml_describe_resources(
     """Discover supported generic ZenML resources or one operation schema.
 
     With no arguments this returns a short catalog. Pass a canonical singular
-    resource type to inspect its operations, and add ``operation`` (``list`` or
-    ``get``) for the bounded input schema and a small example.
+    resource type to inspect its operations, and add an operation name for its
+    bounded input schema and a small example.
     """
     return describe_resources(resource_type=resource_type, operation=operation)
 
@@ -1165,6 +1172,101 @@ def zenml_get_resource(
         artifact_id=artifact_id,
         model_id=model_id,
         pipeline_run_id=pipeline_run_id,
+        component_type=component_type,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_create_resource(
+    resource_type: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    model_id: str | None = None,
+) -> dict[str, Any]:
+    """Create one allowlisted ZenML resource with a strict typed payload.
+
+    Inspect ``zenml_describe_resources(resource_type, "create")`` first.
+    Project-scoped creates require an exact project UUID and never change the
+    client's active project.
+    """
+    ensure_writes_enabled()
+    return dispatch_create_resource(
+        get_zenml_client(),
+        resource_type,
+        payload=payload,
+        project_id=project_id,
+        model_id=model_id,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_update_resource(
+    resource_type: str,
+    resource_id: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    """Update one exact UUID through an allowlisted operation-specific payload."""
+    ensure_writes_enabled()
+    return dispatch_update_resource(
+        get_zenml_client(),
+        resource_type,
+        resource_id,
+        payload=payload,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        component_type=component_type,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_delete_resource(
+    resource_type: str,
+    resource_id: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    """Delete or archive one exact UUID using bounded destructive options."""
+    ensure_writes_enabled()
+    return dispatch_delete_resource(
+        get_zenml_client(),
+        resource_type,
+        resource_id,
+        payload=payload,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
         component_type=component_type,
     )
 
@@ -1741,6 +1843,7 @@ def trigger_pipeline(
         trigger_pipeline(pipeline_name_or_id=<NAME>, template_id=<ID>)
         ```
     """
+    ensure_writes_enabled()
     # Build kwargs for SDK call, preferring snapshot_name_or_id over deprecated template_id
     trigger_kwargs: Dict[str, Any] = {
         "pipeline_name_or_id": pipeline_name_or_id,

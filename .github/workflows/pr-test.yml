@@ -81,6 +81,8 @@ jobs:
           uv run scripts/test_datetime_normalization.py
           uv run scripts/test_resource_registry.py
           uv run scripts/test_resource_operations.py
+          uv run scripts/test_resource_mutations.py
+          uv run scripts/test_resource_integration.py
           uv run scripts/test_sdk_contracts.py
           uv run scripts/test_tool_contracts.py
           uv run scripts/test_mcp_transport.py
