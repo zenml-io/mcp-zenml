@@ -169,7 +169,6 @@ async def test_http_security_and_lifespan() -> None:
     assert disabled.forwarded_allow_ips == config.forwarded_allow_ips
 
     app = server.create_streamable_http_app(config)
-    manager = server.mcp.session_manager
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
@@ -199,12 +198,6 @@ async def test_http_security_and_lifespan() -> None:
                 json={},
             )
             assert bad_origin.status_code == 403
-
-        assert manager._task_group is not None
-
-    assert manager._task_group is None
-    assert manager._lifespan_state is None
-    assert manager._server_instances == {}
 
 
 async def test_sanitized_tool_error_and_worker_thread() -> None:

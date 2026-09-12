@@ -254,28 +254,35 @@ class FakeStackComponentClient:
         }
         self.list_calls.append(call)
 
-        matches = self.components
-        if id:
-            operator, value = id.split(":", 1) if ":" in id else ("equals", id)
+        def matches_filter(actual: str, expression: str | None) -> bool:
+            if expression is None:
+                return True
+            operator, value = (
+                expression.split(":", 1)
+                if ":" in expression
+                else ("equals", expression)
+            )
+            return (
+                actual.startswith(value)
+                if operator == "startswith"
+                else actual == value
+            )
+
+        predicates = [
+            lambda component: matches_filter(str(component.id), id),
+            lambda component: matches_filter(str(component.name), name),
+        ]
+        if logical_operator == "or" and id is not None and name is not None:
             matches = [
                 component
-                for component in matches
-                if (
-                    str(component.id).startswith(value)
-                    if operator == "startswith"
-                    else str(component.id) == value
-                )
+                for component in self.components
+                if any(predicate(component) for predicate in predicates)
             ]
-        if name:
-            operator, value = name.split(":", 1) if ":" in name else ("equals", name)
+        else:
             matches = [
                 component
-                for component in matches
-                if (
-                    str(component.name).startswith(value)
-                    if operator == "startswith"
-                    else str(component.name) == value
-                )
+                for component in self.components
+                if all(predicate(component) for predicate in predicates)
             ]
         return FakeResponse(
             {

@@ -38,7 +38,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast
 from urllib.parse import urlparse
-from uuid import UUID
 
 import requests
 import zenml_mcp_analytics as analytics
@@ -458,10 +457,6 @@ def _classify_exception(
 # MCP client detection (best-effort, request-scoped)
 # =============================================================================
 
-# Track whether we've already captured client info this session
-_mcp_client_info_captured = False
-_mcp_client_info_lock = Lock()
-
 
 def _getattr_multi(obj: Any, *names: str) -> Any:
     """Try multiple attribute names on an object, return first non-None."""
@@ -520,9 +515,8 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     Use this decorator for @mcp.tool() functions. It:
     - Catches exceptions and returns friendly error messages
     - Tracks tool usage via analytics (timing, success/failure, size param)
-    - Returns structured error dicts for structured tools, strings for text tools
+    - Returns structured MCP error results
     """
-    # Capture function name and return type at decoration time.
     # getattr-with-default keeps the type checker honest: a generic Callable
     # isn't guaranteed to have __name__, even though our decorated tools always do.
     func_name = getattr(func, "__name__", "unknown_tool")
@@ -531,8 +525,6 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     def wrapper(*args: Any, ctx: Context[Any, Any] | None = None, **kwargs: Any) -> T:
         import time
 
-        global _mcp_client_info_captured
-
         start_time = time.perf_counter()
         success = True
         error_type: str | None = None
@@ -540,14 +532,11 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
 
         client = _get_mcp_client_info_safe(ctx)
         try:
-            if client and not _mcp_client_info_captured:
-                with _mcp_client_info_lock:
-                    if not _mcp_client_info_captured:
-                        _mcp_client_info_captured = True
-                        analytics.set_client_info_once(
-                            client_name=client.get("name"),
-                            client_version=client.get("version"),
-                        )
+            if client:
+                analytics.set_client_info_once(
+                    client_name=client.get("name"),
+                    client_version=client.get("version"),
+                )
         except Exception:
             pass
 
@@ -760,12 +749,15 @@ def _configure_zero_retry_rest_session(client: Any) -> None:
         other=0,
     )
     for scheme in ("http://", "https://"):
+        previous_adapter = session.adapters.get(scheme)
         session.mount(
             scheme,
             HTTPAdapter(
                 max_retries=retries, pool_connections=pool_size, pool_maxsize=pool_size
             ),
         )
+        if previous_adapter is not None:
+            previous_adapter.close()
 
 
 def get_zenml_client():
@@ -1392,10 +1384,11 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack component to retrieve
     """
+    from zenml.utils.uuid_utils import parse_name_or_uuid
+
     client = get_zenml_client()
-    try:
-        UUID(name_id_or_prefix)
-    except ValueError:
+    parsed_identifier = parse_name_or_uuid(name_id_or_prefix)
+    if isinstance(parsed_identifier, str):
         exact_matches = client.list_stack_components(
             name=f"equals:{name_id_or_prefix}", size=2, hydrate=False
         )
@@ -1408,18 +1401,15 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
         candidates = list(exact_matches.items)
         known_total = exact_matches.total
         if not candidates:
-            id_matches = client.list_stack_components(
-                id=f"startswith:{name_id_or_prefix}", size=2, hydrate=False
+            prefix_matches = client.list_stack_components(
+                logical_operator="or",
+                id=f"startswith:{name_id_or_prefix}",
+                name=f"startswith:{name_id_or_prefix}",
+                size=2,
+                hydrate=False,
             )
-            name_matches = client.list_stack_components(
-                name=f"startswith:{name_id_or_prefix}", size=2, hydrate=False
-            )
-            candidates_by_id = {
-                str(component.id): component
-                for component in [*id_matches.items, *name_matches.items]
-            }
-            candidates = list(candidates_by_id.values())
-            known_total = max(len(candidates), id_matches.total, name_matches.total)
+            candidates = list(prefix_matches.items)
+            known_total = prefix_matches.total
     else:
         matches = client.list_stack_components(
             id=name_id_or_prefix, size=2, hydrate=False

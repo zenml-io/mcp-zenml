@@ -35,16 +35,45 @@ EXPECTED_ZENML_VERSION = "0.96.4"
 def _direct_client_calls() -> list[tuple[str, int, list[str], bool, int]]:
     """Return direct Client calls as method, positional count, keywords, kwargs, line."""
     tree = ast.parse(SERVER_PATH.read_text(encoding="utf-8"), filename=str(SERVER_PATH))
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def enclosing_function(node: ast.AST) -> ast.AST | None:
+        parent = parents.get(node)
+        while parent is not None:
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return parent
+            parent = parents.get(parent)
+        return None
+
+    client_aliases = {
+        (enclosing_function(node), target.id)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "get_zenml_client"
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
     calls: list[tuple[str, int, list[str], bool, int]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         receiver = node.func.value
-        if not (
+        direct_receiver = (
             isinstance(receiver, ast.Call)
             and isinstance(receiver.func, ast.Name)
             and receiver.func.id == "get_zenml_client"
-        ):
+        )
+        aliased_receiver = (
+            isinstance(receiver, ast.Name)
+            and (enclosing_function(node), receiver.id) in client_aliases
+        )
+        if not direct_receiver and not aliased_receiver:
             continue
         keyword_names = [keyword.arg for keyword in node.keywords if keyword.arg]
         has_expansion = any(keyword.arg is None for keyword in node.keywords)
