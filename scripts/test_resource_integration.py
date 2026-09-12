@@ -33,6 +33,7 @@ import os
 import sys
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -685,6 +686,9 @@ def run_disposable_actions(target: str) -> None:
                 "name": f"mcp-disposable-u6-trigger-{suffix}",
                 "active": False,
                 "interval": 86400,
+                "start_time": (
+                    datetime.now(timezone.utc) + timedelta(minutes=5)
+                ).isoformat(),
             },
         )
         trigger_id = trigger["resource_id"]
