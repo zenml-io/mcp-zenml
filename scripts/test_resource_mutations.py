@@ -689,6 +689,85 @@ def test_deployment_delete_timeout_accepts_the_upper_bound() -> None:
     assert len(client.calls) == before
 
 
+def test_constrained_create_schemas_match_validation_and_examples() -> None:
+    service_schema = describe_resources("service", "create")["input_schema"][
+        "properties"
+    ]["payload"]["properties"]["config"]
+    assert service_schema["anyOf"] == [
+        {"type": "object", "required": ["name"]},
+        {"type": "object", "required": ["model_name"]},
+    ]
+    for config in ({"name": "service"}, {"model_name": "model"}):
+        payload = {
+            "config": config,
+            "service_type": {"type": "model-serving", "flavor": "custom"},
+        }
+        assert validate_mutation_payload("service", "create", payload) == payload
+    for config in ({}, {"description": "missing identity"}, {"name": ""}):
+        payload = {
+            "config": config,
+            "service_type": {"type": "model-serving", "flavor": "custom"},
+        }
+        try:
+            validate_mutation_payload("service", "create", payload)
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(f"service.create accepted invalid config {config!r}")
+
+    schedule_schema = describe_resources("schedule_trigger", "create")["input_schema"][
+        "properties"
+    ]["payload"]
+    schedule_branches = schedule_schema["oneOf"]
+    assert [branch["required"] for branch in schedule_branches] == [
+        ["cron_expression"],
+        ["interval", "start_time"],
+        ["run_once_start_time"],
+    ]
+    assert [
+        [excluded["required"] for excluded in branch["not"]["anyOf"]]
+        for branch in schedule_branches
+    ] == [
+        [["interval"], ["run_once_start_time"]],
+        [["cron_expression"], ["run_once_start_time"]],
+        [["cron_expression"], ["interval"]],
+    ]
+    for schedule in (
+        {"cron_expression": "0 * * * *"},
+        {"interval": 60, "start_time": "2026-09-12T12:00:00Z"},
+        {"run_once_start_time": "2026-09-12T12:00:00Z"},
+    ):
+        payload = {"name": "schedule", **schedule}
+        assert (
+            validate_mutation_payload("schedule_trigger", "create", payload) == payload
+        )
+    for schedule in (
+        {},
+        {"interval": 60},
+        {"cron_expression": "0 * * * *", "interval": 60},
+        {"run_once_start_time": "2026-09-12T12:00:00Z", "interval": 60},
+        {"cron_expression": "0 * * * *", "run_once_start_time": "2026-09-12T12:00:00Z"},
+    ):
+        payload = {"name": "schedule", **schedule}
+        try:
+            validate_mutation_payload("schedule_trigger", "create", payload)
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(
+                f"schedule_trigger.create accepted invalid schedule {schedule!r}"
+            )
+
+    for resource_type in ("service", "schedule_trigger"):
+        example_payload = describe_resources(resource_type, "create")["example"][
+            "payload"
+        ]
+        assert (
+            validate_mutation_payload(resource_type, "create", example_payload)
+            == example_payload
+        )
+
+
 def test_false_zero_and_clear_values_reach_the_sdk() -> None:
     cases = (
         ("snapshot", "update", "description", ""),

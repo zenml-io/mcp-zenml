@@ -1692,7 +1692,76 @@
           "required": [
             "name"
           ],
-          "type": "object"
+          "type": "object",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "cron_expression"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "interval"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "run_once_start_time"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "interval",
+                "start_time"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "cron_expression"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "run_once_start_time"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "run_once_start_time"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "cron_expression"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "interval"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
         },
         "project_id": {
           "format": "uuid",
@@ -1907,13 +1976,15 @@
                   "type": "string"
                 },
                 "model_name": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 },
                 "model_version": {
                   "type": "string"
                 },
                 "name": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 },
                 "pipeline_name": {
                   "type": "string"
@@ -1925,7 +1996,21 @@
                   "type": "string"
                 }
               },
-              "type": "object"
+              "type": "object",
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "name"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "model_name"
+                  ]
+                }
+              ]
             },
             "model_version_id": {
               "format": "uuid",
@@ -1989,13 +2074,15 @@
             "type": "string"
           },
           "model_name": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "model_version": {
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "pipeline_name": {
             "type": "string"
@@ -2007,7 +2094,21 @@
             "type": "string"
           }
         },
-        "type": "object"
+        "type": "object",
+        "anyOf": [
+          {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "model_name"
+            ]
+          }
+        ]
       },
       "model_version_id": {
         "format": "uuid",

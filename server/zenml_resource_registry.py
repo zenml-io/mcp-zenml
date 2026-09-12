@@ -218,8 +218,20 @@ def validate_filter_value(resource_type: str, field: str, value: Any) -> None:
 
 def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
     alternatives = schema.get("anyOf")
-    if alternatives:
-        return any(_matches_schema(value, alternative) for alternative in alternatives)
+    if alternatives and not any(
+        _matches_schema(value, alternative) for alternative in alternatives
+    ):
+        return False
+    alternatives = schema.get("oneOf")
+    if (
+        alternatives
+        and sum(_matches_schema(value, alternative) for alternative in alternatives)
+        != 1
+    ):
+        return False
+    excluded = schema.get("not")
+    if excluded and _matches_schema(value, excluded):
+        return False
     expected = schema.get("type")
     if expected == "null":
         return value is None
@@ -312,6 +324,10 @@ def validate_mutation_payload(
             raise ResourceRegistryError(
                 f"Invalid value for {resource_type!r} {operation} field {field!r}"
             )
+    if not _matches_schema(value, mutation.payload_schema()):
+        raise ResourceRegistryError(
+            f"Invalid payload for {resource_type!r} {operation}"
+        )
     if operation == "update":
         empty_collection_noops = {
             "artifact": {"add_tags", "remove_tags"},
@@ -460,6 +476,17 @@ class MutationSpec:
     parent_fields: tuple[str, ...] = ()
     payload_required: bool = False
     description: str = ""
+    payload_constraints: Mapping[str, Any] = MappingProxyType({})
+    example_payload: Mapping[str, Any] | None = None
+
+    def payload_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": dict(self.payload_properties),
+            "required": list(self.required_payload),
+            "additionalProperties": False,
+            **self.payload_constraints,
+        }
 
     def operation_spec(self, resource: ResourceSpec) -> OperationSpec:
         fields: list[str] = []
@@ -489,12 +516,7 @@ class MutationSpec:
             fields.append("payload")
             if self.payload_required:
                 required.append("payload")
-            properties["payload"] = {
-                "type": "object",
-                "properties": dict(self.payload_properties),
-                "required": list(self.required_payload),
-                "additionalProperties": False,
-            }
+            properties["payload"] = self.payload_schema()
         return OperationSpec(
             resource_type=resource.resource_type,
             operation=self.operation,
@@ -632,6 +654,8 @@ def _mutation(
     required: tuple[str, ...] = (),
     parents: tuple[str, ...] = (),
     payload_required: bool | None = None,
+    constraints: Mapping[str, Any] | None = None,
+    example: Mapping[str, Any] | None = None,
 ) -> MutationSpec:
     return MutationSpec(
         operation=operation,
@@ -642,6 +666,10 @@ def _mutation(
         payload_required=bool(properties)
         if payload_required is None
         else payload_required,
+        payload_constraints=MappingProxyType(dict(constraints or {})),
+        example_payload=MappingProxyType(dict(example))
+        if example is not None
+        else None,
     )
 
 
@@ -772,7 +800,9 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                         "config": {
                             "type": "object",
                             "properties": {
-                                field: _STR
+                                field: _NONEMPTY
+                                if field in {"name", "model_name"}
+                                else _STR
                                 for field in (
                                     "name",
                                     "description",
@@ -783,6 +813,10 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                                     "service_name",
                                 )
                             },
+                            "anyOf": [
+                                {"type": "object", "required": ["name"]},
+                                {"type": "object", "required": ["model_name"]},
+                            ],
                             "additionalProperties": False,
                         },
                         "service_type": {
@@ -800,6 +834,10 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                         "model_version_id": _UUID,
                     },
                     required=("config", "service_type"),
+                    example={
+                        "config": {"name": "<name>"},
+                        "service_type": {"type": "<type>", "flavor": "<flavor>"},
+                    },
                 ),
                 "update": _mutation(
                     "update",
@@ -1094,6 +1132,53 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                         "max_runs": _POSITIVE_INT,
                     },
                     required=("name",),
+                    constraints={
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "required": ["cron_expression"],
+                                "not": {
+                                    "anyOf": [
+                                        {"type": "object", "required": ["interval"]},
+                                        {
+                                            "type": "object",
+                                            "required": ["run_once_start_time"],
+                                        },
+                                    ]
+                                },
+                            },
+                            {
+                                "type": "object",
+                                "required": ["interval", "start_time"],
+                                "not": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "required": ["cron_expression"],
+                                        },
+                                        {
+                                            "type": "object",
+                                            "required": ["run_once_start_time"],
+                                        },
+                                    ]
+                                },
+                            },
+                            {
+                                "type": "object",
+                                "required": ["run_once_start_time"],
+                                "not": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "required": ["cron_expression"],
+                                        },
+                                        {"type": "object", "required": ["interval"]},
+                                    ]
+                                },
+                            },
+                        ]
+                    },
+                    example={"name": "<name>", "cron_expression": "0 * * * *"},
                 ),
                 "update": _mutation(
                     "update",
@@ -2056,7 +2141,11 @@ def describe_resources(
         for field in operation_spec.required_fields:
             if field == "payload":
                 mutation = spec.mutations[operation]
-                example[field] = {key: f"<{key}>" for key in mutation.required_payload}
+                example[field] = (
+                    dict(mutation.example_payload)
+                    if mutation.example_payload is not None
+                    else {key: f"<{key}>" for key in mutation.required_payload}
+                )
             else:
                 example[field] = f"<{field}>"
     return {
