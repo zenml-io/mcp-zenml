@@ -38,6 +38,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast
 from urllib.parse import urlparse
+from uuid import UUID
 
 import requests
 import zenml_mcp_analytics as analytics
@@ -179,6 +180,27 @@ _KNOWN_OPS = frozenset(
 _UPPER_BOUND_OPS = frozenset({"lte", "lt"})
 
 
+class FilterSyntaxError(ValueError):
+    """Raised when a list filter uses obsolete ambiguous syntax."""
+
+
+def _validate_filter_syntax(value: str) -> None:
+    """Reject ambiguous comma-separated values for list-valued filter operators."""
+    operator, separator, operand = value.partition(":")
+    if not separator or operator not in {"oneof", "notoneof"}:
+        return
+    try:
+        parsed = json.loads(operand)
+    except json.JSONDecodeError as error:
+        raise FilterSyntaxError(
+            'List filters require a JSON array, for example oneof:["running","error"].'
+        ) from error
+    if not isinstance(parsed, list):
+        raise FilterSyntaxError(
+            'List filters require a JSON array, for example oneof:["running","error"].'
+        )
+
+
 def _parse_iso_to_zenml(s: str) -> str | None:
     """Best-effort parse an ISO-8601 string into ZenML format (YYYY-MM-DD HH:MM:SS).
 
@@ -296,6 +318,9 @@ def _classify_exception(
     raw_type = type(exc).__name__
     details: dict[str, Any] = {"raw_type": raw_type}
 
+    if isinstance(exc, FilterSyntaxError):
+        return ("ValidationError", str(exc), details)
+
     # ---- HTTP errors (requests) ----
     if isinstance(exc, requests.HTTPError):
         status = http_status_code
@@ -361,7 +386,9 @@ def _classify_exception(
         if tool_name.startswith("list_"):
             msg += (
                 "\n\nFILTER SYNTAX REFERENCE:\n"
-                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, oneof:, in:\n"
+                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, "
+                "oneof:, notoneof:, in:\n"
+                '- List operators use JSON arrays, e.g. oneof:["running","error"]\n'
                 "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
                 "- Date-only and ISO-8601 inputs are auto-normalized\n"
                 "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59"
@@ -529,6 +556,10 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             # Normalize datetime filter kwargs before calling the tool.
             # Uses a copy so analytics.extract_size_from_call sees original kwargs.
             call_kwargs = dict(kwargs) if kwargs else kwargs
+            if call_kwargs and func_name.startswith("list_"):
+                for value in call_kwargs.values():
+                    if isinstance(value, str):
+                        _validate_filter_syntax(value)
             if call_kwargs:
                 for key in _DATETIME_FILTER_KEYS:
                     if key in call_kwargs and isinstance(call_kwargs[key], str):
@@ -1361,7 +1392,60 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack component to retrieve
     """
-    stack_component = get_zenml_client().get_stack_component(name_id_or_prefix)
+    client = get_zenml_client()
+    try:
+        UUID(name_id_or_prefix)
+    except ValueError:
+        exact_matches = client.list_stack_components(
+            name=f"equals:{name_id_or_prefix}", size=2, hydrate=False
+        )
+        if exact_matches.total > 1:
+            return _make_error_result(
+                "get_stack_component",
+                "The identifier matches multiple stack components. Use a full UUID.",
+                "AmbiguousIdentifier",
+            )
+        candidates = list(exact_matches.items)
+        known_total = exact_matches.total
+        if not candidates:
+            id_matches = client.list_stack_components(
+                id=f"startswith:{name_id_or_prefix}", size=2, hydrate=False
+            )
+            name_matches = client.list_stack_components(
+                name=f"startswith:{name_id_or_prefix}", size=2, hydrate=False
+            )
+            candidates_by_id = {
+                str(component.id): component
+                for component in [*id_matches.items, *name_matches.items]
+            }
+            candidates = list(candidates_by_id.values())
+            known_total = max(len(candidates), id_matches.total, name_matches.total)
+    else:
+        matches = client.list_stack_components(
+            id=name_id_or_prefix, size=2, hydrate=False
+        )
+        candidates = list(matches.items)
+        known_total = matches.total
+
+    if known_total == 0 or not candidates:
+        return _make_error_result(
+            "get_stack_component",
+            "No stack component matches the supplied identifier.",
+            "NotFound",
+        )
+    if known_total > 1 or len(candidates) > 1:
+        return _make_error_result(
+            "get_stack_component",
+            "The identifier matches multiple stack components. Use a full UUID.",
+            "AmbiguousIdentifier",
+        )
+
+    resolved = candidates[0]
+    stack_component = client.get_stack_component(
+        component_type=resolved.type,
+        name_id_or_prefix=str(resolved.id),
+        allow_name_prefix_match=False,
+    )
     return stack_component.model_dump(mode="json")
 
 
@@ -1480,9 +1564,9 @@ def trigger_pipeline(
         pipeline_name_or_id: The name or ID of the pipeline to trigger
         snapshot_name_or_id: The name or ID of a specific snapshot to run (preferred)
         stack_name_or_id: Optional stack override for the run
-        template_id: ⚠️ DEPRECATED - Use `snapshot_name_or_id` instead.
-            The ID of a run template to use. Run Templates are deprecated
-            and will be removed in a future version.
+        template_id: Deprecated template-based trigger parameter. Use
+            `snapshot_name_or_id` for new integrations. ZenML 0.96.4 still
+            retains run-template CRUD APIs.
 
     Usage examples:
         * Run the latest runnable snapshot for a pipeline:
@@ -1524,8 +1608,8 @@ def trigger_pipeline(
         used_deprecated_template = True
         deprecation_warning = (
             "The `template_id` parameter is deprecated. "
-            "Please use `snapshot_name_or_id` instead. Run Templates are being "
-            "phased out in favor of Snapshots."
+            "Please use `snapshot_name_or_id` instead. ZenML 0.96.4 retains "
+            "run-template CRUD APIs, while snapshots are preferred for new workflows."
         )
 
     pipeline_run = get_zenml_client().trigger_pipeline(**trigger_kwargs)
@@ -1552,9 +1636,9 @@ def trigger_pipeline(
 def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a run template for a pipeline.
 
-    ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `get_snapshot` instead.
-    Snapshots are the modern replacement for run templates and provide the same
-    functionality with better integration into the ZenML ecosystem.
+    ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for new
+    workflows; pipeline convenience creation and template-based triggering are
+    deprecated.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the run template to retrieve
@@ -1562,9 +1646,9 @@ def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     run_template = get_zenml_client().get_run_template(name_id_or_prefix)
     return {
         "deprecation_notice": (
-            "Run Templates are deprecated in ZenML. "
-            "Please use `get_snapshot` instead. Run Templates internally reference "
-            "Snapshots via `source_snapshot_id` and will be removed in a future version."
+            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
+            "new workflows; pipeline convenience creation and template-based "
+            "triggering are deprecated."
         ),
         "run_template": run_template.model_dump(mode="json"),
     }
@@ -1583,8 +1667,8 @@ def list_run_templates(
 ) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
-    DEPRECATED: Use `list_snapshots` instead. For runnable configs, use
-    `list_snapshots(runnable=True)`.
+    ZenML 0.96.4 retains run-template CRUD. For new runnable configurations,
+    prefer `list_snapshots(runnable=True)`.
 
     Returns paginated results with 'items', 'total', 'page', 'size' fields.
 
@@ -1599,8 +1683,16 @@ def list_run_templates(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by template name (e.g. contains:train)
-        tag: Filter by tag name
+        tag: Legacy tag filter. ZenML 0.96.4 has no equivalent server-side
+            run-template filter, so non-null values are rejected.
     """
+    if tag is not None:
+        return _make_error_result(
+            "list_run_templates",
+            "ZenML 0.96.4 does not support tag filtering for run templates. "
+            "Use `list_snapshots` with `tag`, or omit this filter.",
+            "UnsupportedFilter",
+        )
     run_templates = get_zenml_client().list_run_templates(
         sort_by=sort_by,
         page=page,
@@ -1608,13 +1700,12 @@ def list_run_templates(
         created=created,
         updated=updated,
         name=name,
-        tag=tag,
     )
     return {
         "deprecation_notice": (
-            "Run Templates are deprecated in ZenML. "
-            "Please use `list_snapshots` instead. For runnable configurations, "
-            "use `list_snapshots(runnable=True)`. Run Templates will be removed in a future version."
+            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
+            "new workflows; use `list_snapshots(runnable=True)` for runnable "
+            "configurations."
         ),
         "run_templates": run_templates.model_dump(mode="json"),
     }
@@ -1715,7 +1806,7 @@ def list_snapshots(
         runnable=runnable,
         deployable=deployable,
         deployed=deployed,
-        tag=tag,
+        tags=tag,
         project=project,
         named_only=named_only,
     )
@@ -1787,7 +1878,7 @@ def list_deployments(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by deployment name (e.g. contains:prod)
-        status: Filter by status (e.g. oneof:running,error)
+        status: Filter by status (e.g. oneof:["running","error"])
         url: Filter by deployment URL
         pipeline: Filter by pipeline name or UUID
         snapshot_id: Filter by source snapshot UUID
@@ -1806,7 +1897,7 @@ def list_deployments(
         url=url,
         pipeline=pipeline,
         snapshot_id=snapshot_id,
-        tag=tag,
+        tags=tag,
         project=project,
     )
     return deployments.model_dump(mode="json")
@@ -2037,7 +2128,7 @@ def list_pipeline_runs(
         pipeline_id: Filter by pipeline UUID
         pipeline_name: Filter by pipeline name (e.g. contains:my_pipeline)
         stack_id: Filter by stack UUID
-        status: Filter by run status (e.g. oneof:completed,failed).
+        status: Filter by run status (e.g. oneof:["completed","failed"]).
             Values: initializing, failed, completed, running, cached
         start_time: Filter by run start time (e.g. gte:2026-02-01 00:00:00)
         end_time: Filter by run end time (e.g. lte:2026-02-07 23:59:59)
@@ -2108,7 +2199,7 @@ def list_run_steps(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by step name (e.g. contains:train)
-        status: Filter by step status (e.g. oneof:completed,failed).
+        status: Filter by step status (e.g. oneof:["completed","failed"]).
             Values: initializing, failed, completed, running, cached
         start_time: Filter by step start time (e.g. gte:2026-02-01 00:00:00)
         end_time: Filter by step end time (e.g. lte:2026-02-07 23:59:59)
@@ -2167,7 +2258,7 @@ def list_artifacts(
         created=created,
         updated=updated,
         name=name,
-        tag=tag,
+        tags=tag,
     )
     return artifacts.model_dump(mode="json")
 
@@ -2229,7 +2320,7 @@ def list_artifact_versions(
         logical_operator=logical_operator,
         created=created,
         updated=updated,
-        tag=tag,
+        tags=tag,
     )
     return versions.model_dump(mode="json")
 
@@ -2379,7 +2470,7 @@ def list_models(
         created=created,
         updated=updated,
         name=name,
-        tag=tag,
+        tags=tag,
     )
     return models.model_dump(mode="json")
 
@@ -2436,11 +2527,13 @@ def list_model_versions(
         updated: Filter by update time (same syntax as created)
         name: Filter by version name
         number: Filter by version number
-        stage: Filter by stage (e.g. oneof:production,staging)
+        stage: Filter by stage (e.g. oneof:["production","staging"])
         tag: Filter by tag name
     """
-    model_versions = get_zenml_client().list_model_versions(
-        model_name_or_id,
+    client = get_zenml_client()
+    model = client.get_model(model_name_or_id)
+    model_versions = client.list_model_versions(
+        model=model.id,
         sort_by=sort_by,
         page=page,
         size=size,
@@ -2450,7 +2543,7 @@ def list_model_versions(
         name=name,
         number=number,
         stage=stage,
-        tag=tag,
+        tags=tag,
     )
     return model_versions.model_dump(mode="json")
 

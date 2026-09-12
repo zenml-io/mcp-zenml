@@ -61,10 +61,10 @@ server, providing a way to get live information about:
 - **Models** - ML model registry entries
 - **Model Versions** - versioned model artifacts
 
-### Deprecated (migration recommended)
-- ~~Pipeline run templates~~ → use **Snapshots** instead (see [Migration Guide](#migration-run-templates--snapshots))
+### Compatibility APIs (migration recommended)
+- **Pipeline run templates** remain available in ZenML 0.96.4, while **Snapshots** are preferred for new workflows (see [Migration Guide](#migration-run-templates--snapshots))
 
-The server also allows you to **trigger new pipeline runs** using snapshots (preferred) or run templates (deprecated).
+The server also allows you to **trigger new pipeline runs** using snapshots (preferred) or the deprecated template-based trigger parameter.
 
 *Note: We're continuously improving this integration based on user feedback.
 Please join our [Slack community](https://zenml.io/slack) to share your experience
@@ -132,16 +132,27 @@ The MCP server exposes the following tools, grouped by category:
 |------|-------------|
 | `diagnose_zenml_setup` | Diagnose server setup (env vars, SDK, connectivity, auth). Works even when misconfigured. |
 
-### Deprecated Tools
-| Tool | Replacement |
-|------|-------------|
-| `get_run_template` | Use `get_snapshot` instead |
-| `list_run_templates` | Use `list_snapshots` instead |
-| `trigger_pipeline(template_id=...)` | Use `trigger_pipeline(snapshot_name_or_id=...)` |
+### Run-template compatibility
+
+ZenML 0.96.4 retains run-template CRUD APIs. Snapshots are preferred for new
+workflows. Pipeline convenience creation and the template-based trigger
+parameter are deprecated.
+
+| Compatibility path | Preferred new pattern |
+|--------------------|-----------------------|
+| `get_run_template` | `get_snapshot` |
+| `list_run_templates` | `list_snapshots` |
+| `trigger_pipeline(template_id=...)` | `trigger_pipeline(snapshot_name_or_id=...)` |
+
+The legacy `tag` input remains in `list_run_templates` for schema compatibility,
+but ZenML 0.96.4 has no equivalent server-side filter. A non-null value is
+rejected before the SDK call. Snapshot tag filtering remains available.
 
 ## Migration: Run Templates → Snapshots
 
-**Why the change?** ZenML evolved its "runnable pipeline artifact" concept. Run Templates are now deprecated wrappers that internally just point to Snapshots. New code should use Snapshots directly.
+**Why the change?** Snapshots replaced run templates as ZenML's preferred
+runnable pipeline artifact. The 0.96.4 SDK still supports run-template CRUD,
+while new code should use snapshots.
 
 ### Quick Migration Guide
 

@@ -87,11 +87,24 @@ def _structured_payload(result: Any) -> dict[str, Any]:
     return payload
 
 
+def _structured_error(result: Any) -> dict[str, Any]:
+    """Extract a structured MCP tool error."""
+    is_error = getattr(result, "isError", None)
+    if is_error is None:
+        is_error = getattr(result, "is_error", False)
+    assert is_error, result
+    kind, payload = _extract_call_tool_output(result)
+    assert kind == "structured", result
+    assert isinstance(payload, dict) and "error" in payload, result
+    return payload["error"]
+
+
 class FakeResponse:
     """Minimal ZenML response object used behind the real MCP protocol."""
 
     def __init__(self, payload: dict[str, Any]):
         self.payload = payload
+        self.__dict__.update(payload)
 
     def model_dump(self, *, mode: str) -> dict[str, Any]:
         assert mode == "json"
@@ -104,16 +117,28 @@ class FakePipelineResponse(FakeResponse):
         self.runs = [type("Run", (), {"status": "completed"})()]
 
 
+class FakeStackComponent(FakeResponse):
+    """Typed fake for component identifier resolution."""
+
+    def __init__(self, *, id: str, name: str, type: str) -> None:
+        super().__init__({"id": id, "name": name, "type": type})
+        self.id = id
+        self.name = name
+        self.type = type
+
+
 class FakeZenMLClient:
     """Small fake covering the legacy shapes that differ from plain get/list."""
 
     def __init__(self) -> None:
         self.calls: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+        self.call_history: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
     def _record(
         self, call_name: str, payload: dict[str, Any], *args: Any, **kwargs: Any
     ) -> FakeResponse:
         self.calls[call_name] = (args, kwargs)
+        self.call_history.append((call_name, args, kwargs))
         return FakeResponse(payload)
 
     def list_pipelines(self, **kwargs: Any) -> FakeResponse:
@@ -135,7 +160,16 @@ class FakeZenMLClient:
             "get_artifact_version", {"id": "artifact-version-1"}, *args, **kwargs
         )
 
-    def list_artifact_versions(self, *args: Any, **kwargs: Any) -> FakeResponse:
+    def list_snapshots(self, **kwargs: Any) -> FakeResponse:
+        return self._record("list_snapshots", {"items": [], "total": 0}, **kwargs)
+
+    def list_deployments(self, **kwargs: Any) -> FakeResponse:
+        return self._record("list_deployments", {"items": [], "total": 0}, **kwargs)
+
+    def list_artifacts(self, **kwargs: Any) -> FakeResponse:
+        return self._record("list_artifacts", {"items": [], "total": 0}, **kwargs)
+
+    def list_artifact_versions(self, **kwargs: Any) -> FakeResponse:
         return self._record(
             "list_artifact_versions",
             {
@@ -144,7 +178,6 @@ class FakeZenMLClient:
                 "page": 1,
                 "size": 10,
             },
-            *args,
             **kwargs,
         )
 
@@ -153,11 +186,20 @@ class FakeZenMLClient:
             "get_model_version", {"id": "model-version-1"}, *args, **kwargs
         )
 
-    def list_model_versions(self, *args: Any, **kwargs: Any) -> FakeResponse:
+    def get_model(self, model_name_or_id: str) -> FakeResponse:
+        return self._record(
+            "get_model",
+            {"id": "11111111-1111-4111-8111-111111111111"},
+            model_name_or_id,
+        )
+
+    def list_models(self, **kwargs: Any) -> FakeResponse:
+        return self._record("list_models", {"items": [], "total": 0}, **kwargs)
+
+    def list_model_versions(self, **kwargs: Any) -> FakeResponse:
         return self._record(
             "list_model_versions",
             {"items": [{"id": "model-version-1"}], "total": 1, "page": 1, "size": 20},
-            *args,
             **kwargs,
         )
 
@@ -166,12 +208,102 @@ class FakeZenMLClient:
             "get_run_template", {"id": "run-template-1"}, *args, **kwargs
         )
 
-    def list_run_templates(self, *args: Any, **kwargs: Any) -> FakeResponse:
+    def list_run_templates(self, **kwargs: Any) -> FakeResponse:
         return self._record(
             "list_run_templates",
             {"items": [{"id": "run-template-1"}], "total": 1, "page": 1, "size": 20},
-            *args,
             **kwargs,
+        )
+
+
+class FakeStackComponentClient:
+    """Fake that models cross-type component lookup and exact typed retrieval."""
+
+    def __init__(self, components: list[FakeStackComponent]) -> None:
+        self.components = components
+        self.list_calls: list[dict[str, Any]] = []
+        self.get_calls: list[dict[str, Any]] = []
+
+    def list_stack_components(
+        self,
+        *,
+        sort_by: str = "created",
+        page: int = 1,
+        size: int = 20,
+        logical_operator: str = "and",
+        id: str | None = None,
+        created: str | None = None,
+        updated: str | None = None,
+        name: str | None = None,
+        flavor: str | None = None,
+        stack_id: str | None = None,
+        hydrate: bool = False,
+    ) -> FakeResponse:
+        call = {
+            "sort_by": sort_by,
+            "page": page,
+            "size": size,
+            "logical_operator": logical_operator,
+            "id": id,
+            "created": created,
+            "updated": updated,
+            "name": name,
+            "flavor": flavor,
+            "stack_id": stack_id,
+            "hydrate": hydrate,
+        }
+        self.list_calls.append(call)
+
+        matches = self.components
+        if id:
+            operator, value = id.split(":", 1) if ":" in id else ("equals", id)
+            matches = [
+                component
+                for component in matches
+                if (
+                    str(component.id).startswith(value)
+                    if operator == "startswith"
+                    else str(component.id) == value
+                )
+            ]
+        if name:
+            operator, value = name.split(":", 1) if ":" in name else ("equals", name)
+            matches = [
+                component
+                for component in matches
+                if (
+                    str(component.name).startswith(value)
+                    if operator == "startswith"
+                    else str(component.name) == value
+                )
+            ]
+        return FakeResponse(
+            {
+                "items": matches[:size],
+                "total": len(matches),
+                "page": page,
+                "size": size,
+            }
+        )
+
+    def get_stack_component(
+        self,
+        *,
+        component_type: str,
+        name_id_or_prefix: str,
+        allow_name_prefix_match: bool,
+    ) -> FakeResponse:
+        call = {
+            "component_type": component_type,
+            "name_id_or_prefix": name_id_or_prefix,
+            "allow_name_prefix_match": allow_name_prefix_match,
+        }
+        self.get_calls.append(call)
+        return next(
+            component
+            for component in self.components
+            if str(component.id) == name_id_or_prefix
+            and component.type == component_type
         )
 
 
@@ -302,7 +434,121 @@ async def test_fake_sdk_success_shapes() -> None:
         }
         assert fake_client.calls["list_artifact_versions"][1]["artifact"] == "dataset"
         assert fake_client.calls["get_model_version"][0] == ("classifier", "1")
-        assert fake_client.calls["list_model_versions"][0] == ("classifier",)
+        assert fake_client.calls["list_model_versions"][0] == ()
+        assert fake_client.calls["list_model_versions"][1]["model"] == (
+            "11111111-1111-4111-8111-111111111111"
+        )
+    finally:
+        server.zenml_client = original_client
+
+
+async def test_current_sdk_filter_adapters() -> None:
+    """Legacy filters translate without changing tool inputs or paging."""
+    fake_client = FakeZenMLClient()
+    original_client = server.zenml_client
+    server.zenml_client = fake_client
+    default_calls = {
+        "list_snapshots": {},
+        "list_deployments": {},
+        "list_artifacts": {},
+        "list_artifact_versions": {"artifact_name_or_id": "artifact"},
+        "list_models": {},
+        "list_model_versions": {"model_name_or_id": "model"},
+        "list_run_templates": {},
+    }
+    tagged_calls = {
+        name: ({**arguments, "tag": 'oneof:["nightly","release"]'})
+        for name, arguments in default_calls.items()
+        if name != "list_run_templates"
+    }
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            for tool_name, arguments in default_calls.items():
+                _structured_payload(await session.call_tool(tool_name, arguments))
+
+            for tool_name, arguments in tagged_calls.items():
+                _structured_payload(await session.call_tool(tool_name, arguments))
+                assert fake_client.calls[tool_name][1]["tags"] == arguments["tag"]
+                assert "tag" not in fake_client.calls[tool_name][1]
+
+            calls_before = len(fake_client.call_history)
+            error = _structured_error(
+                await session.call_tool("list_run_templates", {"tag": "nightly"})
+            )
+            assert error["type"] == "UnsupportedFilter"
+            assert "does not support tag filtering" in error["message"]
+            assert len(fake_client.call_history) == calls_before
+
+            calls_before = len(fake_client.call_history)
+            error = _structured_error(
+                await session.call_tool(
+                    "list_deployments", {"status": "oneof:running,error"}
+                )
+            )
+            assert error["type"] == "ValidationError"
+            assert 'oneof:["running","error"]' in error["message"]
+            assert len(fake_client.call_history) == calls_before
+
+        assert fake_client.calls["list_model_versions"][1]["model"] == (
+            "11111111-1111-4111-8111-111111111111"
+        )
+        assert fake_client.calls["get_model"][0] == ("model",)
+    finally:
+        server.zenml_client = original_client
+
+
+async def test_stack_component_identifier_resolution() -> None:
+    """Legacy component identifiers resolve across types before an exact get."""
+    first = FakeStackComponent(
+        id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        name="artifact-store",
+        type="artifact_store",
+    )
+    second = FakeStackComponent(
+        id="aaaabbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        name="orchestrator",
+        type="orchestrator",
+    )
+    fake_client = FakeStackComponentClient([first, second])
+    original_client = server.zenml_client
+    server.zenml_client = fake_client
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            for identifier in (first.name, first.id, "aaaaaaaa"):
+                payload = _structured_payload(
+                    await session.call_tool(
+                        "get_stack_component", {"name_id_or_prefix": identifier}
+                    )
+                )
+                assert payload["id"] == first.id
+
+            gets_before = len(fake_client.get_calls)
+            error = _structured_error(
+                await session.call_tool(
+                    "get_stack_component", {"name_id_or_prefix": "aaaa"}
+                )
+            )
+            assert error["type"] == "AmbiguousIdentifier"
+            assert "matches multiple stack components" in error["message"]
+            assert len(fake_client.get_calls) == gets_before
+
+        assert fake_client.get_calls == [
+            {
+                "component_type": first.type,
+                "name_id_or_prefix": first.id,
+                "allow_name_prefix_match": False,
+            },
+            {
+                "component_type": first.type,
+                "name_id_or_prefix": first.id,
+                "allow_name_prefix_match": False,
+            },
+            {
+                "component_type": first.type,
+                "name_id_or_prefix": first.id,
+                "allow_name_prefix_match": False,
+            },
+        ]
     finally:
         server.zenml_client = original_client
 
@@ -390,6 +636,11 @@ async def main() -> int:
             test_discovery_does_not_initialize_zenml_client,
         ),
         ("test_fake_sdk_success_shapes", test_fake_sdk_success_shapes),
+        ("test_current_sdk_filter_adapters", test_current_sdk_filter_adapters),
+        (
+            "test_stack_component_identifier_resolution",
+            test_stack_component_identifier_resolution,
+        ),
         (
             "test_stdio_prompts_resources_apps_without_credentials",
             test_stdio_prompts_resources_apps_without_credentials,
