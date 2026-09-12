@@ -578,6 +578,7 @@ _NONEMPTY = {"type": "string", "minLength": 1}
 _UUID = {"type": "string", "format": "uuid"}
 _BOOL = {"type": "boolean"}
 _POSITIVE_INT = {"type": "integer", "minimum": 1}
+_ACTION_TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 300}
 _NONNEGATIVE_INT = {"type": "integer", "minimum": 0}
 _STRING_LIST = {"type": "array", "items": _NONEMPTY}
 _STRING_MAP = {"type": "object", "additionalProperties": {"type": "string"}}
@@ -887,7 +888,7 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                 "delete": _mutation(
                     "delete",
                     "delete_deployment",
-                    {"force": _BOOL, "timeout": _POSITIVE_INT},
+                    {"force": _BOOL, "timeout": _ACTION_TIMEOUT},
                     payload_required=False,
                 )
             }
@@ -1653,7 +1654,6 @@ _TAGGABLE_RESOURCE = {
         "deployment",
     ],
 }
-_ACTION_TIMEOUT = {"type": "integer", "minimum": 1, "maximum": 300}
 
 
 def _action(

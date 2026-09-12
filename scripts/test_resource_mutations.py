@@ -410,6 +410,8 @@ def _invalid_schema_values(schema: dict[str, Any]) -> list[Any]:
             values.append("not-an-enum-value")
     elif schema_type in {"integer", "number"} and "minimum" in schema:
         values.append(schema["minimum"] - 1)
+        if "maximum" in schema:
+            values.append(schema["maximum"] + 1)
     elif schema_type == "array":
         if schema.get("minItems", 0) > 0:
             values.append([])
@@ -654,6 +656,37 @@ def test_every_mutation_binds_one_write_with_exact_ids() -> None:
                 assert write_kwargs["verify"] is False
                 assert write_kwargs["list_resources"] is False
                 assert write_kwargs["update"] is True
+
+
+def test_deployment_delete_timeout_accepts_the_upper_bound() -> None:
+    payload = {"timeout": 300}
+    assert validate_mutation_payload("deployment", "delete", payload) == payload
+
+    client = Recorder()
+    delete_resource(
+        client,
+        "deployment",
+        TARGET,
+        project_id=PROJECT,
+        payload=payload,
+    )
+    write = next(call for call in client.calls if call[0] == "delete_deployment")
+    assert write[1]["timeout"] == 300
+
+    before = len(client.calls)
+    try:
+        delete_resource(
+            client,
+            "deployment",
+            TARGET,
+            project_id=PROJECT,
+            payload={"timeout": 301},
+        )
+    except ResourceDispatchError:
+        pass
+    else:
+        raise AssertionError("deployment delete accepted a timeout above 300 seconds")
+    assert len(client.calls) == before
 
 
 def test_false_zero_and_clear_values_reach_the_sdk() -> None:

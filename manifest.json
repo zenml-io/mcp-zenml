@@ -25,6 +25,8 @@
         "run",
         "--project",
         "${__dirname}",
+        "--locked",
+        "python",
         "${__dirname}/server/zenml_server.py"
       ],
       "env": {

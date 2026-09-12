@@ -61,6 +61,16 @@ EXPECTED_BUNDLE_DEPENDENCIES = (
 )
 EXPECTED_PYTHON_REQUIREMENT = ">=3.12,<3.15"
 EXPECTED_INSTALLED_VERSIONS = {"mcp": "2.2.0", "zenml": "0.96.4"}
+# Calling the .py file directly would make uv honor its PEP 723 block instead of
+# this bundle's pyproject.toml and uv.lock. Keep Python as the command boundary.
+EXPECTED_MCPB_LAUNCH_ARGS = (
+    "run",
+    "--project",
+    "${__dirname}",
+    "--locked",
+    "python",
+    "${__dirname}/server/zenml_server.py",
+)
 
 REQUIRED_PACKAGE_PATHS = (
     "manifest.json",
@@ -477,15 +487,15 @@ if actual_versions != expected_versions:
     ]
 
 
-def _unpacked_server_parameters(bundle_dir: Path, uv: str) -> StdioServerParameters:
+def _unpacked_server_parameters(
+    bundle_dir: Path, uv: str, launch_args: Sequence[str]
+) -> StdioServerParameters:
+    resolved_args = [
+        arg.replace("${__dirname}", str(bundle_dir)) for arg in launch_args
+    ]
     return StdioServerParameters(
         command=uv,
-        args=[
-            "run",
-            "--project",
-            str(bundle_dir),
-            str(bundle_dir / "server" / "zenml_server.py"),
-        ],
+        args=resolved_args,
         env=_clean_environment(),
         cwd=str(bundle_dir),
     )
@@ -618,12 +628,12 @@ async def verify_unpacked(bundle_dir: Path, uv: str, timeout: float) -> None:
             "packaged manifest has an unexpected Python runtime requirement"
         )
     mcp_config = server.get("mcp_config", {})
-    if mcp_config.get("command") != "uv" or mcp_config.get("args") != [
-        "run",
-        "--project",
-        "${__dirname}",
-        "${__dirname}/server/zenml_server.py",
-    ]:
+    launch_args = mcp_config.get("args")
+    if (
+        mcp_config.get("command") != "uv"
+        or not isinstance(launch_args, list)
+        or tuple(launch_args) != EXPECTED_MCPB_LAUNCH_ARGS
+    ):
         raise DistributionError("packaged manifest has an unexpected uv launch command")
     try:
         project = tomllib.loads((bundle_dir / "pyproject.toml").read_text())["project"]
@@ -653,7 +663,7 @@ async def verify_unpacked(bundle_dir: Path, uv: str, timeout: float) -> None:
         timeout,
     )
     await _verify_mcp_inventory(
-        _unpacked_server_parameters(bundle_dir, uv),
+        _unpacked_server_parameters(bundle_dir, uv, launch_args),
         f"unpacked MCPB at {bundle_dir}",
         timeout,
     )

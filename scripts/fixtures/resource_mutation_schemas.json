@@ -387,6 +387,7 @@
               "type": "boolean"
             },
             "timeout": {
+              "maximum": 300,
               "minimum": 1,
               "type": "integer"
             }
@@ -414,6 +415,7 @@
         "type": "boolean"
       },
       "timeout": {
+        "maximum": 300,
         "minimum": 1,
         "type": "integer"
       }
