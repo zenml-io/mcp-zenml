@@ -12,6 +12,7 @@
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
 # unresolved-import = "ignore"
 # ///
+import argparse
 import asyncio
 import json
 import os
@@ -22,6 +23,28 @@ from typing import Any, TypedDict, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+CONTRACT_FIXTURE = Path(__file__).parent / "fixtures" / "legacy_tool_schemas.json"
+COMPACT_REQUIRED_TOOLS = frozenset(
+    {
+        "diagnose_zenml_setup",
+        "get_active_project",
+        "get_active_user",
+        "get_deployment_logs",
+        "get_step_code",
+        "get_step_logs",
+        "open_pipeline_run_dashboard",
+        "open_run_activity_chart",
+        "trigger_pipeline",
+        "zenml_action_resource",
+        "zenml_create_resource",
+        "zenml_delete_resource",
+        "zenml_describe_resources",
+        "zenml_get_resource",
+        "zenml_list_resources",
+        "zenml_update_resource",
+    }
+)
 
 
 class ToolInfo(TypedDict):
@@ -203,10 +226,32 @@ def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
     return None
 
 
+def _required_tools_for_profile(profile: str) -> frozenset[str]:
+    """Return the minimum advertised tool set for a registration profile."""
+    if profile == "legacy":
+        fixture = json.loads(CONTRACT_FIXTURE.read_text(encoding="utf-8"))
+        return frozenset(fixture["tool_names"])
+    if profile == "compact":
+        return COMPACT_REQUIRED_TOOLS
+    raise ValueError(f"Unknown MCP tool profile: {profile}")
+
+
+def _profile_inventory_errors(profile: str, available_tools: set[str]) -> list[str]:
+    """Describe required tools missing from an advertised profile."""
+    missing_tools = sorted(_required_tools_for_profile(profile) - available_tools)
+    if not missing_tools:
+        return []
+    return [
+        f"MCP tool profile {profile!r} is missing required tools: "
+        + ", ".join(missing_tools)
+    ]
+
+
 class MCPSmokeTest:
-    def __init__(self, server_path: str):
+    def __init__(self, server_path: str, expected_profile: str = "legacy"):
         """Initialize the smoke test with the server path."""
         self.server_path = Path(server_path)
+        self.expected_profile = expected_profile
         # Explicitly pass environment variables to the subprocess
         # This ensures ZENML_STORE_URL, ZENML_STORE_API_KEY, etc. are available
         self.server_params = StdioServerParameters(
@@ -258,6 +303,14 @@ class MCPSmokeTest:
                         print(f"✅ Found {len(tools_result.tools)} tools:")
                         for tool in tools_result.tools:
                             print(f"  - {tool.name}: {tool.description}")
+
+                    available_tools = {tool.name for tool in tools_result.tools or []}
+                    inventory_errors = _profile_inventory_errors(
+                        self.expected_profile, available_tools
+                    )
+                    for error in inventory_errors:
+                        print(f"❌ {error}")
+                        results["errors"].append(error)
 
                     # List available resources
                     print("🔄 Listing available resources...")
@@ -414,7 +467,16 @@ class MCPSmokeTest:
                     )
                     results["errors"].append(error_msg)
             else:
-                print(f"ℹ️  Tool {tool_name} not available in server")
+                error_msg = (
+                    f"Required {self.expected_profile!r} smoke tool "
+                    f"{tool_name!r} is missing from discovery"
+                )
+                print(f"❌ {error_msg}")
+                results["tool_test_results"][tool_name] = cast(
+                    ToolTestResult,
+                    {"success": False, "error": error_msg},
+                )
+                results["errors"].append(error_msg)
 
     def print_summary(self, results: SmokeTestResults) -> None:
         """Print a summary of the smoke test results."""
@@ -452,25 +514,30 @@ class MCPSmokeTest:
             and results["initialization"]
             and len(results["tools"]) > 0
             and tool_tests_passed
+            and not results["errors"]
         )
         print(f"\nOverall: {'✅ PASS' if overall_status else '❌ FAIL'}")
 
 
 async def main():
     """Main entry point for the smoke test."""
-    if len(sys.argv) != 2:
-        print("Usage: python test_mcp_server.py <path_to_mcp_server.py>")
-        print("Example: python test_mcp_server.py ./zenml_server.py")
-        sys.exit(1)
-
-    server_path = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Smoke-test the ZenML MCP server")
+    parser.add_argument("server_path", help="Path to the MCP server entrypoint")
+    parser.add_argument(
+        "--profile",
+        choices=("legacy", "compact"),
+        default=os.environ.get("ZENML_MCP_TOOL_PROFILE", "legacy"),
+        help="Registration profile whose required tools must be advertised",
+    )
+    args = parser.parse_args()
+    server_path = args.server_path
 
     # Verify server file exists
     if not Path(server_path).exists():
         print(f"❌ Server file not found: {server_path}")
         sys.exit(1)
 
-    smoke_test = MCPSmokeTest(server_path)
+    smoke_test = MCPSmokeTest(server_path, expected_profile=args.profile)
     results = await smoke_test.run_smoke_test()
     smoke_test.print_summary(results)
 
@@ -487,6 +554,7 @@ async def main():
         and results["initialization"]
         and len(results["tools"]) > 0
         and tool_tests_ok
+        and not results["errors"]
     )
 
     if overall_success:

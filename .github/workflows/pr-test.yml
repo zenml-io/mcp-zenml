@@ -74,8 +74,9 @@ jobs:
 
       - name: Run unit tests (no credentials needed)
         run: |
-          echo "Running datetime normalization and classification tests..."
+          echo "Running datetime normalization, classification, and MCP contract tests..."
           uv run scripts/test_datetime_normalization.py
+          uv run scripts/test_tool_contracts.py
 
   docker-build:
     runs-on: ubuntu-latest
