@@ -651,6 +651,27 @@ _COMPONENT_TYPE = {
         "step_operator",
     ],
 }
+
+
+def _stack_components_schema(*, require_core: bool) -> dict[str, Any]:
+    binding = {
+        "anyOf": [
+            _UUID,
+            {"type": "array", "items": _UUID, "minItems": 1},
+        ]
+    }
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            component_type: binding for component_type in _COMPONENT_TYPE["enum"]
+        },
+        "additionalProperties": False,
+    }
+    if require_core:
+        schema["required"] = ["orchestrator", "artifact_store"]
+    return schema
+
+
 _COLOR = {"type": "string", "enum": list(_ENUM_FILTERS[("tag", "color")])}
 _CONCURRENCY = {"type": "string", "enum": ["skip", "submit"]}
 _MODEL_STAGE = {
@@ -755,24 +776,7 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                     "create_stack",
                     {
                         "name": _NONEMPTY,
-                        "components": {
-                            "type": "object",
-                            "properties": {
-                                component_type: {
-                                    "anyOf": [
-                                        _UUID,
-                                        {
-                                            "type": "array",
-                                            "items": _UUID,
-                                            "minItems": 1,
-                                        },
-                                    ]
-                                }
-                                for component_type in _COMPONENT_TYPE["enum"]
-                            },
-                            "required": ["orchestrator", "artifact_store"],
-                            "additionalProperties": False,
-                        },
+                        "components": _stack_components_schema(require_core=True),
                     },
                     required=("name", "components"),
                 ),
@@ -782,15 +786,9 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                     {
                         "name": _NONEMPTY,
                         "description": _NONEMPTY,
-                        "component_updates": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "anyOf": [
-                                    _UUID,
-                                    {"type": "array", "items": _UUID, "minItems": 1},
-                                ]
-                            },
-                        },
+                        "component_updates": _stack_components_schema(
+                            require_core=False
+                        ),
                     },
                 ),
                 "delete": _mutation("delete", "delete_stack", payload_required=False),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -1214,6 +1215,37 @@ def _delete_call(
     raise ResourceDispatchError(f"Unsupported delete for {resource_type!r}")
 
 
+def _is_pre_dispatch_connection_failure(error: BaseException) -> bool:
+    """Recognize connection failures that happened before a request was sent."""
+    pending = [error]
+    seen: set[int] = set()
+    pre_dispatch_names = {
+        "ConnectTimeoutError",
+        "NewConnectionError",
+        "NameResolutionError",
+        "ConnectionRefusedError",
+    }
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(current, (requests.ConnectTimeout, ssl.SSLCertVerificationError)):
+            return True
+        if type(current).__name__ in pre_dispatch_names:
+            return True
+        for attribute in ("__cause__", "__context__", "reason"):
+            try:
+                nested = getattr(current, attribute, None)
+            except Exception:
+                continue
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+        pending.extend(item for item in current.args if isinstance(item, BaseException))
+    return False
+
+
 def _reconciliation(
     resource_type: str,
     operation: str,
@@ -1470,18 +1502,7 @@ def mutate_resource(
         requests.exceptions.ChunkedEncodingError,
         requests.exceptions.ContentDecodingError,
     ) as error:
-        if isinstance(error, requests.ConnectTimeout):
-            raise
-        cause_names = {
-            type(item).__name__
-            for item in (error, error.__cause__, error.__context__)
-            if item is not None
-        }
-        if cause_names & {
-            "NewConnectionError",
-            "NameResolutionError",
-            "ConnectionRefusedError",
-        }:
+        if _is_pre_dispatch_connection_failure(error):
             raise
         unknown = {
             "resource_type": resource_type,
@@ -1504,8 +1525,8 @@ def mutate_resource(
             "error": {
                 "tool": f"zenml_{operation}_resource",
                 "message": (
-                    "The connection was lost after mutation dispatch; the outcome is unknown. "
-                    + recovery_message
+                    "The connection was lost while executing the mutation; it may have "
+                    "been dispatched, so the outcome is unknown. " + recovery_message
                 ),
                 "type": "UnknownOutcome",
                 "details": unknown,
@@ -1984,18 +2005,7 @@ def action_resource(
         requests.exceptions.ChunkedEncodingError,
         requests.exceptions.ContentDecodingError,
     ) as error:
-        if isinstance(error, requests.ConnectTimeout):
-            raise
-        cause_names = {
-            type(item).__name__
-            for item in (error, error.__cause__, error.__context__)
-            if item is not None
-        }
-        if cause_names & {
-            "NewConnectionError",
-            "NameResolutionError",
-            "ConnectionRefusedError",
-        }:
+        if _is_pre_dispatch_connection_failure(error):
             raise
         unknown = {
             "resource_type": resource_type,
@@ -2010,7 +2020,8 @@ def action_resource(
             "error": {
                 "tool": "zenml_action_resource",
                 "message": (
-                    "The connection was lost after action dispatch; the outcome is unknown. "
+                    "The connection was lost while executing the action; it may have "
+                    "been dispatched, so the outcome is unknown. "
                     + (
                         "The created run ID is unavailable, so reading the source run "
                         "cannot reconcile the outcome; do not replay automatically."

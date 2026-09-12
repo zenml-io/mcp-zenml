@@ -1100,6 +1100,64 @@ def test_replay_connection_loss_does_not_offer_a_source_run_read() -> None:
     assert (
         "reading the source run cannot reconcile" in result["error"]["message"].lower()
     )
+    assert "lost while executing the action" in result["error"]["message"]
+    assert "may have been dispatched" in result["error"]["message"]
+
+
+def test_nested_pre_dispatch_action_failure_is_not_reported_as_unknown() -> None:
+    class NewConnectionError(Exception):
+        pass
+
+    class MaxRetryError(Exception):
+        def __init__(self, reason: BaseException) -> None:
+            super().__init__(reason)
+            self.reason = reason
+
+    client = Recorder()
+    for definite_failure in (
+        requests.ConnectionError(
+            MaxRetryError(NewConnectionError("connection refused"))
+        ),
+        requests.exceptions.ProxyError(
+            MaxRetryError(NewConnectionError("proxy connection failed"))
+        ),
+    ):
+
+        def fail_before_dispatch(**kwargs: Any) -> None:
+            del kwargs
+            raise definite_failure
+
+        setattr(client, "rotate_webhook_secret", fail_before_dispatch)
+        try:
+            action_resource(
+                client,
+                "webhook",
+                "rotate_secret",
+                TARGET,
+                project_id=PROJECT,
+                payload={},
+            )
+        except requests.ConnectionError as error:
+            assert error is definite_failure
+        else:
+            raise AssertionError(
+                "definite pre-dispatch failure was reported as unknown outcome"
+            )
+
+    def lose_proxy_response(**kwargs: Any) -> None:
+        del kwargs
+        raise requests.exceptions.ProxyError("proxy response failed")
+
+    setattr(client, "rotate_webhook_secret", lose_proxy_response)
+    result = action_resource(
+        client,
+        "webhook",
+        "rotate_secret",
+        TARGET,
+        project_id=PROJECT,
+        payload={},
+    )
+    assert result["outcome"] == "unknown"
 
 
 def test_real_mcp_action_and_read_only_precheck() -> None:

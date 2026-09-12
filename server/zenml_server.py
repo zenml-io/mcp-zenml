@@ -49,6 +49,7 @@ from zenml_resource_dispatch import (
     ResourceFeatureUnavailable,
     ResourceNotFound,
     ResourcePermissionDenied,
+    _is_pre_dispatch_connection_failure,
     ensure_writes_enabled,
 )
 from zenml_resource_dispatch import (
@@ -1918,15 +1919,73 @@ def trigger_pipeline(
             "run-template CRUD APIs, while snapshots are preferred for new workflows."
         )
 
-    pipeline_run = get_zenml_client().trigger_pipeline(**trigger_kwargs)
+    client = get_zenml_client()
+    project_id = str(client.active_project.id)
+    event_properties = {
+        "has_snapshot_id": snapshot_name_or_id is not None,
+        "has_template_id": template_id is not None,
+        "has_stack_override": stack_name_or_id is not None,
+        "used_deprecated_template": used_deprecated_template,
+    }
+    try:
+        pipeline_run = client.trigger_pipeline(**trigger_kwargs)
+    except (
+        requests.ReadTimeout,
+        requests.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ContentDecodingError,
+    ) as error:
+        if _is_pre_dispatch_connection_failure(error):
+            raise
+        reconciliation = {
+            "operation": None,
+            "resource_type": "pipeline_run",
+            "pipeline_name_or_id": pipeline_name_or_id,
+            "project_id": project_id,
+            "new_run_id": None,
+            "reconcilable": False,
+            "note": (
+                "The source pipeline cannot prove whether a new run was created because "
+                "the new run ID is unavailable; do not retry automatically."
+            ),
+        }
+        unknown = {
+            "resource_type": "pipeline_run",
+            "operation": "trigger",
+            "outcome": "unknown",
+            "pipeline_name_or_id": pipeline_name_or_id,
+            "project_id": project_id,
+            "new_run_id": None,
+            "reconciliation": reconciliation,
+        }
+        analytics.track_event(
+            "Pipeline Triggered",
+            {
+                **event_properties,
+                "success": False,
+                "outcome": "unknown",
+                "error_type": "UnknownOutcome",
+            },
+        )
+        return {
+            **unknown,
+            "error": {
+                "tool": "trigger_pipeline",
+                "message": (
+                    "The connection was lost after the pipeline trigger may have been "
+                    "dispatched, so the outcome is unknown. The new run ID is unavailable, "
+                    "and the source pipeline cannot prove success; do not retry automatically."
+                ),
+                "type": "UnknownOutcome",
+                "details": unknown,
+            },
+        }
     analytics.track_event(
         "Pipeline Triggered",
         {
-            "has_snapshot_id": snapshot_name_or_id is not None,
-            "has_template_id": template_id is not None,
-            "has_stack_override": stack_name_or_id is not None,
-            "used_deprecated_template": used_deprecated_template,
+            **event_properties,
             "success": True,
+            "outcome": "completed",
         },
     )
     result: dict[str, Any] = {

@@ -30,6 +30,7 @@ import io
 import json
 import os
 import socket
+import ssl
 import sys
 import threading
 import uuid
@@ -41,6 +42,8 @@ from unittest.mock import patch
 
 import requests
 from mcp import Client
+from urllib3.exceptions import MaxRetryError as Urllib3MaxRetryError
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
@@ -72,6 +75,16 @@ EXPECTED_CALLS = json.loads(
 EXPECTED_SCHEMAS = json.loads(
     (FIXTURE_DIR / "resource_mutation_schemas.json").read_text(encoding="utf-8")
 )
+
+
+def _nested_certificate_verification_failure() -> requests.exceptions.SSLError:
+    certificate_error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    urllib_error = Urllib3SSLError(certificate_error)
+    max_retry_error = Urllib3MaxRetryError(
+        None, "https://zenml.example", reason=urllib_error
+    )
+    return requests.exceptions.SSLError(max_retry_error)
+
 
 EXPECTED = {
     "project": "CUD",
@@ -744,6 +757,25 @@ def test_constrained_mutation_schemas_match_validation_and_examples() -> None:
             pass
         else:
             raise AssertionError(f"stack.create accepted components {components!r}")
+
+    stack_update_schema = describe_resources("stack", "update")["input_schema"][
+        "properties"
+    ]["payload"]["properties"]["component_updates"]
+    assert set(stack_update_schema["properties"]) == set(
+        stack_components_schema["properties"]
+    )
+    assert stack_update_schema["additionalProperties"] is False
+    assert "required" not in stack_update_schema
+    valid_update = {"component_updates": {"orchestrator": RELATED}}
+    assert validate_mutation_payload("stack", "update", valid_update) == valid_update
+    try:
+        validate_mutation_payload(
+            "stack", "update", {"component_updates": {"unknown": RELATED}}
+        )
+    except ResourceRegistryError:
+        pass
+    else:
+        raise AssertionError("stack.update accepted an unknown component type")
 
     service_schema = describe_resources("service", "create")["input_schema"][
         "properties"
@@ -1520,6 +1552,79 @@ def test_post_dispatch_connection_loss_is_unknown_and_not_retried() -> None:
         raise AssertionError("pre-connect failure was reported as unknown outcome")
 
 
+def test_nested_pre_dispatch_connection_failure_is_not_reported_as_unknown() -> None:
+    class NameResolutionError(Exception):
+        pass
+
+    class ConnectTimeoutError(Exception):
+        pass
+
+    class MaxRetryError(Exception):
+        def __init__(self, reason: BaseException) -> None:
+            super().__init__(reason)
+            self.reason = reason
+
+    client = Recorder()
+    for definite_failure in (
+        requests.ConnectionError(
+            MaxRetryError(NameResolutionError("host lookup failed"))
+        ),
+        requests.ConnectionError(
+            MaxRetryError(ConnectTimeoutError("connect timed out"))
+        ),
+        requests.exceptions.SSLError(
+            MaxRetryError(NameResolutionError("TLS target lookup failed"))
+        ),
+        _nested_certificate_verification_failure(),
+    ):
+
+        def fail_before_dispatch(**kwargs: Any) -> None:
+            del kwargs
+            raise definite_failure
+
+        setattr(client, "create_webhook", fail_before_dispatch)
+        try:
+            create_resource(client, "webhook", **_kwargs("webhook", "create"))
+        except requests.ConnectionError as error:
+            assert error is definite_failure
+        else:
+            raise AssertionError(
+                "definite pre-dispatch failure was reported as unknown outcome"
+            )
+
+    class CyclicWrapperError(Exception):
+        reason: BaseException
+
+    cyclic = CyclicWrapperError("response lost")
+    cyclic.reason = cyclic
+
+    def lose_response_with_cycle(**kwargs: Any) -> None:
+        del kwargs
+        raise requests.ConnectionError(cyclic)
+
+    setattr(client, "create_webhook", lose_response_with_cycle)
+    result = create_resource(client, "webhook", **_kwargs("webhook", "create"))
+    assert result["outcome"] == "unknown"
+    assert "lost while executing the mutation" in result["error"]["message"]
+    assert "may have been dispatched" in result["error"]["message"]
+
+    def lose_tls_response(**kwargs: Any) -> None:
+        del kwargs
+        raise requests.exceptions.SSLError("TLS response failed")
+
+    setattr(client, "create_webhook", lose_tls_response)
+    result = create_resource(client, "webhook", **_kwargs("webhook", "create"))
+    assert result["outcome"] == "unknown"
+
+    def time_out_waiting_for_response(**kwargs: Any) -> None:
+        del kwargs
+        raise requests.ReadTimeout("response timed out")
+
+    setattr(client, "create_webhook", time_out_waiting_for_response)
+    result = create_resource(client, "webhook", **_kwargs("webhook", "create"))
+    assert result["outcome"] == "unknown"
+
+
 def test_unknown_nested_mutations_return_complete_reconciliation_inputs() -> None:
     client = Recorder()
 
@@ -1802,6 +1907,184 @@ def test_provider_errors_do_not_expose_payloads_or_credentials() -> None:
         assert response.is_error is True
         assert "credential-marker" not in repr(response)
         assert "credential-marker" not in stderr.getvalue()
+
+    asyncio.run(invoke())
+
+
+def test_retained_trigger_response_loss_reports_unknown_outcome() -> None:
+    async def invoke() -> None:
+        fake = Recorder()
+        attempts = 0
+
+        def lose_response(**kwargs: Any) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise requests.ReadTimeout("response lost after dispatch")
+
+        setattr(fake, "trigger_pipeline", lose_response)
+        tool_events: list[dict[str, Any]] = []
+        pipeline_events: list[dict[str, Any]] = []
+        with (
+            patch.object(server, "zenml_client", fake),
+            patch.object(
+                server.analytics,
+                "track_tool_call",
+                side_effect=lambda **event: tool_events.append(event),
+            ),
+            patch.object(
+                server.analytics,
+                "track_event",
+                side_effect=lambda name, properties: pipeline_events.append(
+                    {"name": name, **properties}
+                ),
+            ),
+        ):
+            async with Client(server.mcp, mode="auto") as mcp_client:
+                response = await mcp_client.call_tool(
+                    "trigger_pipeline", {"pipeline_name_or_id": TARGET}
+                )
+
+        assert attempts == 1
+        assert response.is_error is True
+        assert response.structured_content is not None
+        result = response.structured_content
+        assert result["outcome"] == "unknown"
+        assert result["pipeline_name_or_id"] == TARGET
+        assert result["project_id"] == PROJECT
+        assert result["new_run_id"] is None
+        assert result["error"]["type"] == "UnknownOutcome"
+        assert result["error"]["details"]["reconciliation"] == result["reconciliation"]
+        assert result["reconciliation"] == {
+            "operation": None,
+            "resource_type": "pipeline_run",
+            "pipeline_name_or_id": TARGET,
+            "project_id": PROJECT,
+            "new_run_id": None,
+            "reconcilable": False,
+            "note": (
+                "The source pipeline cannot prove whether a new run was created because "
+                "the new run ID is unavailable; do not retry automatically."
+            ),
+        }
+        tool_event = next(
+            event for event in tool_events if event["tool_name"] == "trigger_pipeline"
+        )
+        assert tool_event["success"] is False
+        assert tool_event["outcome"] == "unknown"
+        assert tool_event["error_type"] == "UnknownOutcome"
+        assert pipeline_events == [
+            {
+                "name": "Pipeline Triggered",
+                "has_snapshot_id": False,
+                "has_template_id": False,
+                "has_stack_override": False,
+                "used_deprecated_template": False,
+                "success": False,
+                "outcome": "unknown",
+                "error_type": "UnknownOutcome",
+            }
+        ]
+
+    asyncio.run(invoke())
+
+
+def test_retained_trigger_chunked_response_reports_unknown_outcome() -> None:
+    fake = Recorder()
+    attempts = 0
+
+    def lose_chunked_response(**kwargs: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise requests.exceptions.ChunkedEncodingError("truncated response")
+
+    setattr(fake, "trigger_pipeline", lose_chunked_response)
+    with (
+        patch.object(server, "zenml_client", fake),
+        patch.object(server.analytics, "track_event"),
+    ):
+        result = server.trigger_pipeline.__wrapped__(TARGET)
+
+    assert attempts == 1
+    assert result["outcome"] == "unknown"
+    assert result["error"]["type"] == "UnknownOutcome"
+    assert result["new_run_id"] is None
+
+
+def test_retained_trigger_nested_pre_dispatch_failure_is_upstream_error() -> None:
+    class NewConnectionError(Exception):
+        pass
+
+    class MaxRetryError(Exception):
+        def __init__(self, reason: BaseException) -> None:
+            super().__init__(reason)
+            self.reason = reason
+
+    async def invoke() -> None:
+        fake = Recorder()
+        pipeline_events: list[dict[str, Any]] = []
+        with (
+            patch.object(server, "zenml_client", fake),
+            patch.object(
+                server.analytics,
+                "track_event",
+                side_effect=lambda name, properties: pipeline_events.append(
+                    {"name": name, **properties}
+                ),
+            ),
+        ):
+            async with Client(server.mcp, mode="auto") as mcp_client:
+                for definite_failure in (
+                    requests.ConnectionError(
+                        MaxRetryError(NewConnectionError("connection refused"))
+                    ),
+                    requests.exceptions.SSLError(
+                        MaxRetryError(NewConnectionError("TLS connection failed"))
+                    ),
+                    requests.exceptions.ProxyError(
+                        MaxRetryError(NewConnectionError("proxy connection failed"))
+                    ),
+                    _nested_certificate_verification_failure(),
+                ):
+
+                    def fail_before_dispatch(**kwargs: Any) -> None:
+                        del kwargs
+                        raise definite_failure
+
+                    setattr(fake, "trigger_pipeline", fail_before_dispatch)
+                    response = await mcp_client.call_tool(
+                        "trigger_pipeline", {"pipeline_name_or_id": TARGET}
+                    )
+                    assert response.is_error is True
+                    assert response.structured_content is not None
+                    assert (
+                        response.structured_content["error"]["type"] == "UpstreamError"
+                    )
+                    assert "outcome" not in response.structured_content
+
+                for uncertain_failure in (
+                    requests.exceptions.SSLError("TLS response failed"),
+                    requests.exceptions.ProxyError("proxy response failed"),
+                ):
+
+                    def lose_response(**kwargs: Any) -> None:
+                        del kwargs
+                        raise uncertain_failure
+
+                    setattr(fake, "trigger_pipeline", lose_response)
+                    response = await mcp_client.call_tool(
+                        "trigger_pipeline", {"pipeline_name_or_id": TARGET}
+                    )
+                    assert response.is_error is True
+                    assert response.structured_content is not None
+                    assert (
+                        response.structured_content["error"]["type"] == "UnknownOutcome"
+                    )
+                    assert response.structured_content["outcome"] == "unknown"
+        trigger_events = [
+            event for event in pipeline_events if event["name"] == "Pipeline Triggered"
+        ]
+        assert len(trigger_events) == 2
+        assert all(event["outcome"] == "unknown" for event in trigger_events)
 
     asyncio.run(invoke())
 
