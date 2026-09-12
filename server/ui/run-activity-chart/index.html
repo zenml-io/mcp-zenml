@@ -417,6 +417,7 @@
     // =================================================================
     let serverToolCallsEnabled = true;
     let consecutiveFailures = 0;
+    let lastToolErrorMessage = null;
     const MAX_FAILURES = 3; // Disable after 3 consecutive failures
 
     /** Parse an MCP tool result, preferring structuredContent over text. */
@@ -447,6 +448,7 @@
 
     async function callServerToolSafe(toolName, args, timeoutMs = 15000) {
       if (!serverToolCallsEnabled) return null;
+      lastToolErrorMessage = null;
       let timeoutId;
       try {
         const result = await Promise.race([
@@ -458,17 +460,19 @@
         consecutiveFailures = 0; // Reset on success
         const parsed = parseToolResult(result);
         if (isErrorEnvelope(parsed)) {
+          lastToolErrorMessage = parsed.error.message;
           console.warn(`[ZenML] Tool ${toolName} error:`, parsed.error.message);
           return null;
         }
         return parsed;
-      } catch (e) {
+      } catch {
+        lastToolErrorMessage = "The tool call failed or timed out.";
         consecutiveFailures++;
         if (consecutiveFailures >= MAX_FAILURES) {
           serverToolCallsEnabled = false;
-          console.warn("[ZenML] callServerTool disabled after repeated failures:", e.message);
+          console.warn("[ZenML] callServerTool disabled after repeated failures");
         } else {
-          console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES}):`, e.message);
+          console.warn(`[ZenML] callServerTool failed (${consecutiveFailures}/${MAX_FAILURES})`);
         }
         return null;
       } finally {
@@ -528,16 +532,17 @@
       let keepGoing = true;
 
       while (keepGoing) {
-        const data = await callServerToolSafe("list_pipeline_runs", {
-          sort_by: "desc:created",
+        const data = await callServerToolSafe("zenml_list_resources", {
+          resource_type: "pipeline_run",
+          filters: { sort_by: "desc:created" },
           size: pageSize,
           page: page,
         });
 
         if (data == null) {
-          error = serverToolCallsEnabled
+          error = lastToolErrorMessage || (serverToolCallsEnabled
             ? "Could not load pipeline run data. The request timed out or returned an error."
-            : "Could not load pipeline run data. Your MCP host may not support callServerTool yet.";
+            : "Could not load pipeline run data. Your MCP host may not support callServerTool yet.");
           loading = false;
           render();
           return;

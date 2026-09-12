@@ -2,16 +2,20 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
 # unresolved-import = "ignore"
 # ///
+import argparse
 import asyncio
 import json
 import os
@@ -22,6 +26,10 @@ from typing import Any, TypedDict, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+
+from zenml_tool_catalog import tool_names  # noqa: E402
 
 
 class ToolInfo(TypedDict):
@@ -64,6 +72,48 @@ class SmokeTestResults(TypedDict):
     prompts: list[PromptInfo]
     tool_test_results: dict[str, ToolTestResult]
     errors: list[str]
+
+
+def _generic_project_id(payload: Mapping[str, Any]) -> str:
+    """Validate the generic project-list contract and return its first ID."""
+    required_fields = {
+        "resource_type",
+        "items",
+        "total",
+        "page",
+        "size",
+        "effective_scope",
+    }
+    missing_fields = required_fields - set(payload)
+    items = payload.get("items")
+    if missing_fields or not isinstance(items, list):
+        raise ValueError(
+            "generic project list has an invalid shape; "
+            f"missing={sorted(missing_fields)}"
+        )
+    if payload["resource_type"] != "project":
+        raise ValueError("generic project list reported the wrong resource type")
+    if (
+        not items
+        or not isinstance(items[0], Mapping)
+        or not isinstance(items[0].get("id"), str)
+    ):
+        raise ValueError("generic project list returned no project identifier")
+    return items[0]["id"]
+
+
+def _validate_generic_project_get(
+    kind: str, payload: Mapping[str, Any], project_id: str
+) -> None:
+    """Validate that generic get returned the exact requested project."""
+    item = payload.get("item")
+    if (
+        kind != "structured"
+        or payload.get("resource_type") != "project"
+        or not isinstance(item, Mapping)
+        or item.get("id") != project_id
+    ):
+        raise ValueError("generic project get returned an invalid project payload")
 
 
 def _make_tool_info(name: str, description: str | None) -> ToolInfo:
@@ -203,16 +253,57 @@ def _detect_tool_error(tool_name: str, kind: str, payload: Any) -> str | None:
     return None
 
 
+def _required_tools_for_profile(profile: str, write_policy: str) -> frozenset[str]:
+    """Return the minimum advertised tool set for a registration profile."""
+    if profile not in {"compact", "legacy"}:
+        raise ValueError(f"Unknown MCP tool profile: {profile}")
+    if write_policy not in {"read_write", "read_only"}:
+        raise ValueError(f"Unknown MCP write policy: {write_policy}")
+    return frozenset(tool_names(profile, write_policy))  # type: ignore[arg-type]
+
+
+def _profile_inventory_errors(
+    profile: str, write_policy: str, available_tools: set[str]
+) -> list[str]:
+    """Describe required tools missing from an advertised profile."""
+    required_tools = _required_tools_for_profile(profile, write_policy)
+    missing_tools = sorted(required_tools - available_tools)
+    unexpected_tools = sorted(available_tools - required_tools)
+    errors = []
+    if missing_tools:
+        errors.append(
+            f"MCP tool profile {profile!r} is missing required tools: "
+            + ", ".join(missing_tools)
+        )
+    if unexpected_tools:
+        errors.append(
+            f"MCP tool profile {profile!r} has unexpected tools: "
+            + ", ".join(unexpected_tools)
+        )
+    return errors
+
+
 class MCPSmokeTest:
-    def __init__(self, server_path: str):
+    def __init__(
+        self,
+        server_path: str,
+        expected_profile: str = "compact",
+        expected_write_policy: str = "read_write",
+    ):
         """Initialize the smoke test with the server path."""
         self.server_path = Path(server_path)
+        self.expected_profile = expected_profile
+        self.expected_write_policy = expected_write_policy
         # Explicitly pass environment variables to the subprocess
         # This ensures ZENML_STORE_URL, ZENML_STORE_API_KEY, etc. are available
+        server_env = dict(os.environ)
+        server_env["ZENML_MCP_PROFILE"] = expected_profile
+        server_env["ZENML_MCP_WRITE_POLICY"] = expected_write_policy
+        server_env.pop("ZENML_MCP_READ_ONLY", None)
         self.server_params = StdioServerParameters(
             command="uv",
             args=["run", str(self.server_path)],
-            env=dict(os.environ),  # Pass all env vars to subprocess
+            env=server_env,
         )
 
     async def run_smoke_test(self) -> SmokeTestResults:
@@ -258,6 +349,16 @@ class MCPSmokeTest:
                         print(f"✅ Found {len(tools_result.tools)} tools:")
                         for tool in tools_result.tools:
                             print(f"  - {tool.name}: {tool.description}")
+
+                    available_tools = {tool.name for tool in tools_result.tools or []}
+                    inventory_errors = _profile_inventory_errors(
+                        self.expected_profile,
+                        self.expected_write_policy,
+                        available_tools,
+                    )
+                    for error in inventory_errors:
+                        print(f"❌ {error}")
+                        results["errors"].append(error)
 
                     # List available resources
                     print("🔄 Listing available resources...")
@@ -323,22 +424,27 @@ class MCPSmokeTest:
         Safe tools are read-only, don't require entity IDs, and should return
         empty pages (not errors) when no data exists.
         """
-        safe_tools_to_test = [
+        safe_tools_to_test: list[tuple[str, dict[str, Any]]] = [
             # Safe tools: read-only, no required parameters, return empty pages when no data
-            "diagnose_zenml_setup",
-            "list_users",
-            "list_stacks",
-            "list_pipelines",
-            "get_active_project",
-            "get_active_user",
-            "list_projects",
-            "list_snapshots",
-            "list_deployments",
-            "list_tags",
-            "list_builds",
-            "list_artifacts",
-            "open_pipeline_run_dashboard",
-            "open_run_activity_chart",
+            ("diagnose_zenml_setup", {}),
+            ("zenml_describe_resources", {}),
+            (
+                "zenml_list_resources",
+                {"resource_type": "project", "page": 1, "size": 1},
+            ),
+            ("list_users", {}),
+            ("list_stacks", {}),
+            ("list_pipelines", {}),
+            ("get_active_project", {}),
+            ("get_active_user", {}),
+            ("list_projects", {}),
+            ("list_snapshots", {}),
+            ("list_deployments", {}),
+            ("list_tags", {}),
+            ("list_builds", {}),
+            ("list_artifacts", {}),
+            ("open_pipeline_run_dashboard", {}),
+            ("open_run_activity_chart", {}),
             # Note: Do NOT add tools that require parameters (e.g., get_artifact_version,
             # list_artifact_versions) since this test calls tools with empty args {}
         ]
@@ -346,14 +452,15 @@ class MCPSmokeTest:
         available_tools = {tool["name"] for tool in results["tools"]}
         print(f"🔄 Available tools for testing: {available_tools}")
 
-        for tool_name in safe_tools_to_test:
+        generic_project_id: str | None = None
+        for tool_name, arguments in safe_tools_to_test:
             if tool_name in available_tools:
                 try:
                     print(f"🧪 Testing tool: {tool_name}")
                     print(f"🔄 Calling tool {tool_name}...")
                     # Add timeout to prevent hanging (60s to handle slow CI environments)
                     result = await asyncio.wait_for(
-                        session.call_tool(tool_name, {}), timeout=60.0
+                        session.call_tool(tool_name, arguments), timeout=60.0
                     )
                     print(f"🔄 Tool {tool_name} returned result")
 
@@ -387,6 +494,8 @@ class MCPSmokeTest:
                         # Tool executed successfully - compute content length
                         if kind == "structured":
                             content_length = len(json.dumps(payload))
+                            if tool_name == "zenml_list_resources":
+                                generic_project_id = _generic_project_id(payload)
                             print(
                                 f"✅ Tool {tool_name} returned structured output ({content_length} bytes)"
                             )
@@ -413,8 +522,44 @@ class MCPSmokeTest:
                         {"success": False, "error": str(e)},
                     )
                     results["errors"].append(error_msg)
+
+        if generic_project_id and "zenml_get_resource" in available_tools:
+            result = await asyncio.wait_for(
+                session.call_tool(
+                    "zenml_get_resource",
+                    {"resource_type": "project", "resource_id": generic_project_id},
+                ),
+                timeout=60.0,
+            )
+            kind, payload = _extract_call_tool_output(result)
+            error_reason = _detect_tool_error("zenml_get_resource", kind, payload)
+            if result.is_error or error_reason:
+                error_msg = (
+                    "Tool zenml_get_resource returned error: "
+                    f"{error_reason or 'isError=True'}"
+                )
+                results["tool_test_results"]["zenml_get_resource"] = {
+                    "success": False,
+                    "error": error_msg,
+                }
+                results["errors"].append(error_msg)
             else:
-                print(f"ℹ️  Tool {tool_name} not available in server")
+                try:
+                    _validate_generic_project_get(kind, payload, generic_project_id)
+                except ValueError:
+                    error_msg = (
+                        "Tool zenml_get_resource returned an invalid project payload"
+                    )
+                    results["tool_test_results"]["zenml_get_resource"] = {
+                        "success": False,
+                        "error": error_msg,
+                    }
+                    results["errors"].append(error_msg)
+                    return
+                results["tool_test_results"]["zenml_get_resource"] = {
+                    "success": True,
+                    "content_length": len(json.dumps(payload)),
+                }
 
     def print_summary(self, results: SmokeTestResults) -> None:
         """Print a summary of the smoke test results."""
@@ -452,25 +597,40 @@ class MCPSmokeTest:
             and results["initialization"]
             and len(results["tools"]) > 0
             and tool_tests_passed
+            and not results["errors"]
         )
         print(f"\nOverall: {'✅ PASS' if overall_status else '❌ FAIL'}")
 
 
 async def main():
     """Main entry point for the smoke test."""
-    if len(sys.argv) != 2:
-        print("Usage: python test_mcp_server.py <path_to_mcp_server.py>")
-        print("Example: python test_mcp_server.py ./zenml_server.py")
-        sys.exit(1)
-
-    server_path = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Smoke-test the ZenML MCP server")
+    parser.add_argument("server_path", help="Path to the MCP server entrypoint")
+    parser.add_argument(
+        "--profile",
+        choices=("legacy", "compact"),
+        default=os.environ.get("ZENML_MCP_PROFILE", "compact"),
+        help="Registration profile whose required tools must be advertised",
+    )
+    parser.add_argument(
+        "--write-policy",
+        choices=("read_write", "read_only"),
+        default=os.environ.get("ZENML_MCP_WRITE_POLICY", "read_write"),
+        help="Write policy whose exact tool inventory must be advertised",
+    )
+    args = parser.parse_args()
+    server_path = args.server_path
 
     # Verify server file exists
     if not Path(server_path).exists():
         print(f"❌ Server file not found: {server_path}")
         sys.exit(1)
 
-    smoke_test = MCPSmokeTest(server_path)
+    smoke_test = MCPSmokeTest(
+        server_path,
+        expected_profile=args.profile,
+        expected_write_policy=args.write_policy,
+    )
     results = await smoke_test.run_smoke_test()
     smoke_test.print_summary(results)
 
@@ -487,6 +647,7 @@ async def main():
         and results["initialization"]
         and len(results["tools"]) > 0
         and tool_tests_ok
+        and not results["errors"]
     )
 
     if overall_success:

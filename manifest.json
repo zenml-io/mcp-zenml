@@ -1,9 +1,9 @@
 {
-  "manifest_version": "0.1",
+  "manifest_version": "0.4",
   "name": "mcp-zenml",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "MCP server to connect an MCP client with your ZenML MLOps and LLMOps pipelines",
-  "long_description": "The server provides MCP tools to access core read functionality from the ZenML server, delivering live information about users, stacks, pipelines, pipeline runs, pipeline steps, services, stack components, flavors, pipeline run templates, schedules, artifacts (metadata about data artifacts, not the data itself), service connectors, step code, and step logs (if the step was run on a cloud-based stack), while also enabling you to trigger new pipeline runs when a run template is present.",
+  "long_description": "The server provides compact generic tools for discovering, reading, creating, updating, deleting, and running finite actions on supported ZenML resources. It also retains focused tools for diagnostics, active context, pipeline triggering, logs, step code, and interactive Apps. Operators can select a legacy tool-name profile or enforce read-only access independently.",
   "author": {
     "name": "ZenML",
     "email": "hello@zenml.io",
@@ -17,25 +17,41 @@
     "https://raw.githubusercontent.com/zenml-io/mcp-zenml/refs/heads/main/assets/mcp-zenml.png"
   ],
   "server": {
-    "type": "python",
+    "type": "uv",
     "entry_point": "server/zenml_server.py",
     "mcp_config": {
-      "command": "python3",
+      "command": "uv",
       "args": [
+        "run",
+        "--project",
+        "${__dirname}",
+        "--locked",
+        "python",
         "${__dirname}/server/zenml_server.py"
       ],
       "env": {
-        "PYTHONPATH": "${__dirname}/server/lib",
         "LOGLEVEL": "WARNING",
         "NO_COLOR": "1",
         "ZENML_LOGGING_COLORS_DISABLED": "true",
         "ZENML_LOGGING_VERBOSITY": "WARN",
+        "ZENML_MCP_PROFILE": "${user_config.zenml_mcp_profile}",
+        "ZENML_MCP_WRITE_POLICY": "${user_config.zenml_mcp_write_policy}",
         "ZENML_ENABLE_RICH_TRACEBACK": "false",
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "UTF-8",
         "ZENML_STORE_URL": "${user_config.zenml_store_url}",
         "ZENML_STORE_API_KEY": "${user_config.zenml_store_api_key}"
       }
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.12,<3.15"
     }
   },
   "user_config": {
@@ -51,6 +67,20 @@
       "description": "Your ZenML server API key",
       "required": true,
       "sensitive": true
+    },
+    "zenml_mcp_profile": {
+      "type": "string",
+      "title": "Tool profile",
+      "description": "Tool registration profile: compact or legacy",
+      "required": false,
+      "default": "compact"
+    },
+    "zenml_mcp_write_policy": {
+      "type": "string",
+      "title": "Write policy",
+      "description": "Mutation policy: read_write or read_only",
+      "required": false,
+      "default": "read_write"
     }
   },
   "tools": [
@@ -63,12 +93,32 @@
       "description": "Get the logs for a specific step run."
     },
     {
-      "name": "list_users",
-      "description": "List all users in the ZenML workspace."
+      "name": "zenml_describe_resources",
+      "description": "Discover supported generic ZenML resources or one operation schema."
     },
     {
-      "name": "get_user",
-      "description": "Get detailed information about a specific user."
+      "name": "zenml_list_resources",
+      "description": "List one allowlisted ZenML resource type with validated filters."
+    },
+    {
+      "name": "zenml_get_resource",
+      "description": "Get one allowlisted ZenML resource by its identifier."
+    },
+    {
+      "name": "zenml_create_resource",
+      "description": "Create one allowlisted ZenML resource with a strict typed payload."
+    },
+    {
+      "name": "zenml_update_resource",
+      "description": "Update one exact UUID through an allowlisted operation-specific payload."
+    },
+    {
+      "name": "zenml_delete_resource",
+      "description": "Delete or archive one exact UUID using bounded destructive options."
+    },
+    {
+      "name": "zenml_action_resource",
+      "description": "Run one finite ZenML lifecycle or relation action."
     },
     {
       "name": "get_active_user",
@@ -79,172 +129,16 @@
       "description": "Get the currently active project."
     },
     {
-      "name": "get_project",
-      "description": "Get detailed information about a specific project."
-    },
-    {
-      "name": "list_projects",
-      "description": "List all projects in the ZenML workspace."
-    },
-    {
-      "name": "get_stack",
-      "description": "Get detailed information about a specific stack."
-    },
-    {
-      "name": "easter_egg",
-      "description": "Returns the ZenML MCP easter egg."
-    },
-    {
-      "name": "list_stacks",
-      "description": "List all stacks in the ZenML workspace."
-    },
-    {
-      "name": "list_pipelines",
-      "description": "List all pipelines in the ZenML workspace."
-    },
-    {
-      "name": "get_pipeline_details",
-      "description": "Get detailed information about a specific pipeline."
-    },
-    {
-      "name": "get_service",
-      "description": "Get detailed information about a specific service."
-    },
-    {
-      "name": "list_services",
-      "description": "List all services in the ZenML workspace."
-    },
-    {
-      "name": "get_stack_component",
-      "description": "Get detailed information about a specific stack component."
-    },
-    {
-      "name": "list_stack_components",
-      "description": "List all stack components in the ZenML workspace."
-    },
-    {
-      "name": "get_flavor",
-      "description": "Get detailed information about a specific flavor."
-    },
-    {
-      "name": "list_flavors",
-      "description": "List all flavors in the ZenML workspace."
-    },
-    {
       "name": "trigger_pipeline",
       "description": "Trigger a pipeline to run from the server."
-    },
-    {
-      "name": "get_run_template",
-      "description": "Get a run template for a pipeline."
-    },
-    {
-      "name": "list_run_templates",
-      "description": "List all run templates in the ZenML workspace."
-    },
-    {
-      "name": "get_snapshot",
-      "description": "Get detailed information about a specific snapshot."
-    },
-    {
-      "name": "list_snapshots",
-      "description": "List all snapshots in the ZenML workspace."
-    },
-    {
-      "name": "get_deployment",
-      "description": "Get detailed information about a specific deployment."
-    },
-    {
-      "name": "list_deployments",
-      "description": "List all deployments in the ZenML workspace."
     },
     {
       "name": "get_deployment_logs",
       "description": "Get logs for a specific deployment."
     },
     {
-      "name": "get_schedule",
-      "description": "Get a schedule for a pipeline."
-    },
-    {
-      "name": "list_schedules",
-      "description": "List all schedules in the ZenML workspace."
-    },
-    {
-      "name": "get_pipeline_run",
-      "description": "Get a pipeline run by name, ID, or prefix."
-    },
-    {
-      "name": "list_pipeline_runs",
-      "description": "List all pipeline runs in the ZenML workspace."
-    },
-    {
-      "name": "get_run_step",
-      "description": "Get a run step by name, ID, or prefix."
-    },
-    {
-      "name": "list_run_steps",
-      "description": "List all run steps in the ZenML workspace."
-    },
-    {
-      "name": "list_artifacts",
-      "description": "List all artifacts in the ZenML workspace."
-    },
-    {
-      "name": "get_artifact_version",
-      "description": "Get detailed information about a specific artifact version."
-    },
-    {
-      "name": "list_artifact_versions",
-      "description": "List all versions of a specific artifact."
-    },
-    {
-      "name": "list_secrets",
-      "description": "List all secrets in the ZenML workspace (names only, no values)."
-    },
-    {
-      "name": "get_service_connector",
-      "description": "Get a service connector by name, ID, or prefix."
-    },
-    {
-      "name": "list_service_connectors",
-      "description": "List all service connectors in the ZenML workspace."
-    },
-    {
-      "name": "get_model",
-      "description": "Get a model by name, ID, or prefix."
-    },
-    {
-      "name": "list_models",
-      "description": "List all models in the ZenML workspace."
-    },
-    {
-      "name": "get_model_version",
-      "description": "Get a model version by name, ID, or prefix."
-    },
-    {
-      "name": "list_model_versions",
-      "description": "List all model versions for a model."
-    },
-    {
       "name": "get_step_code",
       "description": "Get the code for a step."
-    },
-    {
-      "name": "get_tag",
-      "description": "Get detailed information about a specific tag."
-    },
-    {
-      "name": "list_tags",
-      "description": "List all tags in the ZenML workspace."
-    },
-    {
-      "name": "get_build",
-      "description": "Get detailed information about a specific pipeline build."
-    },
-    {
-      "name": "list_builds",
-      "description": "List all pipeline builds in the ZenML workspace."
     },
     {
       "name": "open_pipeline_run_dashboard",

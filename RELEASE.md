@@ -1,96 +1,103 @@
 # Release Process
 
-This repository ships releases via a single "Release Orchestrator" GitHub Actions workflow. It treats the root `VERSION` file as the single source of truth, auto-updates related files, builds the MCP bundle (`mcp-zenml.mcpb`), creates a tag and GitHub Release, and triggers downstream publishers, including publishing to the official Anthropic MCP Registry.
+The manually dispatched **Release Orchestrator** uses `VERSION` as the release
+version, validates the candidate, builds the MCP bundle, and publishes only
+when `dry_run` is false.
 
-## Quick Start
+## Preparing a release
 
-- Prerequisites
-  - A GitHub PAT stored as repository secret `GH_RELEASE_PAT` with permissions to:
-    - push to `main`
-    - create tags and releases
-    - trigger other workflows (use as the checkout token)
-- Run the orchestrator
-  1) Go to GitHub → Actions → "Release Orchestrator"
-  2) Click "Run workflow"
-  3) Inputs (all optional unless noted):
-     - `version` (string): If provided, sets the exact version (SemVer). If omitted, the workflow reads from the `VERSION` file.
-     - `prerelease` (boolean): Mark the GitHub Release as a prerelease. Default: false.
-     - `dry_run` (boolean): Perform all steps except committing/pushing and tagging. Default: false.
-  4) Click "Run workflow"
+1. Update the candidate version with
+   `python scripts/bump_version.py --version X.Y.Z`. This validates SemVer and
+   updates `VERSION`, `manifest.json`, `server.json`, the OCI image identifier,
+   and `pyproject.toml`.
+2. Regenerate and check the compact manifest with
+   `python scripts/generate_manifest_fields.py` and
+   `python scripts/generate_manifest_fields.py --check`.
+3. Run the credential-free tests from `.github/workflows/pr-test.yml`.
+4. Run the disposable integration suite against a dedicated loopback ZenML
+   0.96.4 server. Set `ZENML_MCP_DISPOSABLE_INTEGRATION=1` and provide its URL
+   and API key. The suite rejects remote and shared targets.
+5. For trigger, deployment, wait-condition, and resource-request claims, also
+   set `ZENML_MCP_ACTION_INTEGRATION=1` and supply the exact disposable fixture
+   UUIDs in `ZENML_MCP_ACTION_FIXTURE`. A skipped gate is an incomplete receipt.
+6. Set `ZENML_MCP_RESTRICTED_INTEGRATION=1` with
+   `ZENML_MCP_RESTRICTED_API_KEY` to prove the restricted read through a
+   separately credentialed MCP process. Release CI sets all three gates and
+   `ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1`, so missing prerequisites fail
+   before any publishing step.
+7. Build and verify both distributions. CI initializes MCP inside the Docker
+   image and inside an unpacked `mcp-zenml.mcpb`, then checks the exact compact
+   inventory, packaged modules, dependency versions, and Python requirements.
+   The tag workflow runs both amd64 and arm64 Docker candidates before pushing.
+   The release workflow builds the candidate once, then the matrix resolves and
+   runs those exact bytes on Linux, macOS, and Windows with Python 3.12, 3.13,
+   and 3.14. The release job publishes that same candidate.
 
-Note: This workflow runs only when manually triggered via 'Run workflow'.
+The MCPB uses manifest 0.4 and the UV runtime. It contains source and a small
+`pyproject.toml`; UV resolves the pinned MCP 2.2.0 and ZenML 0.96.4 environment
+for macOS, Windows, or Linux at first installation. The bundle does not contain
+host-specific native Python extensions. `mcpb-uv.lock` is the committed source
+for its full dependency graph, so ordinary builds resolve Python dependencies
+offline and produce the same lock. Use `MCPB_REFRESH_LOCK=1` only for an
+intentional dependency refresh.
 
-## How It Works
+## Running the orchestrator
 
-- Single source of truth: `VERSION`
-  - If `version` input is provided, the workflow sets `VERSION` to that value (with validation).
-  - Otherwise, it reads the version from the `VERSION` file.
-- Version propagation
-  - Runs `python scripts/bump_version.py [--version X.Y.Z]` to validate SemVer and update:
-    - `manifest.json.version`
-    - `server.json.version`
-    - `server.json.packages[0].version`
-- Manifest regeneration
-  - Runs `python scripts/generate_manifest_fields.py` to analyze `server/zenml_server.py` and regenerate the `tools` and `prompts` arrays in `manifest.json`.
-- Bundle build
-  - Runs `bash scripts/build_mcpb.sh` to install dependencies deterministically and pack the MCP bundle:
-    - Cleans `server/lib` before vendoring so stale packages cannot leak into the bundle.
-    - Installs Python dependencies from `requirements.txt` with hashes enforced.
-    - Installs the exact pinned MCPB npm CLI configured in `scripts/build_mcpb.sh` for packing.
-    - Produces `mcp-zenml.mcpb` at the repo root.
-- Commit, push, and tag (skipped if `dry_run: true`)
-  - Commits `VERSION`, `manifest.json`, `server.json`, and `mcp-zenml.mcpb` with message:
-    - `chore(release): vX.Y.Z`
-  - Pushes to `main`.
-  - Creates an annotated tag `vX.Y.Z` and pushes it.
-- GitHub Release
-  - Always runs `softprops/action-gh-release@v2` to attach `mcp-zenml.mcpb`.
-  - Uses the resolved version (input or `VERSION`) for `tag_name` and `release_name`.
-  - Sets `prerelease` from the input and `generate_release_notes: true`.
-  - If the tag already exists, the step is tolerant and won't fail the workflow.
+Open GitHub Actions, select **Release Orchestrator**, and choose **Run
+workflow**. The inputs are:
 
-## Downstream Workflows
+- `version`: an optional exact SemVer; otherwise the workflow reads `VERSION`.
+- `prerelease`: marks the GitHub release as a prerelease.
+- `dry_run`: builds and validates the candidate without committing, pushing,
+  tagging, creating a GitHub release, publishing images, or updating the
+  registry. The workflow uses a seven-day internal artifact to pass the exact
+  candidate between validation jobs.
 
-- `docker-publish.yml` (on push to main)
-  - Builds and pushes the latest development Docker image(s) for the server.
-  - Publishes `zenmldocker/mcp-zenml:latest` (and any other branch-based tags configured).
-- `release-docker.yml` (on tag `v*`)
-  - Builds and pushes versioned Docker images:
-    - `zenmldocker/mcp-zenml:vX.Y.Z`
-  - Uploads/attaches `mcp-zenml.mcpb` to the corresponding GitHub Release.
-  - Publishes to the **Anthropic MCP Registry** using the `mcp-publisher` CLI with GitHub OIDC (no static secrets). The registry entry is updated from the tagged commit's `manifest.json` and `server.json`.
+With `dry_run` disabled, the workflow commits `VERSION`, `manifest.json`,
+`server.json`, `pyproject.toml`, `mcpb-uv.lock`, and `mcp-zenml.mcpb`, pushes
+`main`, creates an annotated `vX.Y.Z` tag, and creates or updates the GitHub
+release. Downstream workflows publish the `latest` and versioned Docker images
+and update the MCP registry from the tagged commit.
 
-## Manual Recovery
+`GH_RELEASE_PAT` must allow pushes to `main`, tags, GitHub releases, and
+downstream workflow triggers. The registry publisher uses GitHub OIDC.
+The `release-integration` environment and a self-hosted Linux runner labeled
+`zenml-mcp-integration` must provide a dedicated loopback ZenML 0.96.4 target
+and the disposable, restricted, and action-fixture secrets named above. The
+runner keeps that target and its pre-seeded fixture IDs local to the test job.
+The release gate waits or fails if the runner, target, or complete receipt is
+unavailable.
 
-If something goes wrong:
+## Version 2.0.0 candidate receipt
 
-- Orchestrator dry-run
-  - Re-run the orchestrator with `dry_run: true` to preview version propagation, manifest regeneration, and bundle build without pushing or tagging.
-- Re-run downstream workflows
-  - Manually dispatch `docker-publish.yml` on `main` if images didn't publish.
-  - Re-run `release-docker.yml` on the `vX.Y.Z` tag to rebuild images and reattach assets.
-- Build locally as a fallback
-  - From repo root:
-    - `bash scripts/build_mcpb.sh`
-  - Then attach the bundle to the GitHub Release:
-    - Using GitHub UI or `gh` CLI:
-      - `gh release upload vX.Y.Z mcp-zenml.mcpb --clobber`
+- Runtime targets: MCP Python SDK 2.2.0, ZenML SDK and server 0.96.4, Python
+  3.12 through 3.14.
+- Default capability: compact/read-write, 16 tools. Optional inventories:
+  compact/read-only 11, legacy/read-write 57, legacy/read-only 52.
+- Credential-free evidence: legacy contracts, SDK bindings, registry coverage,
+  generic reads and writes, finite actions, write policy, stdio and real
+  localhost HTTP, timeout and cancellation outcomes, Apps browser flows,
+  manifest consistency, and packaged discovery.
+- Live evidence required before release: disposable CRUD, restricted-credential
+  rejection, and feature-enabled actions. Record the exact server image or
+  version, fixture IDs, commands, and cleanup result in the workflow run.
+- Excluded capabilities: ZenML Cloud control-plane and Resource Manager
+  administration, user and credential administration, secret-value CRUD,
+  connector login and verification, raw webhook events, and aggregate debugging
+  or lineage tools.
+- Remote HTTP limitation: the server does not authenticate MCP callers. A
+  remotely reachable deployment requires an authenticated perimeter, and its
+  release receipt must show that an unauthenticated request is rejected before
+  reaching MCP.
 
-## Artifacts Matrix
+## Recovery
 
-- GitHub Release (per tag)
-  - Asset: `mcp-zenml.mcpb`
-  - Tag: `vX.Y.Z`
-- Docker Images
-  - `zenmldocker/mcp-zenml:latest` (main)
-  - `zenmldocker/mcp-zenml:vX.Y.Z` (tag)
-- Anthropic MCP Registry
-  - Registry entry updated on every tagged release (derived from `manifest.json` / `server.json`)
+Use a dry run to reproduce version propagation, manifest generation, bundle
+packing, and distribution checks without external changes. If a downstream
+publisher fails after a tag exists, rerun the matching workflow for that tag.
+Attach a rebuilt bundle manually only after its version and discovery receipt
+match the tagged commit.
 
-## Notes
-
-- Versioning: Strict SemVer is enforced by `scripts/bump_version.py`.
-- Reproducibility: `scripts/build_mcpb.sh` cleans `server/lib`, installs hashed Python dependencies there, then packs with the exact pinned MCPB npm CLI.
-- Security: Use `GH_RELEASE_PAT` for the checkout token to ensure push/tag operations and triggering downstream workflows work correctly.
-
-
+Published artifacts are the `mcp-zenml.mcpb` GitHub release asset,
+`zenmldocker/mcp-zenml:latest`, `zenmldocker/mcp-zenml:X.Y.Z`, and the MCP
+registry entry derived from `manifest.json` and `server.json`.

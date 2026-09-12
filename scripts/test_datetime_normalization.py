@@ -3,11 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
@@ -34,6 +37,7 @@ from pathlib import Path
 # Add server directory to path so we can import zenml_server
 sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
+from zenml_resource_dispatch import normalize_datetime_filter
 from zenml_server import (
     _classify_exception,
     _normalize_datetime_filter,
@@ -163,6 +167,25 @@ def test_normalization() -> tuple[int, int, list[str]]:
     return passed, failed, failures
 
 
+def test_generic_resource_datetime_normalization() -> tuple[int, int, list[str]]:
+    """Generic read filters share upper-bound and ISO normalization behavior."""
+    cases = [
+        ("lte:2026-09-12", "lte:2026-09-12 23:59:59"),
+        ("lt:2026-09-12", "lt:2026-09-12 23:59:59"),
+        (
+            "range:2026-09-01..2026-09-12",
+            "in:2026-09-01 00:00:00,2026-09-12 23:59:59",
+        ),
+        ("2026-09-12T15:30:00+02:00", "2026-09-12 13:30:00"),
+    ]
+    failures = [
+        f"  FAIL: generic normalization {source!r}: expected {expected!r}, got {actual!r}"
+        for source, expected in cases
+        if (actual := normalize_datetime_filter(source)) != expected
+    ]
+    return len(cases) - len(failures), len(failures), failures
+
+
 # ---------------------------------------------------------------------------
 # Test cases for _classify_exception
 # ---------------------------------------------------------------------------
@@ -271,6 +294,13 @@ def main() -> None:
     # Normalization tests
     print("\n--- _normalize_datetime_filter ---")
     p, f, fails = test_normalization()
+    total_passed += p
+    total_failed += f
+    all_failures.extend(fails)
+    print(f"  {p} passed, {f} failed")
+
+    print("\n--- generic resource datetime filters ---")
+    p, f, fails = test_generic_resource_datetime_normalization()
     total_passed += p
     total_failed += f
     all_failures.extend(fails)
