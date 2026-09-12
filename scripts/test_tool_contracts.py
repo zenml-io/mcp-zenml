@@ -3,11 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # unresolved-import = "ignore"
@@ -27,10 +30,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
+from mcp import Client, ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.shared.memory import create_connected_server_and_client_session
-from pydantic import AnyUrl
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -177,12 +178,12 @@ class FakeZenMLClient:
 async def test_legacy_inventory_and_schemas() -> None:
     """The complete legacy inventory and semantic input schemas stay stable."""
     expected = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-    async with create_connected_server_and_client_session(server.mcp) as session:
+    async with Client(server.mcp, mode="legacy") as session:
         result = await session.list_tools()
 
     actual_names = [tool.name for tool in result.tools]
     actual_schemas = {
-        tool.name: _normalize_schema(tool.inputSchema) for tool in result.tools
+        tool.name: _normalize_schema(tool.input_schema) for tool in result.tools
     }
     assert actual_names == expected["tool_names"]
     assert actual_schemas == expected["input_schemas"]
@@ -210,7 +211,7 @@ async def test_discovery_does_not_initialize_zenml_client() -> None:
 
     setattr(server, "get_zenml_client", fail_if_initialized)
     try:
-        async with create_connected_server_and_client_session(server.mcp) as session:
+        async with Client(server.mcp, mode="legacy") as session:
             tools = await session.list_tools()
             assert tools.tools
             diagnostics = _structured_payload(
@@ -230,7 +231,7 @@ async def test_fake_sdk_success_shapes() -> None:
     original_client = server.zenml_client
     server.zenml_client = fake_client
     try:
-        async with create_connected_server_and_client_session(server.mcp) as session:
+        async with Client(server.mcp, mode="legacy") as session:
             list_payload = _structured_payload(
                 await session.call_tool("list_pipelines", {})
             )
@@ -351,7 +352,7 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
                 server.CHART_UI_URI,
                 "resource://zenml_server/apps",
             }
-            assert resource_by_uri[server.DASHBOARD_UI_URI].mimeType == (
+            assert resource_by_uri[server.DASHBOARD_UI_URI].mime_type == (
                 "text/html;profile=mcp-app"
             )
             assert resource_by_uri[server.DASHBOARD_UI_URI].meta == {
@@ -359,19 +360,17 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
             }
 
             templates = await session.list_resource_templates()
-            assert [str(item.uriTemplate) for item in templates.resourceTemplates] == [
-                "resource://zenml_server/most_recent_runs?run_count={run_count}"
-            ]
+            assert [
+                str(item.uri_template) for item in templates.resource_templates
+            ] == ["resource://zenml_server/most_recent_runs?run_count={run_count}"]
 
-            app_manifest = await session.read_resource(
-                AnyUrl("resource://zenml_server/apps")
-            )
+            app_manifest = await session.read_resource("resource://zenml_server/apps")
             manifest = json.loads(app_manifest.contents[0].text)
             assert [app["entry"] for app in manifest["apps"]] == [
                 server.DASHBOARD_UI_URI,
                 server.CHART_UI_URI,
             ]
-            dashboard = await session.read_resource(AnyUrl(server.DASHBOARD_UI_URI))
+            dashboard = await session.read_resource(server.DASHBOARD_UI_URI)
             assert "<!DOCTYPE html>" in dashboard.contents[0].text
 
             diagnostics = _structured_payload(

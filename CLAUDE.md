@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run MCP server locally**: `uv run server/zenml_server.py`
 - **Type check only**: `uvx --constraints requirements-dev.txt ty check` (runs type checking without formatting)
 - **Check PEP 723 dependency drift**: `python scripts/check_pep723_requirements.py`
-- **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv (CI creates a throwaway Python 3.12 environment under the runner temp directory for this check)
+- **Validate hashed requirements**: `uv pip install --dry-run --require-hashes --exclude-newer-package "mcp=2026-09-08T00:00:00Z" --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" -r requirements.txt` inside an active virtualenv (CI creates a throwaway Python 3.12 environment under the runner temp directory for this check)
 - **Run workflow security scan**: `GH_TOKEN=$(gh auth token) uvx zizmor==1.25.2 --format=github --config=.github/zizmor.yml .github/workflows/`
 
 ### Code Quality
@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Type Check Only**: `uvx --constraints requirements-dev.txt ty check` (rule config lives in each file's PEP 723 header, see below)
 - **Recompile requirements**: `uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt`
 - **Check PEP 723 dependency drift**: use the canonical command listed under Testing and Development above.
-- **Validate hashed requirements**: `uv pip install --dry-run --require-hashes -r requirements.txt` inside an active virtualenv
+- **Validate hashed requirements**: `uv pip install --dry-run --require-hashes --exclude-newer-package "mcp=2026-09-08T00:00:00Z" --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" -r requirements.txt` inside an active virtualenv
 
 ## Development Workflow
 
@@ -292,7 +292,7 @@ bash scripts/format.sh          # Runs ruff + ty together
 The project applies multiple layers of supply chain protection:
 
 - **Python package cooldown**: `exclude-newer = "7 days"` in `[tool.uv]` (`pyproject.toml`) prevents installing packages published within the last 7 days, giving time for compromised versions to be detected and yanked. Override for a single install: `uv add <pkg> --exclude-newer "0 days"`
-- **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds and MCP bundle vendoring both enforce these hashes with `uv pip install --require-hashes ...`. PR CI also verifies the file with `uv pip install --dry-run --require-hashes -r requirements.txt` inside a throwaway Python 3.12 venv.
+- **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds and MCP bundle vendoring both enforce these hashes with `uv pip install --require-hashes ...`. PR CI also verifies the file with `uv pip install --dry-run --require-hashes --exclude-newer-package "mcp=2026-09-08T00:00:00Z" --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" -r requirements.txt` inside a throwaway Python 3.12 venv.
 - **PEP 723 drift check**: Runtime `uv run` entry points mirror `requirements.in`, and `scripts/check_pep723_requirements.py` fails CI if those inline dependency blocks drift.
 - **Pinned MCPB bundler**: `scripts/build_mcpb.sh` installs the exact pinned MCPB npm package configured in that script before packing the bundle.
 - **Docker image digests**: Base images in the `Dockerfile` are pinned to `@sha256:` digests (not just tags) to prevent tag mutation attacks
@@ -313,7 +313,10 @@ python scripts/check_pep723_requirements.py
 
 **Validating requirements.txt hashes locally**:
 ```bash
-uv pip install --dry-run --require-hashes -r requirements.txt
+uv pip install --dry-run --require-hashes \
+  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
+  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+  -r requirements.txt
 ```
 
 If no virtual environment is active, create a temporary one first:
@@ -321,7 +324,10 @@ If no virtual environment is active, create a temporary one first:
 REQUIREMENTS_HASH_CHECK_ENV=$(mktemp -d)
 uv venv --python 3.12 "${REQUIREMENTS_HASH_CHECK_ENV}"
 source "${REQUIREMENTS_HASH_CHECK_ENV}/bin/activate"
-uv pip install --dry-run --require-hashes -r requirements.txt
+uv pip install --dry-run --require-hashes \
+  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
+  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+  -r requirements.txt
 ```
 
 **Running the workflow security scan locally**:

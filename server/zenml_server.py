@@ -2,11 +2,14 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
@@ -19,21 +22,29 @@ try:
 except ImportError:
     pass
 
+import asyncio
 import functools
+import inspect
 import json
 import logging
 import os
 import re
 import sys
 import warnings
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
+from typing import Any, Dict, ParamSpec, TypeVar, cast
 from urllib.parse import urlparse
 
 import requests
 import zenml_mcp_analytics as analytics
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import CallToolResult, TextContent
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
@@ -73,7 +84,7 @@ logging.getLogger("zenml.client").setLevel(logging.ERROR)
 # Suppress MCP/FastMCP logging to prevent stdout pollution (breaks JSON-RPC protocol)
 logging.getLogger("mcp").setLevel(logging.WARNING)
 logging.getLogger("mcp.server").setLevel(logging.WARNING)
-logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.mcpserver").setLevel(logging.WARNING)
 
 # Suppress urllib3/requests retry warnings that leak to stdout
 # E.g., "Retrying (Retry(total=9...)) after connection broken by 'RemoteDisconnected'"
@@ -87,15 +98,6 @@ T = TypeVar("T")  # Captures return type
 # Type alias for functions (callables with __name__ attribute)
 # Using ParamSpec preserves the original function's parameter types
 from collections.abc import Callable
-
-
-def _is_text_tool(func: Callable[..., Any]) -> bool:
-    """Check if a tool function returns str (text-only) vs structured output."""
-    try:
-        hints = get_type_hints(func)
-        return hints.get("return") is str
-    except Exception:
-        return False  # Default to structured — only 2 tools (easter_egg, get_step_code) are text
 
 
 def _is_structured_error_envelope(payload: Any) -> bool:
@@ -354,10 +356,7 @@ def _classify_exception(
         "pydantic" in exc_mod and "Validation" in raw_type
     )
     if is_validation:
-        error_snippet = str(exc)[:300]
-        details["validation_error"] = error_snippet
-        # Generic message suitable for any validation error
-        msg = "Validation failed. Please check your inputs.\n\n" + error_snippet
+        msg = "Validation failed. Please check your inputs."
         # Add filter-syntax help only for tools that accept filters
         if tool_name.startswith("list_"):
             msg += (
@@ -384,10 +383,9 @@ def _classify_exception(
 
     # ---- Missing Python deps / integrations ----
     if isinstance(exc, (ImportError, ModuleNotFoundError)):
-        details["import_error"] = str(exc)
         return (
             "DependencyMissing",
-            f"Missing dependency or integration: {exc}",
+            "A required dependency or integration is unavailable.",
             details,
         )
 
@@ -419,7 +417,6 @@ def _classify_exception(
 
     # ---- Version mismatch (heuristics) ----
     if "ZenML" in msg and ("version" in msg.lower() or "incompatible" in msg.lower()):
-        details["version_message"] = msg[:200]
         return (
             "VersionMismatch",
             "Version mismatch between this MCP server and your ZenML installation/server.",
@@ -427,13 +424,6 @@ def _classify_exception(
         )
 
     # ---- Default ----
-    # Always show details for ImportError/RuntimeError since they indicate setup/config issues
-    if isinstance(exc, (ImportError, RuntimeError)):
-        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
-
-    if analytics.DEV_MODE:
-        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
-
     return ("UnexpectedError", f"Error in {tool_name}: {raw_type}", details)
 
 
@@ -457,14 +447,23 @@ def _getattr_multi(obj: Any, *names: str) -> Any:
     return None
 
 
-def _get_mcp_client_info_safe() -> dict[str, Any] | None:
+_current_mcp_context: ContextVar[Context[Any, Any] | None] = ContextVar(
+    "current_mcp_context", default=None
+)
+
+
+def _get_mcp_client_info_safe(
+    ctx: Context[Any, Any] | None = None,
+) -> dict[str, Any] | None:
     """Best-effort MCP client detection (only valid during a request).
 
     Checks both camelCase and snake_case field names to handle different
     MCP SDK versions.
     """
     try:
-        ctx = mcp.get_context()
+        ctx = ctx or _current_mcp_context.get()
+        if ctx is None:
+            return None
         session = getattr(ctx, "session", None)
         if session is None:
             return None
@@ -500,10 +499,9 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     # getattr-with-default keeps the type checker honest: a generic Callable
     # isn't guaranteed to have __name__, even though our decorated tools always do.
     func_name = getattr(func, "__name__", "unknown_tool")
-    text_tool = _is_text_tool(func)
 
     @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> T:
+    def wrapper(*args: Any, ctx: Context[Any, Any] | None = None, **kwargs: Any) -> T:
         import time
 
         global _mcp_client_info_captured
@@ -513,22 +511,20 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
         error_type: str | None = None
         http_status_code: int | None = None
 
-        # Capture MCP client info once per session (best-effort)
-        client: dict[str, Any] | None = None
+        client = _get_mcp_client_info_safe(ctx)
         try:
-            if not _mcp_client_info_captured:
-                client = _get_mcp_client_info_safe()
-                if client:
-                    with _mcp_client_info_lock:
-                        if not _mcp_client_info_captured:
-                            _mcp_client_info_captured = True
-                            analytics.set_client_info_once(
-                                client_name=client.get("name"),
-                                client_version=client.get("version"),
-                            )
+            if client and not _mcp_client_info_captured:
+                with _mcp_client_info_lock:
+                    if not _mcp_client_info_captured:
+                        _mcp_client_info_captured = True
+                        analytics.set_client_info_once(
+                            client_name=client.get("name"),
+                            client_version=client.get("version"),
+                        )
         except Exception:
-            client = None
+            pass
 
+        context_token = _current_mcp_context.set(ctx)
         try:
             # Normalize datetime filter kwargs before calling the tool.
             # Uses a copy so analytics.extract_size_from_call sees original kwargs.
@@ -538,12 +534,22 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     if key in call_kwargs and isinstance(call_kwargs[key], str):
                         call_kwargs[key] = _normalize_datetime_filter(call_kwargs[key])
 
-            result = func(*args, **call_kwargs)
+            with _zenml_client_call_lock:
+                result = func(*args, **call_kwargs)
             # Detect structured error envelopes (full shape validation to avoid
             # false positives from legitimate "error" fields in successful results)
             if _is_structured_error_envelope(result):
                 success = False
                 error_type = cast(dict[str, Any], result)["error"]["type"]
+                error = cast(dict[str, Any], result)["error"]
+                return cast(
+                    T,
+                    CallToolResult(
+                        content=[TextContent(type="text", text=error["message"])],
+                        structured_content=cast(dict[str, Any], result),
+                        is_error=True,
+                    ),
+                )
             return result
         except requests.HTTPError as e:
             success = False
@@ -563,20 +569,20 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             err_log = f"Error in {func_name}: {category}"
             if http_status_code is not None:
                 err_log = f"{err_log} (HTTP {http_status_code})"
-            if analytics.DEV_MODE:
-                err_log = f"{err_log} - {e}"
             print(err_log, file=sys.stderr)
 
-            if text_tool:
-                return cast(T, message)
             return cast(
                 T,
-                _make_error_result(
-                    func_name,
-                    message,
-                    category,
-                    http_status_code,
-                    details=details,
+                CallToolResult(
+                    content=[TextContent(type="text", text=message)],
+                    structured_content=_make_error_result(
+                        func_name,
+                        message,
+                        category,
+                        http_status_code,
+                        details=details,
+                    ),
+                    is_error=True,
                 ),
             )
         except Exception as e:
@@ -589,12 +595,18 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
 
             print(message, file=sys.stderr)
 
-            if text_tool:
-                return cast(T, message)
             return cast(
-                T, _make_error_result(func_name, message, category, details=details)
+                T,
+                CallToolResult(
+                    content=[TextContent(type="text", text=message)],
+                    structured_content=_make_error_result(
+                        func_name, message, category, details=details
+                    ),
+                    is_error=True,
+                ),
             )
         finally:
+            _current_mcp_context.reset(context_token)
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             try:
                 size = analytics.extract_size_from_call(func_name, args, kwargs)
@@ -611,6 +623,26 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             except Exception:
                 pass
 
+    signature = inspect.signature(func)
+    parameters = list(signature.parameters.values())
+    context_parameter = inspect.Parameter(
+        "ctx",
+        kind=inspect.Parameter.KEYWORD_ONLY,
+        annotation=Context,
+        default=None,
+    )
+    var_keyword_index = next(
+        (
+            index
+            for index, parameter in enumerate(parameters)
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD
+        ),
+        len(parameters),
+    )
+    parameters.insert(var_keyword_index, context_parameter)
+    cast(Any, wrapper).__signature__ = signature.replace(parameters=parameters)
+    wrapper.__annotations__ = dict(getattr(func, "__annotations__", {}))
+    wrapper.__annotations__["ctx"] = Context
     return wrapper
 
 
@@ -629,11 +661,11 @@ def handle_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
         try:
-            return func(*args, **kwargs)
+            with _zenml_client_call_lock:
+                return func(*args, **kwargs)
         except Exception as e:
             error_type = type(e).__name__
-            error_detail = str(e) if analytics.DEV_MODE else error_type
-            message = f"Error in {func_name}: {error_detail}"
+            message = f"Error in {func_name}: {error_type}"
             print(message, file=sys.stderr)
             return cast(T, message)
 
@@ -654,206 +686,55 @@ user in a more readable format (e.g. a table or summary) rather than showing
 raw JSON.
 """
 
-try:
-    logger.debug("Importing MCP dependencies...")
-    from mcp.server.fastmcp import FastMCP
-    from mcp.types import Tool as MCPTool
+logger.debug("Initializing MCP server...")
+mcp = MCPServer(
+    name="zenml",
+    instructions=INSTRUCTIONS,
+    log_level=cast(Any, logging.getLevelName(log_level)),
+)
+logger.debug("MCP server initialized successfully")
 
-    class ZenMLFastMCP(FastMCP):
-        """FastMCP subclass that supports _meta on tools and resources.
-
-        The upstream FastMCP may not support the ``meta`` kwarg on
-        ``tool()`` / ``resource()`` depending on the installed version.
-        This subclass stores per-tool and per-resource meta at registration
-        time and injects it into list_tools() / list_resources().
-        """
-
-        def __init__(self, *a: Any, **kw: Any) -> None:
-            import inspect as _inspect
-
-            super().__init__(*a, **kw)
-            self._tool_meta: dict[str, dict[str, Any]] = {}
-            self._resource_meta: dict[str, dict[str, Any]] = {}
-            # Cache upstream resource() signature to avoid re-inspecting on every call
-            self._upstream_resource_params: set[str] = set(
-                _inspect.signature(FastMCP.resource).parameters.keys()
-            )
-            # Only trust proxy headers when explicitly behind a reverse proxy
-            self._forwarded_allow_ips: str = "127.0.0.1"
-
-        def add_tool(
-            self,
-            fn: Any,
-            name: str | None = None,
-            title: str | None = None,
-            description: str | None = None,
-            annotations: Any = None,
-            structured_output: bool | None = None,
-            *,
-            meta: dict[str, Any] | None = None,
-        ) -> None:
-            tool_name = name or fn.__name__
-            if meta is not None:
-                self._tool_meta[tool_name] = meta
-            super().add_tool(
-                fn,
-                name=name,
-                title=title,
-                description=description,
-                annotations=annotations,
-                structured_output=structured_output,
-            )
-
-        def tool(
-            self,
-            name: str | None = None,
-            title: str | None = None,
-            description: str | None = None,
-            annotations: Any = None,
-            structured_output: bool | None = None,
-            *,
-            meta: dict[str, Any] | None = None,
-        ) -> Callable[..., Any]:
-            if callable(name):
-                raise TypeError(
-                    "The @tool decorator was used incorrectly. "
-                    "Did you forget to call it? Use @tool() instead of @tool"
-                )
-
-            def decorator(fn: Any) -> Any:
-                self.add_tool(
-                    fn,
-                    name=name,
-                    title=title,
-                    description=description,
-                    annotations=annotations,
-                    structured_output=structured_output,
-                    meta=meta,
-                )
-                return fn
-
-            return decorator
-
-        def resource(
-            self,
-            uri: str,
-            *,
-            name: str | None = None,
-            title: str | None = None,
-            description: str | None = None,
-            mime_type: str | None = None,
-            meta: dict[str, Any] | None = None,
-            **extra: Any,
-        ) -> Callable[..., Any]:
-            """Override to intercept ``meta`` for older SDK versions.
-
-            If the upstream FastMCP.resource() already supports ``meta``,
-            we pass it through. Otherwise, we strip it and store it
-            ourselves, injecting it in list_resources().
-            """
-            upstream_params = self._upstream_resource_params
-
-            # Build kwargs for the upstream call, only passing what it accepts
-            kwargs: dict[str, Any] = {}
-            if name is not None:
-                kwargs["name"] = name
-            if description is not None:
-                kwargs["description"] = description
-            if mime_type is not None:
-                kwargs["mime_type"] = mime_type
-            # These may not exist in older SDK versions
-            if "title" in upstream_params and title is not None:
-                kwargs["title"] = title
-            if "meta" in upstream_params and meta is not None:
-                kwargs["meta"] = meta
-            kwargs.update(extra)
-
-            parent_decorator = super().resource(uri, **kwargs)
-
-            # If upstream didn't accept meta, store it ourselves
-            if "meta" not in upstream_params and meta is not None:
-                self._resource_meta[uri] = meta
-
-            return parent_decorator
-
-        async def list_resources(self) -> list[Any]:
-            """Override to inject stored resource meta for older SDK versions."""
-            resources = await super().list_resources()
-            if not self._resource_meta:
-                return resources
-            # Inject _meta for resources where we stored meta
-            patched = []
-            for r in resources:
-                uri_str = str(r.uri)
-                meta = self._resource_meta.get(uri_str)
-                if meta is not None and getattr(r, "meta", None) is None:
-                    try:
-                        data = r.model_dump(by_alias=True)
-                        data["_meta"] = meta
-                        patched.append(type(r)(**data))
-                    except Exception:
-                        patched.append(r)  # graceful fallback
-                else:
-                    patched.append(r)
-            return patched
-
-        async def list_tools(self) -> list[MCPTool]:
-            tools = await super().list_tools()
-            if not self._tool_meta:
-                return tools
-            # Inject _meta for tools where we stored meta
-            patched = []
-            for tool in tools:
-                meta = self._tool_meta.get(tool.name)
-                if meta is not None and getattr(tool, "meta", None) is None:
-                    try:
-                        data = tool.model_dump(by_alias=True)
-                        data["_meta"] = meta
-                        patched.append(MCPTool(**data))
-                    except Exception:
-                        patched.append(tool)  # graceful fallback
-                else:
-                    patched.append(tool)
-            return patched
-
-        async def run_streamable_http_async(self) -> None:
-            """Run StreamableHTTP with proxy-aware uvicorn config.
-
-            The upstream FastMCP creates uvicorn.Config without proxy_headers
-            or forwarded_allow_ips, so requests through reverse proxies
-            (e.g. cloudflared tunnels) are rejected with 421 Misdirected
-            Request due to Host header mismatch. This override fixes that.
-            """
-            import uvicorn
-
-            starlette_app = self.streamable_http_app()
-            config = uvicorn.Config(
-                starlette_app,
-                host=self.settings.host,
-                port=self.settings.port,
-                log_level=self.settings.log_level.lower(),
-                proxy_headers=True,
-                forwarded_allow_ips=self._forwarded_allow_ips,
-            )
-            server = uvicorn.Server(config)
-            await server.serve()
-
-    # Initialize FastMCP server
-    logger.debug("Initializing FastMCP server...")
-    mcp = ZenMLFastMCP(name="zenml", instructions=INSTRUCTIONS)
-    logger.debug("FastMCP server initialized successfully")
-
-    # ZenML client will be initialized lazily
-    zenml_client = None
-
-except Exception as e:
-    logger.error(f"Error during initialization: {str(e)}")
-    raise
+# ZenML's Client and REST session are singletons. Tool and resource handlers
+# execute in MCP worker threads, so serialize access until the SDK guarantees
+# thread-safe concurrent use.
+zenml_client = None
+_zenml_client_call_lock = Lock()
 
 
 # Track if we've already reported client init failure (avoid spam)
 _client_init_failure_reported = False
 _zenml_client_init_lock = Lock()
+
+
+def _configure_zero_retry_rest_session(client: Any) -> None:
+    """Disable automatic REST retries once while preserving pool sizing.
+
+    ZenML 0.96 retries every HTTP method by default, including mutations. The
+    MCP server cannot safely repeat a mutation after a response is lost, so the
+    shared public REST session uses zero-retry adapters for both schemes.
+    ZenML's explicit re-authentication after a rejected token remains intact.
+    """
+    store = client.zen_store
+    session = getattr(store, "session", None)
+    if not isinstance(session, requests.Session):
+        return
+
+    pool_size = int(getattr(getattr(store, "config", None), "connection_pool_size", 10))
+    retries = Retry(
+        total=0,
+        connect=0,
+        read=0,
+        redirect=0,
+        status=0,
+        other=0,
+    )
+    for scheme in ("http://", "https://"):
+        session.mount(
+            scheme,
+            HTTPAdapter(
+                max_retries=retries, pool_connections=pool_size, pool_maxsize=pool_size
+            ),
+        )
 
 
 def get_zenml_client():
@@ -872,9 +753,10 @@ def get_zenml_client():
         logger.debug("Initializing ZenML client...")
         try:
             zenml_client = Client()
+            _configure_zero_retry_rest_session(zenml_client)
             logger.debug("ZenML client initialized successfully")
         except Exception as e:
-            logger.error(f"ZenML client initialization failed: {e}")
+            logger.error("ZenML client initialization failed: %s", type(e).__name__)
             # Track client init failure (only report once per session)
             if not _client_init_failure_reported:
                 _client_init_failure_reported = True
@@ -2000,14 +1882,14 @@ def get_deployment_logs(
 
         return result
 
-    except ImportError as e:
+    except ImportError:
         # Handle missing deployer plugin (direct import failure)
         return {
             "error": {
                 "tool": "get_deployment_logs",
                 "type": "deployer_plugin_not_installed",
                 "message": (
-                    f"The deployer plugin required to fetch logs is not installed: {e}. "
+                    "The deployer plugin required to fetch logs is not installed. "
                     "Please install the appropriate ZenML integration for your stack "
                     "(e.g., `zenml integration install gcp` for GCP deployments), "
                     "then restart the MCP server."
@@ -2027,7 +1909,7 @@ def get_deployment_logs(
                     "tool": "get_deployment_logs",
                     "type": "deployer_dependencies_missing",
                     "message": (
-                        f"The deployer's dependencies are not installed: {error_str}\n\n"
+                        "The deployer's dependencies are not installed.\n\n"
                         "To fix this:\n"
                         "1. Check which stack/deployer was used for this deployment\n"
                         "2. Install the required ZenML integration for that deployer:\n"
@@ -2888,6 +2770,70 @@ def most_recent_runs(run_count: int = 10) -> str:
     )
 
 
+@dataclass(frozen=True)
+class HTTPTransportConfig:
+    """Runtime settings for the Streamable HTTP transport."""
+
+    host: str = "127.0.0.1"
+    port: int = 8000
+    disable_dns_rebinding_protection: bool = False
+    forwarded_allow_ips: str = "127.0.0.1"
+
+
+def create_transport_security_settings(config: HTTPTransportConfig) -> Any:
+    """Build Host/Origin policy independently from proxy-header trust."""
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    if config.disable_dns_rebinding_protection:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    host = config.host
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+        allowed_origins = [
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://[::1]:*",
+        ]
+    else:
+        bracketed_host = (
+            f"[{host}]" if ":" in host and not host.startswith("[") else host
+        )
+        allowed_hosts = [f"{bracketed_host}:*"]
+        allowed_origins = [f"http://{bracketed_host}:*", f"https://{bracketed_host}:*"]
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
+
+
+def create_streamable_http_app(config: HTTPTransportConfig) -> Any:
+    """Create the v2 ASGI app with its required session-manager lifespan."""
+    return mcp.streamable_http_app(
+        host=config.host,
+        transport_security=create_transport_security_settings(config),
+    )
+
+
+async def run_streamable_http(config: HTTPTransportConfig) -> None:
+    """Serve Streamable HTTP with explicit proxy and lifespan configuration."""
+    import uvicorn
+
+    app = create_streamable_http_app(config)
+    uvicorn_config = uvicorn.Config(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level=logging.getLevelName(log_level).lower(),
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+        lifespan="on",
+    )
+    await uvicorn.Server(uvicorn_config).serve()
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -2916,6 +2862,12 @@ if __name__ == "__main__":
         help="Disable DNS rebinding protection for HTTP transport. "
         "Required when running behind reverse proxies (cloudflared, ngrok). "
         "WARNING: Only use this in trusted network environments.",
+    )
+    parser.add_argument(
+        "--forwarded-allow-ips",
+        default=os.getenv("ZENML_MCP_FORWARDED_ALLOW_IPS", "127.0.0.1"),
+        help="Comma-separated proxy IPs whose forwarded headers are trusted "
+        "(default: 127.0.0.1; env: ZENML_MCP_FORWARDED_ALLOW_IPS).",
     )
     _startup_env = (os.getenv("ZENML_MCP_STARTUP_VALIDATION") or "off").lower().strip()
     if _startup_env not in {"off", "warn", "strict"}:
@@ -2989,33 +2941,27 @@ if __name__ == "__main__":
         analytics.track_server_started(extra_properties=startup_extra)
 
         if args.transport == "streamable-http":
-            from mcp.server.transport_security import TransportSecuritySettings
-
-            # Configure HTTP settings before running
-            mcp.settings.host = args.host
-            mcp.settings.port = args.port
-
             if args.disable_dns_rebinding_protection:
-                # Disable DNS rebinding protection — required behind reverse
-                # proxies (cloudflared, ngrok) where Host header ≠ localhost.
                 print(
                     "WARNING: DNS rebinding protection is disabled. "
                     "Only use this behind a trusted reverse proxy.",
                     file=sys.stderr,
                 )
-                mcp.settings.transport_security = TransportSecuritySettings(
-                    enable_dns_rebinding_protection=False,
-                )
-                # Trust proxy headers from any IP (needed behind reverse proxies)
-                mcp._forwarded_allow_ips = "*"
-                # Ensure no stale session manager exists so the new security
-                # settings take effect when streamable_http_app() is called.
-                mcp._session_manager = None
 
             logger.info(
                 f"Starting ZenML MCP server on http://{args.host}:{args.port}/mcp"
             )
-
-        mcp.run(transport=args.transport)
+            asyncio.run(
+                run_streamable_http(
+                    HTTPTransportConfig(
+                        host=args.host,
+                        port=args.port,
+                        disable_dns_rebinding_protection=args.disable_dns_rebinding_protection,
+                        forwarded_allow_ips=args.forwarded_allow_ips,
+                    )
+                )
+            )
+        else:
+            mcp.run(transport="stdio")
     except Exception as e:
-        logger.error(f"Error running MCP server: {e}")
+        logger.error("Error running MCP server: %s", type(e).__name__)

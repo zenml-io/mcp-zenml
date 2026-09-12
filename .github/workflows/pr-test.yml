@@ -55,7 +55,10 @@ jobs:
         run: |
           uv venv --python 3.12 "${RUNNER_TEMP}/requirements-hash-check"
           source "${RUNNER_TEMP}/requirements-hash-check/bin/activate"
-          uv pip install --dry-run --require-hashes -r requirements.txt
+          uv pip install --dry-run --require-hashes \
+            --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
+            --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+            -r requirements.txt
 
       - name: Run MCP smoke test
         if: env.ZENML_STORE_URL != ''
@@ -74,9 +77,10 @@ jobs:
 
       - name: Run unit tests (no credentials needed)
         run: |
-          echo "Running datetime normalization, classification, and MCP contract tests..."
+          echo "Running datetime normalization, MCP contract, and transport tests..."
           uv run scripts/test_datetime_normalization.py
           uv run scripts/test_tool_contracts.py
+          uv run scripts/test_mcp_transport.py
 
   docker-build:
     runs-on: ubuntu-latest

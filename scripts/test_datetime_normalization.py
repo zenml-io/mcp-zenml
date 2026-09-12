@@ -3,11 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".

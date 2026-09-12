@@ -18,6 +18,7 @@ RUNTIME_MIRROR_PEP723_FILES = (
     "scripts/test_mcp_server.py",
     "scripts/test_datetime_normalization.py",
     "scripts/test_tool_contracts.py",
+    "scripts/test_mcp_transport.py",
 )
 
 
