@@ -115,6 +115,29 @@ omits create, update, delete, and action schemas. The older
 closed to read-only mode. An invalid `ZENML_MCP_PROFILE` stops startup with a
 configuration error.
 
+Version 2.0.0 requires MCP Python SDK 2.2.0 and ZenML 0.96.4. The compact
+profile is the new default and is a breaking discovery change for clients that
+call entity-specific tool names. Set `ZENML_MCP_PROFILE=legacy` while migrating
+those clients, then move each call to the generic resource tools.
+
+Mutation results distinguish `completed`, `accepted`, and `unknown` outcomes.
+The server does not retry a mutation after it may have reached ZenML. For an
+accepted or unknown result, use the reconciliation read named in the response
+before deciding whether to call again. Webhook creation and secret rotation can
+return a new signing secret once; later reads omit it. Delete schemas state
+whether an operation archives metadata, removes metadata, deprovisions a live
+resource, or can delete stored artifact data.
+
+The first 2.0 release covers ordinary operations for projects, stacks and
+components, flavors, services, pipelines and runs, snapshots and templates,
+deployments, artifacts and versions, models and versions, tags, connectors,
+code repositories, webhooks, triggers, wait conditions, and hook invocations.
+Users, schedules, service connector types, secrets, and resource requests have
+the read-only coverage shown by `zenml_describe_resources`. It excludes ZenML
+Cloud control-plane administration, Resource Manager administration, user and
+credential administration, secret-value CRUD, connector login and verification,
+raw webhook events, and aggregate debugging or lineage tools.
+
 Start a generic workflow by discovering the precise schema, then calling it:
 
 ```text
@@ -237,16 +260,17 @@ currently support MCP Apps:
 
 ### Running MCP Apps with Docker
 
-MCP Apps require Streamable HTTP transport and a publicly reachable URL (for
-cloud-hosted clients like Claude.ai). The simplest setup uses Docker +
-Cloudflare tunnel:
+MCP Apps use Streamable HTTP. Keep the container port bound to loopback and put
+an authenticated reverse proxy or identity-aware access service in front of it
+before allowing remote access. Host and Origin validation protect against DNS
+rebinding; they do not authenticate callers.
 
 **1. Build and run the Docker container:**
 
 ```bash
 docker build -t mcp-zenml:apps .
 
-docker run --rm -d --name mcp-zenml-apps -p 8001:8001 \
+docker run --rm -d --name mcp-zenml-apps -p 127.0.0.1:8001:8001 \
   -e ZENML_STORE_URL="https://your-zenml-server.example.com" \
   -e ZENML_STORE_API_KEY="your-api-key" \
   -e ZENML_MCP_PROFILE="compact" \
@@ -256,24 +280,32 @@ docker run --rm -d --name mcp-zenml-apps -p 8001:8001 \
   --disable-dns-rebinding-protection
 ```
 
-**2. Start a Cloudflare tunnel (for cloud clients):**
+**2. Configure authenticated remote access:**
+
+Create a named Cloudflare Tunnel, Tailscale Funnel with access controls, or an
+equivalent authenticated reverse proxy. Point its private origin at
+`http://127.0.0.1:8001`, require an identity or service credential for the
+public hostname, and pass only authenticated requests to the origin. Configure
+your MCP client to use the provider's supported OAuth flow or authorization
+headers.
+
+Before adding ZenML credentials to the container, verify that an unauthenticated
+request cannot reach MCP:
 
 ```bash
-npx cloudflared tunnel --url http://localhost:8001
+curl -i https://mcp.example.com/mcp
 ```
 
-This prints a public URL like `https://random-words.trycloudflare.com`.
+The response must be the access provider's `401`, `403`, or login redirect. A
+JSON-RPC or MCP response means the perimeter is open and must be fixed first.
 
-**3. Connect your client:**
-
-- In Claude Desktop or other clients, add the MCP server with URL:
-  `https://random-words.trycloudflare.com/mcp` e.g.:
+**3. Connect your authenticated client:**
 
 ```json
 {
 	"servers": {
 		"ZenML": {
-			"url": "https://USE-YOUR-OWN-URL.trycloudflare.com/mcp",
+			"url": "https://mcp.example.com/mcp",
 			"type": "http"
 		}
 	},
@@ -286,9 +318,10 @@ This prints a public URL like `https://random-words.trycloudflare.com`.
 **Important notes:**
 - `ZENML_ACTIVE_PROJECT_ID` is required — without it, pipeline run tools will
   fail with "No project is currently set as active"
-- The `--disable-dns-rebinding-protection` flag is needed when running behind
-  reverse proxies (cloudflared, ngrok) — it's safe when the proxy handles security
-- The tunnel URL changes on each restart — update your client integration accordingly
+- `--disable-dns-rebinding-protection` is only appropriate when the authenticated
+  proxy validates the public host and the container port remains loopback-only
+- Restrict the ZenML API key to the permissions the MCP client needs; use
+  `ZENML_MCP_WRITE_POLICY=read_only` for inspection-only clients
 
 ## Testing & Quality Assurance
 
@@ -305,6 +338,20 @@ The automated tests verify:
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
 - `diagnose_zenml_setup` returns structured diagnostics even in constrained environments
+
+Credential-free CI covers every adapter through the MCP protocol. Persisted
+write receipts require an operator-provided disposable ZenML 0.96.4 server on a
+loopback address and `ZENML_MCP_DISPOSABLE_INTEGRATION=1`; the suite rejects
+shared or remote targets. Feature-enabled trigger, deployment, wait-condition,
+and resource-request receipts also require
+`ZENML_MCP_ACTION_INTEGRATION=1` plus the exact disposable fixture UUIDs named
+by `ZENML_MCP_ACTION_FIXTURE`. A gated skip is not evidence that those live
+features passed. Restricted-access evidence also requires
+`ZENML_MCP_RESTRICTED_INTEGRATION=1` and
+`ZENML_MCP_RESTRICTED_API_KEY`; the suite runs that read through a separate MCP
+process. Release CI sets `ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1`, which turns
+any missing live gate into a failure. Cloud infrastructure provisioning is
+never part of the default test run.
 
 ## Debugging with MCP Inspector
 
@@ -387,7 +434,7 @@ you can sign up for a free trial at [ZenML Pro](https://cloud.zenml.io) and we'l
 
 > **Tip:** Once you have a ZenML server, check out the [MCP Settings page](#quick-setup-via-dashboard-recommended) in your dashboard for the easiest setup experience.
 
-> **Compatibility:** This MCP server is tested with and recommended for **ZenML >= 0.93.0**.
+> **Compatibility:** Version 2.0.0 is tested against **ZenML 0.96.4**.
 > If you are running an older ZenML version, please use an [earlier release](https://github.com/zenml-io/mcp-zenml/releases) of this MCP server.
 
 You will also (probably) need to have `uv` installed locally. For more information, see
@@ -518,7 +565,7 @@ docker pull zenmldocker/mcp-zenml:latest
 Versioned releases are tagged as `X.Y.Z`:
 
 ```bash
-docker pull zenmldocker/mcp-zenml:1.0.8
+docker pull zenmldocker/mcp-zenml:2.0.0
 ```
 
 Run with your ZenML credentials (stdio mode):
@@ -581,7 +628,15 @@ This project uses MCP Bundles (`.mcpb`) — the successor to Anthropic's Desktop
 
 Note on rename: MCP Bundles replace the older `.dxt` format. Claude Desktop remains backward‑compatible with existing `.dxt` files, but we now ship `mcp-zenml.mcpb` and recommend using it going forward.
 
-The `mcp-zenml.mcpb` file in the repository root contains everything needed to run the ZenML MCP server, eliminating the need for complex manual installation steps. This makes powerful ZenML integrations accessible to users without requiring technical setup expertise.
+The `mcp-zenml.mcpb` file in the repository root uses the MCPB 0.4 UV runtime.
+The host installs the pinned Python dependencies for the current operating
+system, so the same bundle works on macOS, Windows, and Linux without embedding
+platform-specific native extensions. Installation needs network access the
+first time UV resolves the bundled environment.
+
+Bundle builds reuse the committed `mcpb-uv.lock` and resolve its Python
+dependency graph in offline mode. Set `MCPB_REFRESH_LOCK=1` only when
+intentionally refreshing those pins.
 
 When you drag and drop the `.mcpb` file into Claude Desktop's settings, it automatically handles:
 - Runtime dependency installation

@@ -63,10 +63,12 @@ os.environ["ZENML_MCP_WRITE_POLICY"] = "read_write"
 os.environ.pop("ZENML_MCP_READ_ONLY", None)
 
 import zenml_server as server  # noqa: E402
-from test_mcp_server import (  # noqa: E402
+from test_mcp_server import (  # noqa: E402  # noqa: E402
     _detect_tool_error,
     _extract_call_tool_output,
+    _generic_project_id,
     _profile_inventory_errors,
+    _validate_generic_project_get,
 )
 
 
@@ -693,6 +695,47 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
             }
 
 
+async def test_generic_smoke_payload_guards() -> None:
+    """Smoke payload guards reject empty, malformed, and mismatched results."""
+    valid_list = {
+        "resource_type": "project",
+        "items": [{"id": "project-1"}],
+        "total": 1,
+        "page": 1,
+        "size": 1,
+        "effective_scope": {"kind": "global"},
+    }
+    assert _generic_project_id(valid_list) == "project-1"
+    for invalid in (
+        {"resource_type": "project", "items": []},
+        {**valid_list, "resource_type": "pipeline"},
+        {**valid_list, "items": [{}]},
+    ):
+        try:
+            _generic_project_id(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid generic list passed: {invalid!r}")
+
+    _validate_generic_project_get(
+        "structured",
+        {"resource_type": "project", "item": {"id": "project-1"}},
+        "project-1",
+    )
+    for kind, payload in (
+        ("text", {"resource_type": "project", "item": {"id": "project-1"}}),
+        ("structured", {"resource_type": "pipeline", "item": {"id": "project-1"}}),
+        ("structured", {"resource_type": "project", "item": {"id": "wrong"}}),
+    ):
+        try:
+            _validate_generic_project_get(kind, payload, "project-1")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid generic get passed: {kind}, {payload!r}")
+
+
 async def main() -> int:
     tests: list[tuple[str, Callable[[], Any]]] = [
         (
@@ -714,6 +757,7 @@ async def main() -> int:
             "test_stdio_prompts_resources_apps_without_credentials",
             test_stdio_prompts_resources_apps_without_credentials,
         ),
+        ("test_generic_smoke_payload_guards", test_generic_smoke_payload_guards),
     ]
     for name, test in tests:
         await test()

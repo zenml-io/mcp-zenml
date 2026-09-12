@@ -74,6 +74,48 @@ class SmokeTestResults(TypedDict):
     errors: list[str]
 
 
+def _generic_project_id(payload: Mapping[str, Any]) -> str:
+    """Validate the generic project-list contract and return its first ID."""
+    required_fields = {
+        "resource_type",
+        "items",
+        "total",
+        "page",
+        "size",
+        "effective_scope",
+    }
+    missing_fields = required_fields - set(payload)
+    items = payload.get("items")
+    if missing_fields or not isinstance(items, list):
+        raise ValueError(
+            "generic project list has an invalid shape; "
+            f"missing={sorted(missing_fields)}"
+        )
+    if payload["resource_type"] != "project":
+        raise ValueError("generic project list reported the wrong resource type")
+    if (
+        not items
+        or not isinstance(items[0], Mapping)
+        or not isinstance(items[0].get("id"), str)
+    ):
+        raise ValueError("generic project list returned no project identifier")
+    return items[0]["id"]
+
+
+def _validate_generic_project_get(
+    kind: str, payload: Mapping[str, Any], project_id: str
+) -> None:
+    """Validate that generic get returned the exact requested project."""
+    item = payload.get("item")
+    if (
+        kind != "structured"
+        or payload.get("resource_type") != "project"
+        or not isinstance(item, Mapping)
+        or item.get("id") != project_id
+    ):
+        raise ValueError("generic project get returned an invalid project payload")
+
+
 def _make_tool_info(name: str, description: str | None) -> ToolInfo:
     """Create a ToolInfo TypedDict from values."""
     return {"name": name, "description": description}
@@ -382,22 +424,27 @@ class MCPSmokeTest:
         Safe tools are read-only, don't require entity IDs, and should return
         empty pages (not errors) when no data exists.
         """
-        safe_tools_to_test = [
+        safe_tools_to_test: list[tuple[str, dict[str, Any]]] = [
             # Safe tools: read-only, no required parameters, return empty pages when no data
-            "diagnose_zenml_setup",
-            "list_users",
-            "list_stacks",
-            "list_pipelines",
-            "get_active_project",
-            "get_active_user",
-            "list_projects",
-            "list_snapshots",
-            "list_deployments",
-            "list_tags",
-            "list_builds",
-            "list_artifacts",
-            "open_pipeline_run_dashboard",
-            "open_run_activity_chart",
+            ("diagnose_zenml_setup", {}),
+            ("zenml_describe_resources", {}),
+            (
+                "zenml_list_resources",
+                {"resource_type": "project", "page": 1, "size": 1},
+            ),
+            ("list_users", {}),
+            ("list_stacks", {}),
+            ("list_pipelines", {}),
+            ("get_active_project", {}),
+            ("get_active_user", {}),
+            ("list_projects", {}),
+            ("list_snapshots", {}),
+            ("list_deployments", {}),
+            ("list_tags", {}),
+            ("list_builds", {}),
+            ("list_artifacts", {}),
+            ("open_pipeline_run_dashboard", {}),
+            ("open_run_activity_chart", {}),
             # Note: Do NOT add tools that require parameters (e.g., get_artifact_version,
             # list_artifact_versions) since this test calls tools with empty args {}
         ]
@@ -405,14 +452,15 @@ class MCPSmokeTest:
         available_tools = {tool["name"] for tool in results["tools"]}
         print(f"🔄 Available tools for testing: {available_tools}")
 
-        for tool_name in safe_tools_to_test:
+        generic_project_id: str | None = None
+        for tool_name, arguments in safe_tools_to_test:
             if tool_name in available_tools:
                 try:
                     print(f"🧪 Testing tool: {tool_name}")
                     print(f"🔄 Calling tool {tool_name}...")
                     # Add timeout to prevent hanging (60s to handle slow CI environments)
                     result = await asyncio.wait_for(
-                        session.call_tool(tool_name, {}), timeout=60.0
+                        session.call_tool(tool_name, arguments), timeout=60.0
                     )
                     print(f"🔄 Tool {tool_name} returned result")
 
@@ -446,6 +494,8 @@ class MCPSmokeTest:
                         # Tool executed successfully - compute content length
                         if kind == "structured":
                             content_length = len(json.dumps(payload))
+                            if tool_name == "zenml_list_resources":
+                                generic_project_id = _generic_project_id(payload)
                             print(
                                 f"✅ Tool {tool_name} returned structured output ({content_length} bytes)"
                             )
@@ -472,6 +522,44 @@ class MCPSmokeTest:
                         {"success": False, "error": str(e)},
                     )
                     results["errors"].append(error_msg)
+
+        if generic_project_id and "zenml_get_resource" in available_tools:
+            result = await asyncio.wait_for(
+                session.call_tool(
+                    "zenml_get_resource",
+                    {"resource_type": "project", "resource_id": generic_project_id},
+                ),
+                timeout=60.0,
+            )
+            kind, payload = _extract_call_tool_output(result)
+            error_reason = _detect_tool_error("zenml_get_resource", kind, payload)
+            if result.is_error or error_reason:
+                error_msg = (
+                    "Tool zenml_get_resource returned error: "
+                    f"{error_reason or 'isError=True'}"
+                )
+                results["tool_test_results"]["zenml_get_resource"] = {
+                    "success": False,
+                    "error": error_msg,
+                }
+                results["errors"].append(error_msg)
+            else:
+                try:
+                    _validate_generic_project_get(kind, payload, generic_project_id)
+                except ValueError:
+                    error_msg = (
+                        "Tool zenml_get_resource returned an invalid project payload"
+                    )
+                    results["tool_test_results"]["zenml_get_resource"] = {
+                        "success": False,
+                        "error": error_msg,
+                    }
+                    results["errors"].append(error_msg)
+                    return
+                results["tool_test_results"]["zenml_get_resource"] = {
+                    "success": True,
+                    "content_length": len(json.dumps(payload)),
+                }
 
     def print_summary(self, results: SmokeTestResults) -> None:
         """Print a summary of the smoke test results."""

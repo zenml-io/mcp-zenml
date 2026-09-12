@@ -1,7 +1,7 @@
 {
-  "manifest_version": "0.1",
+  "manifest_version": "0.4",
   "name": "mcp-zenml",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "MCP server to connect an MCP client with your ZenML MLOps and LLMOps pipelines",
   "long_description": "The server provides compact generic tools for discovering, reading, creating, updating, deleting, and running finite actions on supported ZenML resources. It also retains focused tools for diagnostics, active context, pipeline triggering, logs, step code, and interactive Apps. Operators can select a legacy tool-name profile or enforce read-only access independently.",
   "author": {
@@ -17,15 +17,17 @@
     "https://raw.githubusercontent.com/zenml-io/mcp-zenml/refs/heads/main/assets/mcp-zenml.png"
   ],
   "server": {
-    "type": "python",
+    "type": "uv",
     "entry_point": "server/zenml_server.py",
     "mcp_config": {
-      "command": "python3",
+      "command": "uv",
       "args": [
+        "run",
+        "--project",
+        "${__dirname}",
         "${__dirname}/server/zenml_server.py"
       ],
       "env": {
-        "PYTHONPATH": "${__dirname}/server/lib",
         "LOGLEVEL": "WARNING",
         "NO_COLOR": "1",
         "ZENML_LOGGING_COLORS_DISABLED": "true",
@@ -38,6 +40,16 @@
         "ZENML_STORE_URL": "${user_config.zenml_store_url}",
         "ZENML_STORE_API_KEY": "${user_config.zenml_store_api_key}"
       }
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.12,<3.15"
     }
   },
   "user_config": {

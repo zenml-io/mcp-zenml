@@ -24,7 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
+import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -265,6 +269,215 @@ async def test_sanitized_tool_error_and_worker_thread() -> None:
     assert "super-secret" not in str(result.model_dump(mode="json"))
 
 
+async def _wait_for_http_mcp_server(
+    process: subprocess.Popen[str], port: int, expected_tool: str, label: str
+) -> None:
+    """Wait until the spawned process answers as the expected MCP server."""
+    deadline = time.monotonic() + 15
+    url = f"http://127.0.0.1:{port}/mcp"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise AssertionError(
+                f"{label} exited early ({process.returncode}): {stdout}{stderr}"
+            )
+        try:
+            async with Client(url) as client:
+                tools = await client.list_tools()
+            if any(tool.name == expected_tool for tool in tools.tools):
+                return
+        except Exception:
+            await asyncio.sleep(0.05)
+    raise AssertionError(f"{label} did not answer as the expected MCP server")
+
+
+async def test_real_localhost_http_session() -> None:
+    """A subprocess HTTP server completes a real MCP handshake and discovery."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"ZENML_STORE_URL", "ZENML_STORE_API_KEY"}
+    }
+    env.update(
+        {
+            "ZENML_MCP_ANALYTICS_ENABLED": "false",
+            "ZENML_MCP_PROFILE": "compact",
+            "ZENML_MCP_WRITE_POLICY": "read_write",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(REPO_ROOT / "server" / "zenml_server.py"),
+            "--transport",
+            "streamable-http",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        await _wait_for_http_mcp_server(
+            process, port, "diagnose_zenml_setup", "HTTP server"
+        )
+
+        async with Client(f"http://127.0.0.1:{port}/mcp") as client:
+            tools = await client.list_tools()
+            names = [tool.name for tool in tools.tools]
+            assert names[0] == "diagnose_zenml_setup"
+            assert len(names) == 16
+    finally:
+        process.terminate()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+
+
+async def test_timeout_and_cancellation_outcomes() -> None:
+    """HTTP timeout/cancellation do not retry or stop dispatched sync work."""
+    with tempfile.TemporaryDirectory(prefix="mcp-transport-") as temp_dir:
+        root = Path(temp_dir)
+        events_path = root / "events.txt"
+        release_path = root / "release"
+        script_path = root / "blocking_server.py"
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        script_path.write_text(
+            textwrap.dedent(
+                f"""
+                import asyncio
+                import threading
+                import time
+                from pathlib import Path
+
+                import uvicorn
+                from mcp.server.mcpserver import MCPServer
+
+                events = Path({str(events_path)!r})
+                release = Path({str(release_path)!r})
+                server = MCPServer("blocking-http-test")
+
+                @server.tool()
+                def slow_call(call_id: str, wait_for_release: bool = False):
+                    with events.open("a", encoding="utf-8") as stream:
+                        stream.write(f"start:{{call_id}}:{{threading.get_ident()}}\\n")
+                    if wait_for_release:
+                        deadline = time.monotonic() + 5
+                        while not release.exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        if not release.exists():
+                            raise RuntimeError("test did not release blocking worker")
+                    else:
+                        time.sleep(0.1)
+                    with events.open("a", encoding="utf-8") as stream:
+                        stream.write(f"complete:{{call_id}}\\n")
+                    return {{"completed": True}}
+
+                app = server.streamable_http_app(host="127.0.0.1")
+                asyncio.run(uvicorn.Server(uvicorn.Config(
+                    app,
+                    host="127.0.0.1",
+                    port={port},
+                    log_level="error",
+                    lifespan="on",
+                )).serve())
+                """
+            ),
+            encoding="utf-8",
+        )
+        process = subprocess.Popen(
+            [sys.executable, str(script_path)],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        async def wait_for_event(expected: str, *, prefix: bool = False) -> list[str]:
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                lines = (
+                    events_path.read_text(encoding="utf-8").splitlines()
+                    if events_path.exists()
+                    else []
+                )
+                if (
+                    any(line.startswith(expected) for line in lines)
+                    if prefix
+                    else expected in lines
+                ):
+                    return lines
+                await asyncio.sleep(0.01)
+            raise AssertionError(f"HTTP worker did not record {expected!r}")
+
+        try:
+            await _wait_for_http_mcp_server(
+                process, port, "slow_call", "blocking HTTP server"
+            )
+
+            async with Client(f"http://127.0.0.1:{port}/mcp") as client:
+                try:
+                    await asyncio.wait_for(
+                        client.call_tool("slow_call", {"call_id": "timeout"}),
+                        timeout=0.02,
+                    )
+                except TimeoutError:
+                    pass
+                else:
+                    raise AssertionError("HTTP call did not time out")
+                await wait_for_event("complete:timeout")
+                await asyncio.sleep(0.5)
+                timeout_lines = events_path.read_text(encoding="utf-8").splitlines()
+            assert sum(line.startswith("start:timeout:") for line in timeout_lines) == 1
+            timeout_thread = next(
+                line.rsplit(":", 1)[1]
+                for line in timeout_lines
+                if line.startswith("start:timeout:")
+            )
+            assert timeout_thread != str(threading.get_ident())
+
+            async with Client(f"http://127.0.0.1:{port}/mcp") as client:
+                call = asyncio.create_task(
+                    client.call_tool(
+                        "slow_call",
+                        {"call_id": "cancel", "wait_for_release": True},
+                    )
+                )
+                await wait_for_event("start:cancel:", prefix=True)
+                call.cancel()
+                try:
+                    await call
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    raise AssertionError("cancelled HTTP call returned normally")
+                release_path.touch()
+                await wait_for_event("complete:cancel")
+                await asyncio.sleep(0.5)
+                cancel_lines = events_path.read_text(encoding="utf-8").splitlines()
+            assert sum(line.startswith("start:cancel:") for line in cancel_lines) == 1
+        finally:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+
+
 def test_analytics_metadata_allowlist() -> None:
     """Telemetry drops arbitrary and structured values before transmission."""
     sent: list[dict[str, Any]] = []
@@ -303,12 +516,25 @@ def test_analytics_metadata_allowlist() -> None:
     assert "super-secret" not in str(sent)
 
 
+def test_dev_analytics_shutdown_returns_cleanly() -> None:
+    """The dev-mode early return must not reference uninitialized cleanup state."""
+    with (
+        patch.object(analytics, "ANALYTICS_ENABLED", True),
+        patch.object(analytics, "DEV_MODE", True),
+        patch.object(analytics, "_session_start_time", time.time()),
+        patch.object(analytics, "_shutdown_once", threading.Event()),
+    ):
+        analytics._on_shutdown()
+
+
 async def main() -> int:
     tests = [
         test_legacy_and_current_client_negotiation,
         test_context_schema_and_request_attribution,
         test_http_security_and_lifespan,
         test_sanitized_tool_error_and_worker_thread,
+        test_real_localhost_http_session,
+        test_timeout_and_cancellation_outcomes,
     ]
     for test in tests:
         await test()
@@ -317,7 +543,9 @@ async def main() -> int:
     print("PASS: test_singleton_initialization_and_zero_retry_session")
     test_analytics_metadata_allowlist()
     print("PASS: test_analytics_metadata_allowlist")
-    print(f"All {len(tests) + 2} MCP runtime tests passed.")
+    test_dev_analytics_shutdown_returns_cleanly()
+    print("PASS: test_dev_analytics_shutdown_returns_cleanly")
+    print(f"All {len(tests) + 3} MCP runtime tests passed.")
     return 0
 
 

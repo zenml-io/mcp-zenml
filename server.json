@@ -1,16 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.zenml-io/mcp-zenml",
-  "description": "MCP server for ZenML - browse stacks, pipelines, runs, artifacts & trigger pipeline runs via API",
+  "description": "MCP server for discovering, reading, and changing supported ZenML resources through compact generic tools",
   "repository": {
     "url": "https://github.com/zenml-io/mcp-zenml",
     "source": "github"
   },
-  "version": "1.5.1",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "docker.io/zenmldocker/mcp-zenml:1.5.1",
+      "identifier": "docker.io/zenmldocker/mcp-zenml:2.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -28,6 +28,20 @@
           "format": "string",
           "isSecret": true,
           "name": "ZENML_STORE_API_KEY"
+        },
+        {
+          "description": "Tool registration profile: compact (default) or legacy.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ZENML_MCP_PROFILE"
+        },
+        {
+          "description": "Mutation policy: read_write (default) or read_only.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ZENML_MCP_WRITE_POLICY"
         }
       ]
     }

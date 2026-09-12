@@ -737,6 +737,7 @@ def _on_shutdown(
 
     IMPORTANT: This function never calls init_analytics() during shutdown.
     """
+    sender_stopped = False
     try:
         with _shutdown_lock:
             if _shutdown_once.is_set():

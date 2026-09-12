@@ -27,9 +27,7 @@ jobs:
       ZENML_MCP_ANALYTICS_TEST_RUN: "true"
       PYTHONIOENCODING: "UTF-8"
       PYTHONUNBUFFERED: "1"
-      ZENML_STORE_URL: ${{ secrets.ZENML_STORE_URL }}
-      ZENML_STORE_API_KEY: ${{ secrets.ZENML_STORE_API_KEY }}
-      ZENML_ACTIVE_PROJECT_ID: ${{ secrets.ZENML_ACTIVE_PROJECT_ID }}
+      HAS_ZENML_CREDENTIALS: ${{ secrets.ZENML_STORE_URL != '' && secrets.ZENML_STORE_API_KEY != '' }}
 
     steps:
       - name: Checkout repository
@@ -45,7 +43,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.8.15"
+          version: "0.11.28"
           enable-cache: true
 
       - name: Check PEP 723 dependency drift
@@ -64,13 +62,17 @@ jobs:
             -r requirements.txt
 
       - name: Run MCP smoke test
-        if: env.ZENML_STORE_URL != ''
+        if: env.HAS_ZENML_CREDENTIALS == 'true'
+        env:
+          ZENML_STORE_URL: ${{ secrets.ZENML_STORE_URL }}
+          ZENML_STORE_API_KEY: ${{ secrets.ZENML_STORE_API_KEY }}
+          ZENML_ACTIVE_PROJECT_ID: ${{ secrets.ZENML_ACTIVE_PROJECT_ID }}
         run: |
           echo "Running MCP smoke test..."
-          uv run scripts/test_mcp_server.py server/zenml_server.py
+          uv run scripts/test_mcp_server.py server/zenml_server.py --profile compact --write-policy read_write
 
       - name: Skip MCP smoke test (no credentials)
-        if: env.ZENML_STORE_URL == ''
+        if: env.HAS_ZENML_CREDENTIALS != 'true'
         run: echo "⚠️ Skipping MCP smoke test — ZenML credentials not available (expected for Dependabot PRs)"
 
       - name: Run analytics pipeline test
@@ -92,7 +94,11 @@ jobs:
           uv run scripts/test_mcp_transport.py
           uv run scripts/test_tool_profiles.py
           uv run scripts/test_mcp_apps.py
+          uv run scripts/test_distributions.py self-test
           uv run scripts/generate_manifest_fields.py --check
+
+      - name: Build and verify MCP bundle
+        run: uv run scripts/test_distributions.py reproducible mcp-zenml.mcpb
 
   docker-build:
     runs-on: ubuntu-latest
@@ -102,39 +108,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.28"
+          enable-cache: true
+
       - name: Build Docker image
         run: |
           echo "Building Docker image to verify Dockerfile..."
           docker build -t mcp-zenml:test .
 
-      - name: Verify Docker container starts correctly
-        run: |
-          echo "Verifying container starts without import errors..."
-          # Capture output from container startup (will timeout waiting for stdio, that's expected)
-          OUTPUT=$(timeout 5 docker run --rm mcp-zenml:test 2>&1 || true)
-          echo "Container output:"
-          echo "$OUTPUT"
-
-          # Check for common import/startup errors
-          if echo "$OUTPUT" | grep -q "ModuleNotFoundError"; then
-            echo "❌ FAILED: Container has missing module imports"
-            exit 1
-          fi
-          if echo "$OUTPUT" | grep -q "ImportError"; then
-            echo "❌ FAILED: Container has import errors"
-            exit 1
-          fi
-          if echo "$OUTPUT" | grep -q "Traceback"; then
-            echo "❌ FAILED: Container crashed with Python exception"
-            exit 1
-          fi
-
-          # Verify analytics message appears (indicates successful startup)
-          if echo "$OUTPUT" | grep -q "Analytics:"; then
-            echo "✅ Container started successfully (analytics initialized)"
-          else
-            echo "⚠️ Warning: Expected analytics status message not found"
-          fi
+      - name: Verify Docker package and MCP discovery
+        run: uv run scripts/test_distributions.py docker mcp-zenml:test
 
   type-check:
     name: Type Checking
@@ -155,7 +146,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.8.15"
+          version: "0.11.28"
           enable-cache: true
 
       - name: Run ty type checker
