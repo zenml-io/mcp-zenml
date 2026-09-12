@@ -430,6 +430,11 @@ class ResourceSpec:
     def operation_spec(self, operation: str) -> OperationSpec:
         scope_fields = ("project_id",) if self.scope == "project" else ()
         if operation == "list":
+            property_schemas = (
+                MappingProxyType({"project_id": deepcopy(_UUID)})
+                if scope_fields
+                else None
+            )
             return OperationSpec(
                 resource_type=self.resource_type,
                 operation="list",
@@ -439,8 +444,15 @@ class ResourceSpec:
                 filter_fields=self.list_filters,
                 required_filter_fields=self.list_required_filters,
                 description=f"List {self.description.lower()} with bounded filters.",
+                property_schemas=property_schemas,
             )
         if operation == "get" and self.get_fields is not None:
+            property_schemas = {
+                field: deepcopy(_UUID)
+                for field in (*scope_fields, *self.get_fields)
+                if field in {"project_id", "artifact_id", "model_id", "pipeline_run_id"}
+            }
+            property_schemas["hydrate"] = {"type": "boolean"}
             return OperationSpec(
                 resource_type=self.resource_type,
                 operation="get",
@@ -448,7 +460,7 @@ class ResourceSpec:
                 fields=(*scope_fields, *self.get_fields, "hydrate"),
                 required_fields=self.get_required,
                 description=f"Get one {self.description.lower()} by an identifier.",
-                property_schemas=MappingProxyType({"hydrate": {"type": "boolean"}}),
+                property_schemas=MappingProxyType(property_schemas),
             )
         mutation = self.mutations.get(operation)
         if mutation is not None:

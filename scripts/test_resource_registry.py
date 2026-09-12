@@ -60,6 +60,10 @@ def test_operation_schemas_match_invocation_policy() -> None:
     project_schema = describe_resources("pipeline_run", "list")["input_schema"]
     global_schema = describe_resources("user", "list")["input_schema"]
     assert "project_id" in project_schema["properties"]
+    assert project_schema["properties"]["project_id"] == {
+        "type": "string",
+        "format": "uuid",
+    }
     assert "project_id" not in global_schema["properties"]
     assert project_schema["properties"]["size"]["maximum"] == 200
     assert (
@@ -86,12 +90,27 @@ def test_operation_schemas_match_invocation_policy() -> None:
             parent
             in describe_resources(resource_type, "get")["input_schema"]["required"]
         )
+        assert describe_resources(resource_type, "get")["input_schema"]["properties"][
+            parent
+        ] == {"type": "string", "format": "uuid"}
         assert (
             describe_resources(resource_type, "list")["example"]["filters"][parent]
             == f"<{parent}>"
         )
     component_schema = describe_resources("stack_component", "get")["input_schema"]
     assert "component_type" in component_schema["required"]
+
+    for resource_type, resource in RESOURCE_REGISTRY.items():
+        if resource.scope != "project":
+            continue
+        for operation in ("list", "get"):
+            if operation not in resource.operations:
+                continue
+            schema = describe_resources(resource_type, operation)["input_schema"]
+            assert schema["properties"]["project_id"] == {
+                "type": "string",
+                "format": "uuid",
+            }
 
 
 def test_all_operation_schemas_require_exact_resource_type() -> None:
@@ -116,6 +135,16 @@ def test_all_operation_schemas_require_exact_resource_type() -> None:
         "type": "string",
         "minLength": 1,
     }
+
+
+def test_returned_read_schemas_do_not_mutate_registry_contracts() -> None:
+    schema = describe_resources("artifact_version", "get")["input_schema"]
+    schema["properties"]["project_id"]["format"] = "corrupted"
+    schema["properties"]["artifact_id"]["format"] = "corrupted"
+
+    fresh = describe_resources("artifact_version", "get")["input_schema"]
+    assert fresh["properties"]["project_id"]["format"] == "uuid"
+    assert fresh["properties"]["artifact_id"]["format"] == "uuid"
 
 
 def test_filter_schemas_are_typed() -> None:
@@ -174,6 +203,7 @@ def main() -> int:
         test_action_only_resource_policy_matches_advertised_operations,
         test_operation_schemas_match_invocation_policy,
         test_all_operation_schemas_require_exact_resource_type,
+        test_returned_read_schemas_do_not_mutate_registry_contracts,
         test_filter_schemas_are_typed,
         test_aliases_and_unsupported_operations_are_rejected,
     ]
