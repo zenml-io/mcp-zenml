@@ -452,6 +452,8 @@ class ResourceSpec:
                 for field in (*scope_fields, *self.get_fields)
                 if field in {"project_id", "artifact_id", "model_id", "pipeline_run_id"}
             }
+            if self.resource_type == "stack_component":
+                property_schemas["component_type"] = deepcopy(_COMPONENT_TYPE)
             property_schemas["hydrate"] = {"type": "boolean"}
             return OperationSpec(
                 resource_type=self.resource_type,

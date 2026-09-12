@@ -664,12 +664,20 @@ def get_resource(
     artifact_id = supplied_parents["artifact_id"]
     model_id = supplied_parents["model_id"]
     pipeline_run_id = supplied_parents["pipeline_run_id"]
+    normalized_component_type: Any = component_type
+    if resource_type == "stack_component":
+        from zenml.enums import StackComponentType
+
+        try:
+            normalized_component_type = StackComponentType(component_type)
+        except (TypeError, ValueError) as error:
+            raise ResourceDispatchError("Invalid component_type") from error
     effective_scope, sdk_project = _effective_scope(client, spec, project_id)
     kwargs: dict[str, Any] = {}
     if sdk_project is not None and resource_type not in {"run_step", "hook_invocation"}:
         kwargs["project"] = sdk_project
     if resource_type == "stack_component":
-        kwargs["component_type"] = component_type
+        kwargs["component_type"] = normalized_component_type
     elif resource_type == "model_version":
         kwargs["model_name_or_id"] = model_id
     kwargs["hydrate"] = (
@@ -1497,8 +1505,10 @@ def mutate_resource(
                 )
             )
     except (
+        json.JSONDecodeError,
         requests.ReadTimeout,
         requests.ConnectionError,
+        requests.exceptions.JSONDecodeError,
         requests.exceptions.ChunkedEncodingError,
         requests.exceptions.ContentDecodingError,
     ) as error:
@@ -1525,8 +1535,9 @@ def mutate_resource(
             "error": {
                 "tool": f"zenml_{operation}_resource",
                 "message": (
-                    "The connection was lost while executing the mutation; it may have "
-                    "been dispatched, so the outcome is unknown. " + recovery_message
+                    "The response was lost while executing the mutation or could not be "
+                    "decoded; it may have been dispatched, so the outcome is unknown. "
+                    + recovery_message
                 ),
                 "type": "UnknownOutcome",
                 "details": unknown,
@@ -2000,8 +2011,10 @@ def action_resource(
             "reconciliation": reconciliation,
         }
     except (
+        json.JSONDecodeError,
         requests.ReadTimeout,
         requests.ConnectionError,
+        requests.exceptions.JSONDecodeError,
         requests.exceptions.ChunkedEncodingError,
         requests.exceptions.ContentDecodingError,
     ) as error:
@@ -2020,8 +2033,8 @@ def action_resource(
             "error": {
                 "tool": "zenml_action_resource",
                 "message": (
-                    "The connection was lost while executing the action; it may have "
-                    "been dispatched, so the outcome is unknown. "
+                    "The response was lost while executing the action or could not be "
+                    "decoded; it may have been dispatched, so the outcome is unknown. "
                     + (
                         "The created run ID is unavailable, so reading the source run "
                         "cannot reconcile the outcome; do not replay automatically."

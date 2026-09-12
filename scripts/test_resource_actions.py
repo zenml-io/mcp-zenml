@@ -1104,6 +1104,31 @@ def test_replay_connection_loss_does_not_offer_a_source_run_read() -> None:
     assert "may have been dispatched" in result["error"]["message"]
 
 
+def test_action_malformed_json_response_reports_unknown_outcome() -> None:
+    client = Recorder()
+    attempts = 0
+
+    def parse_truncated_response(**kwargs: Any) -> None:
+        nonlocal attempts
+        del kwargs
+        attempts += 1
+        raise json.JSONDecodeError("Unterminated object", '{"secret":', 10)
+
+    setattr(client, "rotate_webhook_secret", parse_truncated_response)
+    result = action_resource(
+        client,
+        "webhook",
+        "rotate_secret",
+        TARGET,
+        project_id=PROJECT,
+        payload={},
+    )
+
+    assert attempts == 1
+    assert result["outcome"] == "unknown"
+    assert result["error"]["type"] == "UnknownOutcome"
+
+
 def test_nested_pre_dispatch_action_failure_is_not_reported_as_unknown() -> None:
     class NewConnectionError(Exception):
         pass

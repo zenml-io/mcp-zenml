@@ -36,7 +36,7 @@ from mcp import Client
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-from zenml.enums import TriggerFlavor
+from zenml.enums import StackComponentType, TriggerFlavor
 from zenml_resource_dispatch import (
     GET_ADAPTERS,
     LIST_ADAPTERS,
@@ -326,7 +326,7 @@ def test_every_get_adapter_invokes_exact_method() -> None:
         if resource_type == "run_step":
             assert call_kwargs["hydrate"] is True
         if resource_type == "stack_component":
-            assert call_kwargs["component_type"] == "orchestrator"
+            assert call_kwargs["component_type"] is StackComponentType.ORCHESTRATOR
 
 
 def test_every_read_pair_through_mcp() -> None:
@@ -397,6 +397,12 @@ def test_validation_happens_before_sdk_calls() -> None:
         ),
         lambda: list_resources(
             client, "snapshot", filters={"trigger_id": "not-a-uuid"}
+        ),
+        lambda: get_resource(
+            client,
+            "stack_component",
+            "target",
+            component_type="not-a-component-type",
         ),
     ]
     for call in invalid_calls:

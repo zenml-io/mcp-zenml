@@ -1552,6 +1552,24 @@ def test_post_dispatch_connection_loss_is_unknown_and_not_retried() -> None:
         raise AssertionError("pre-connect failure was reported as unknown outcome")
 
 
+def test_mutation_malformed_json_response_reports_unknown_outcome() -> None:
+    client = Recorder()
+    attempts = 0
+
+    def parse_malformed_response(**kwargs: Any) -> None:
+        nonlocal attempts
+        del kwargs
+        attempts += 1
+        raise requests.exceptions.JSONDecodeError("Unterminated object", '{"id":', 6)
+
+    setattr(client, "create_webhook", parse_malformed_response)
+    result = create_resource(client, "webhook", **_kwargs("webhook", "create"))
+
+    assert attempts == 1
+    assert result["outcome"] == "unknown"
+    assert result["error"]["type"] == "UnknownOutcome"
+
+
 def test_nested_pre_dispatch_connection_failure_is_not_reported_as_unknown() -> None:
     class NameResolutionError(Exception):
         pass
@@ -1998,6 +2016,29 @@ def test_retained_trigger_chunked_response_reports_unknown_outcome() -> None:
         raise requests.exceptions.ChunkedEncodingError("truncated response")
 
     setattr(fake, "trigger_pipeline", lose_chunked_response)
+    with (
+        patch.object(server, "zenml_client", fake),
+        patch.object(server.analytics, "track_event"),
+    ):
+        result = server.trigger_pipeline.__wrapped__(TARGET)
+
+    assert attempts == 1
+    assert result["outcome"] == "unknown"
+    assert result["error"]["type"] == "UnknownOutcome"
+    assert result["new_run_id"] is None
+
+
+def test_retained_trigger_malformed_json_response_reports_unknown_outcome() -> None:
+    fake = Recorder()
+    attempts = 0
+
+    def parse_malformed_response(**kwargs: Any) -> None:
+        nonlocal attempts
+        del kwargs
+        attempts += 1
+        raise requests.exceptions.JSONDecodeError("Unterminated object", '{"run":', 7)
+
+    setattr(fake, "trigger_pipeline", parse_malformed_response)
     with (
         patch.object(server, "zenml_client", fake),
         patch.object(server.analytics, "track_event"),

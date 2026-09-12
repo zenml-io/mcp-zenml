@@ -1930,8 +1930,10 @@ def trigger_pipeline(
     try:
         pipeline_run = client.trigger_pipeline(**trigger_kwargs)
     except (
+        json.JSONDecodeError,
         requests.ReadTimeout,
         requests.ConnectionError,
+        requests.exceptions.JSONDecodeError,
         requests.exceptions.ChunkedEncodingError,
         requests.exceptions.ContentDecodingError,
     ) as error:
@@ -1972,9 +1974,10 @@ def trigger_pipeline(
             "error": {
                 "tool": "trigger_pipeline",
                 "message": (
-                    "The connection was lost after the pipeline trigger may have been "
-                    "dispatched, so the outcome is unknown. The new run ID is unavailable, "
-                    "and the source pipeline cannot prove success; do not retry automatically."
+                    "The response was lost or could not be decoded after the pipeline "
+                    "trigger may have been dispatched, so the outcome is unknown. The new "
+                    "run ID is unavailable, and the source pipeline cannot prove success; "
+                    "do not retry automatically."
                 ),
                 "type": "UnknownOutcome",
                 "details": unknown,

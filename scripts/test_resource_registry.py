@@ -99,6 +99,26 @@ def test_operation_schemas_match_invocation_policy() -> None:
         )
     component_schema = describe_resources("stack_component", "get")["input_schema"]
     assert "component_type" in component_schema["required"]
+    assert component_schema["properties"]["component_type"] == {
+        "type": "string",
+        "enum": [
+            "alerter",
+            "annotator",
+            "artifact_store",
+            "container_registry",
+            "data_validator",
+            "deployer",
+            "experiment_tracker",
+            "feature_store",
+            "image_builder",
+            "log_store",
+            "model_deployer",
+            "model_registry",
+            "orchestrator",
+            "sandbox",
+            "step_operator",
+        ],
+    }
 
     for resource_type, resource in RESOURCE_REGISTRY.items():
         if resource.scope != "project":
