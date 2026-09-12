@@ -198,6 +198,31 @@ async def test_http_security_and_lifespan() -> None:
     )
     assert disabled.forwarded_allow_ips == config.forwarded_allow_ips
 
+    for wildcard_host in ("0.0.0.0", "::"):
+        wildcard = server.HTTPTransportConfig(host=wildcard_host)
+        try:
+            server.create_transport_security_settings(wildcard)
+        except ValueError as error:
+            message = str(error)
+            assert wildcard_host in message
+            assert "concrete host" in message
+            assert "--disable-dns-rebinding-protection" in message
+        else:
+            raise AssertionError(
+                f"protected wildcard bind {wildcard_host!r} was accepted"
+            )
+
+        wildcard_disabled = server.HTTPTransportConfig(
+            host=wildcard_host,
+            disable_dns_rebinding_protection=True,
+        )
+        assert (
+            server.create_transport_security_settings(
+                wildcard_disabled
+            ).enable_dns_rebinding_protection
+            is False
+        )
+
     app = server.create_streamable_http_app(config)
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):

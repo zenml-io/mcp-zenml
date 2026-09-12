@@ -3186,6 +3186,12 @@ def create_transport_security_settings(config: HTTPTransportConfig) -> Any:
 
     if config.disable_dns_rebinding_protection:
         return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    if config.host in {"0.0.0.0", "::"}:
+        raise ValueError(
+            f"DNS rebinding protection cannot derive an allowlist from wildcard "
+            f"host {config.host!r}. Bind to a concrete host or explicitly pass "
+            "--disable-dns-rebinding-protection."
+        )
 
     host = config.host
     if host in {"127.0.0.1", "localhost", "::1"}:
@@ -3286,6 +3292,17 @@ if __name__ == "__main__":
         "required setup is missing. (default: off, env: ZENML_MCP_STARTUP_VALIDATION)",
     )
     args = parser.parse_args()
+
+    if args.transport == "streamable-http":
+        try:
+            create_transport_security_settings(
+                HTTPTransportConfig(
+                    host=args.host,
+                    disable_dns_rebinding_protection=args.disable_dns_rebinding_protection,
+                )
+            )
+        except ValueError as error:
+            parser.error(str(error))
 
     try:
         analytics.init_analytics()
