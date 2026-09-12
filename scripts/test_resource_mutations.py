@@ -349,6 +349,8 @@ def _valid_schema_value(schema: dict[str, Any]) -> Any:
             return {field: _valid_schema_value(properties[field]) for field in required}
         if isinstance(schema.get("additionalProperties"), dict):
             return {"orchestrator": _valid_schema_value(schema["additionalProperties"])}
+        if schema.get("minProperties", 0) > 0:
+            return {"key": "value"}
         return {}
     return "value"
 
@@ -379,6 +381,8 @@ def _payload_with_valid_field(
             payload["source_id"] = RELATED
         elif field == "source_id":
             payload["source_type"] = "pipeline"
+    if resource_type == "stack_component" and field == "connector_resource_id":
+        payload["connector_id"] = RELATED
     return payload
 
 
@@ -434,6 +438,8 @@ def _invalid_schema_values(schema: dict[str, Any]) -> list[Any]:
                 invalid_object[field] = invalid_item
                 values.append(invalid_object)
         additional = schema.get("additionalProperties")
+        if schema.get("minProperties", 0) > 0:
+            values.append({})
         if additional is False:
             values.append({**valid_object, "not_allowed": "value"})
         elif isinstance(additional, dict):
@@ -462,7 +468,10 @@ def test_every_payload_field_has_a_strict_runtime_contract() -> None:
             operation = {"C": "create", "U": "update", "D": "delete"}[short]
             mutation = RESOURCE_REGISTRY[resource_type].mutations[operation]
             expected_schema = EXPECTED_SCHEMAS[f"{resource_type}.{operation}"]
-            assert dict(mutation.payload_properties) == expected_schema["properties"]
+            assert (
+                mutation.payload_schema(resource_type)["properties"]
+                == expected_schema["properties"]
+            )
             assert list(mutation.required_payload) == expected_schema["required"]
             assert (
                 describe_resources(resource_type, operation)["input_schema"]
@@ -689,7 +698,53 @@ def test_deployment_delete_timeout_accepts_the_upper_bound() -> None:
     assert len(client.calls) == before
 
 
-def test_constrained_create_schemas_match_validation_and_examples() -> None:
+def test_constrained_mutation_schemas_match_validation_and_examples() -> None:
+    stack_components_schema = describe_resources("stack", "create")["input_schema"][
+        "properties"
+    ]["payload"]["properties"]["components"]
+    assert set(stack_components_schema["properties"]) == {
+        "alerter",
+        "annotator",
+        "artifact_store",
+        "container_registry",
+        "data_validator",
+        "deployer",
+        "experiment_tracker",
+        "feature_store",
+        "image_builder",
+        "log_store",
+        "model_deployer",
+        "model_registry",
+        "orchestrator",
+        "sandbox",
+        "step_operator",
+    }
+    assert stack_components_schema["required"] == ["orchestrator", "artifact_store"]
+    assert stack_components_schema["additionalProperties"] is False
+    valid_stack = {
+        "name": "stack",
+        "components": {"orchestrator": RELATED, "artifact_store": [TARGET]},
+    }
+    assert validate_mutation_payload("stack", "create", valid_stack) == valid_stack
+    for components in (
+        {},
+        {"orchestrator": RELATED},
+        {"artifact_store": TARGET},
+        {
+            "orchestrator": RELATED,
+            "artifact_store": TARGET,
+            "not_a_component_type": RELATED,
+        },
+    ):
+        try:
+            validate_mutation_payload(
+                "stack", "create", {"name": "stack", "components": components}
+            )
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(f"stack.create accepted components {components!r}")
+
     service_schema = describe_resources("service", "create")["input_schema"][
         "properties"
     ]["payload"]["properties"]["config"]
@@ -703,7 +758,12 @@ def test_constrained_create_schemas_match_validation_and_examples() -> None:
             "service_type": {"type": "model-serving", "flavor": "custom"},
         }
         assert validate_mutation_payload("service", "create", payload) == payload
-    for config in ({}, {"description": "missing identity"}, {"name": ""}):
+    for config in (
+        {},
+        {"description": "missing identity"},
+        {"name": ""},
+        {"name": "service", "service_name": ""},
+    ):
         payload = {
             "config": config,
             "service_type": {"type": "model-serving", "flavor": "custom"},
@@ -766,6 +826,226 @@ def test_constrained_create_schemas_match_validation_and_examples() -> None:
             validate_mutation_payload(resource_type, "create", example_payload)
             == example_payload
         )
+
+    schedule_update_schema = describe_resources("schedule_trigger", "update")[
+        "input_schema"
+    ]["properties"]["payload"]
+    assert [
+        excluded["required"] for excluded in schedule_update_schema["not"]["anyOf"]
+    ] == [
+        ["cron_expression", "interval"],
+        ["cron_expression", "run_once_start_time"],
+        ["interval", "run_once_start_time"],
+    ]
+    for payload in (
+        {"active": False},
+        {"cron_expression": "0 * * * *"},
+        {"interval": 60},
+        {"run_once_start_time": "2026-09-12T12:00:00Z"},
+    ):
+        assert (
+            validate_mutation_payload("schedule_trigger", "update", payload) == payload
+        )
+    for payload in (
+        {"cron_expression": "0 * * * *", "interval": 60},
+        {
+            "cron_expression": "0 * * * *",
+            "run_once_start_time": "2026-09-12T12:00:00Z",
+        },
+        {"interval": 60, "run_once_start_time": "2026-09-12T12:00:00Z"},
+    ):
+        try:
+            validate_mutation_payload("schedule_trigger", "update", payload)
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(
+                f"schedule_trigger.update accepted multiple modes {payload!r}"
+            )
+
+
+def test_update_schemas_reject_empty_and_noop_only_payloads() -> None:
+    for resource_type, resource in RESOURCE_REGISTRY.items():
+        if "update" not in resource.mutations:
+            continue
+        payload_schema = describe_resources(resource_type, "update")["input_schema"][
+            "properties"
+        ]["payload"]
+        assert payload_schema["minProperties"] == 1
+        try:
+            validate_mutation_payload(resource_type, "update", {})
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(f"{resource_type}.update accepted an empty payload")
+
+    collection_noops = {
+        "artifact": {"add_tags": [], "remove_tags": []},
+        "artifact_version": {"add_tags": [], "remove_tags": []},
+        "code_repository": {"config": {}},
+        "model": {"add_tags": [], "remove_tags": []},
+        "model_version": {"add_tags": [], "remove_tags": []},
+        "run_template": {"add_tags": [], "remove_tags": []},
+        "service": {"endpoint": {}, "labels": {}, "status": {}},
+        "service_connector": {"labels": {}},
+        "snapshot": {"add_tags": [], "remove_tags": []},
+        "stack": {"component_updates": {}},
+        "stack_component": {"configuration": {}},
+    }
+    for resource_type, fields in collection_noops.items():
+        properties = describe_resources(resource_type, "update")["input_schema"][
+            "properties"
+        ]["payload"]["properties"]
+        for field, empty_value in fields.items():
+            bound = "minItems" if isinstance(empty_value, list) else "minProperties"
+            assert properties[field][bound] == 1
+            try:
+                validate_mutation_payload(resource_type, "update", {field: empty_value})
+            except ResourceRegistryError:
+                pass
+            else:
+                raise AssertionError(
+                    f"{resource_type}.update accepted no-op field {field}"
+                )
+
+    meaningful_empty = {"configuration": {}}
+    webhook_schema = describe_resources("webhook_trigger", "update")["input_schema"][
+        "properties"
+    ]["payload"]["properties"]["configuration"]
+    assert "minProperties" not in webhook_schema
+    assert (
+        validate_mutation_payload("webhook_trigger", "update", meaningful_empty)
+        == meaningful_empty
+    )
+
+
+def test_returned_mutation_schemas_do_not_mutate_registry_contracts() -> None:
+    service_schema = describe_resources("service", "create")["input_schema"][
+        "properties"
+    ]["payload"]
+    service_schema["properties"]["config"]["properties"]["service_name"][
+        "minLength"
+    ] = 999
+    service_schema["properties"]["service_type"]["required"].append("name")
+
+    schedule_schema = describe_resources("schedule_trigger", "create")["input_schema"][
+        "properties"
+    ]["payload"]
+    schedule_schema["oneOf"][0]["required"].append("interval")
+
+    fresh_service = describe_resources("service", "create")["input_schema"][
+        "properties"
+    ]["payload"]
+    assert fresh_service["properties"]["config"]["properties"]["service_name"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+    assert fresh_service["properties"]["service_type"]["required"] == [
+        "type",
+        "flavor",
+    ]
+    fresh_schedule = describe_resources("schedule_trigger", "create")["input_schema"][
+        "properties"
+    ]["payload"]
+    assert fresh_schedule["oneOf"][0]["required"] == ["cron_expression"]
+
+    service_payload = {
+        "config": {"name": "service", "service_name": "service-name"},
+        "service_type": {"type": "model-serving", "flavor": "custom"},
+    }
+    assert (
+        validate_mutation_payload("service", "create", service_payload)
+        == service_payload
+    )
+    schedule_payload = {"name": "schedule", "cron_expression": "0 * * * *"}
+    assert (
+        validate_mutation_payload("schedule_trigger", "create", schedule_payload)
+        == schedule_payload
+    )
+    project_payload = {"name": "project", "description": "description"}
+    assert (
+        validate_mutation_payload("project", "create", project_payload)
+        == project_payload
+    )
+
+
+def test_false_only_update_fields_require_another_effective_field() -> None:
+    cases = (
+        ("snapshot", "replace", {"description": "changed"}),
+        ("model_version", "force", {"stage": "staging"}),
+        ("stack_component", "disconnect", {"name": "renamed"}),
+    )
+    for resource_type, field, effective in cases:
+        schema = describe_resources(resource_type, "update")["input_schema"][
+            "properties"
+        ]["payload"]
+        assert any(
+            branch.get("properties", {}).get(field) == {"const": True}
+            for branch in schema["anyOf"]
+        )
+        try:
+            validate_mutation_payload(resource_type, "update", {field: False})
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(
+                f"{resource_type}.update accepted false-only field {field}"
+            )
+        combined = {field: False, **effective}
+        assert validate_mutation_payload(resource_type, "update", combined) == combined
+
+
+def test_artifact_version_delete_schema_requires_effective_option() -> None:
+    for payload in (
+        {},
+        {"delete_metadata": True},
+        {"delete_from_artifact_store": False},
+        {"delete_metadata": False, "delete_from_artifact_store": True},
+    ):
+        assert (
+            validate_mutation_payload("artifact_version", "delete", payload) == payload
+        )
+    for payload in (
+        {"delete_metadata": False},
+        {"delete_metadata": False, "delete_from_artifact_store": False},
+    ):
+        try:
+            validate_mutation_payload("artifact_version", "delete", payload)
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(
+                f"artifact_version.delete accepted ineffective options {payload!r}"
+            )
+
+
+def test_stack_component_update_connector_constraints() -> None:
+    for payload in (
+        {"connector_id": RELATED},
+        {"connector_id": RELATED, "connector_resource_id": "bucket"},
+        {"disconnect": True},
+        {"disconnect": False, "name": "renamed"},
+    ):
+        assert (
+            validate_mutation_payload("stack_component", "update", payload) == payload
+        )
+    for payload in (
+        {"connector_resource_id": "bucket"},
+        {"disconnect": True, "connector_id": RELATED},
+        {
+            "disconnect": True,
+            "connector_id": RELATED,
+            "connector_resource_id": "bucket",
+        },
+    ):
+        try:
+            validate_mutation_payload("stack_component", "update", payload)
+        except ResourceRegistryError:
+            pass
+        else:
+            raise AssertionError(
+                f"stack_component.update accepted invalid connector state {payload!r}"
+            )
 
 
 def test_false_zero_and_clear_values_reach_the_sdk() -> None:
@@ -1281,6 +1561,173 @@ def test_unknown_nested_mutations_return_complete_reconciliation_inputs() -> Non
         "project_id": PROJECT,
         "note": "Confirm the mutation by reading the resource; do not repeat it automatically.",
     }
+
+
+def test_unknown_service_create_uses_derived_service_name_for_reconciliation() -> None:
+    for config, expected_service_name in (
+        ({"name": "service"}, "zenml-service"),
+        ({"model_name": "model"}, "zenml-model"),
+        (
+            {"name": "service", "service_name": "explicit-service-name"},
+            "explicit-service-name",
+        ),
+    ):
+        client = Recorder()
+        dispatched_service_names: list[str] = []
+
+        def lose_response(**kwargs: Any) -> None:
+            dispatched_service_names.append(kwargs["config"].service_name)
+            raise requests.ConnectionError("remote peer closed after request")
+
+        setattr(client, "create_service", lose_response)
+        result = create_resource(
+            client,
+            "service",
+            payload={
+                "config": config,
+                "service_type": {"type": "model-serving", "flavor": "custom"},
+            },
+            project_id=PROJECT,
+        )
+
+        assert result["outcome"] == "unknown"
+        assert dispatched_service_names == [expected_service_name]
+        assert result["reconciliation"] == {
+            "operation": "list",
+            "resource_type": "service",
+            "filters": {"service_name": expected_service_name},
+            "project_id": PROJECT,
+            "note": "Confirm the mutation by reading the resource; do not repeat it automatically.",
+        }
+
+    client = Recorder()
+    try:
+        create_resource(
+            client,
+            "service",
+            payload={
+                "config": {"name": "service", "service_name": ""},
+                "service_type": {"type": "model-serving", "flavor": "custom"},
+            },
+            project_id=PROJECT,
+        )
+    except ResourceDispatchError:
+        pass
+    else:
+        raise AssertionError("service.create accepted an empty explicit service_name")
+    assert client.calls == []
+
+
+def test_unknown_creates_only_offer_reads_that_identify_the_resource() -> None:
+    client = Recorder()
+
+    def lose_response(**kwargs: Any) -> None:
+        del kwargs
+        raise requests.ConnectionError("remote peer closed after request")
+
+    setattr(client, "create_stack_component", lose_response)
+    stack_component = create_resource(
+        client,
+        "stack_component",
+        payload=_payload("stack_component", "create"),
+    )
+    assert stack_component["reconciliation"]["filters"] == {
+        "name": "component",
+        "type": "orchestrator",
+    }
+
+    setattr(client, "create_model_version", lose_response)
+    named_version = create_resource(
+        client,
+        "model_version",
+        payload={"name": "v1"},
+        project_id=PROJECT,
+        model_id=PARENT,
+    )
+    assert named_version["reconciliation"]["filters"] == {
+        "name": "v1",
+        "model_id": PARENT,
+    }
+
+    unnamed_version = create_resource(
+        client,
+        "model_version",
+        payload={},
+        project_id=PROJECT,
+        model_id=PARENT,
+    )
+    assert unnamed_version["reconciliation"] == {
+        "operation": None,
+        "resource_type": "model_version",
+        "project_id": PROJECT,
+        "model_id": PARENT,
+        "new_version_id": None,
+        "reconcilable": False,
+        "note": (
+            "The model version may have been created with an auto-generated name, "
+            "but its ID was lost with the response. The model ID alone cannot "
+            "identify the new version; do not retry automatically."
+        ),
+    }
+    assert "cannot be identified" in unnamed_version["error"]["message"]
+
+    setattr(client, "create_flavor", lose_response)
+    flavor = create_resource(client, "flavor", payload=_payload("flavor", "create"))
+    assert flavor["reconciliation"] == {
+        "operation": None,
+        "resource_type": "flavor",
+        "source": "zenml.orchestrators.base_orchestrator:BaseOrchestratorFlavor",
+        "component_type": "orchestrator",
+        "new_flavor_id": None,
+        "reconcilable": False,
+        "note": (
+            "The flavor may have been created, but its generated ID and name were "
+            "lost with the response. Source and component type do not uniquely "
+            "identify it; do not retry automatically."
+        ),
+    }
+    assert "cannot be identified" in flavor["error"]["message"]
+
+
+def test_successful_creates_reconcile_by_exact_returned_id() -> None:
+    model_version_client = Recorder()
+
+    def create_model_version(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {"id": TARGET, "body": {"project_id": PROJECT}}
+
+    setattr(model_version_client, "create_model_version", create_model_version)
+    cases = (
+        ("project", Recorder(), _kwargs("project", "create"), {}),
+        (
+            "stack_component",
+            Recorder(),
+            _kwargs("stack_component", "create"),
+            {"component_type": "orchestrator"},
+        ),
+        (
+            "model_version",
+            model_version_client,
+            {"payload": {}, "project_id": PROJECT, "model_id": PARENT},
+            {"project_id": PROJECT, "model_id": PARENT},
+        ),
+        ("flavor", Recorder(), _kwargs("flavor", "create"), {}),
+        (
+            "webhook",
+            Recorder(),
+            _kwargs("webhook", "create"),
+            {"project_id": PROJECT},
+        ),
+    )
+    for resource_type, client, kwargs, expected_scope in cases:
+        result = create_resource(client, resource_type, **kwargs)
+        assert result["resource_id"] == TARGET, (resource_type, result)
+        assert result["reconciliation"] == {
+            "operation": "get",
+            "resource_type": resource_type,
+            "resource_id": TARGET,
+            **expected_scope,
+        }
 
 
 def test_real_zero_retry_session_sends_one_request_after_dropped_response() -> None:

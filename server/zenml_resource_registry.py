@@ -8,6 +8,7 @@ is used by tests only to detect drift.
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, cast
@@ -217,6 +218,8 @@ def validate_filter_value(resource_type: str, field: str, value: Any) -> None:
 
 
 def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
+    if "const" in schema and value != schema["const"]:
+        return False
     alternatives = schema.get("anyOf")
     if alternatives and not any(
         _matches_schema(value, alternative) for alternative in alternatives
@@ -231,6 +234,11 @@ def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
         return False
     excluded = schema.get("not")
     if excluded and _matches_schema(value, excluded):
+        return False
+    requirements = schema.get("allOf")
+    if requirements and not all(
+        _matches_schema(value, requirement) for requirement in requirements
+    ):
         return False
     expected = schema.get("type")
     if expected == "null":
@@ -281,6 +289,8 @@ def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
     if expected == "object":
         if not isinstance(value, dict):
             return False
+        if len(value) < schema.get("minProperties", 0):
+            return False
         properties = schema.get("properties", {})
         if schema.get("additionalProperties") is False and set(value) - set(properties):
             return False
@@ -324,29 +334,13 @@ def validate_mutation_payload(
             raise ResourceRegistryError(
                 f"Invalid value for {resource_type!r} {operation} field {field!r}"
             )
-    if not _matches_schema(value, mutation.payload_schema()):
+    if not _matches_schema(value, mutation.payload_schema(resource_type)):
         raise ResourceRegistryError(
             f"Invalid payload for {resource_type!r} {operation}"
         )
     if operation == "update":
-        empty_collection_noops = {
-            "artifact": {"add_tags", "remove_tags"},
-            "artifact_version": {"add_tags", "remove_tags"},
-            "code_repository": {"config"},
-            "model": {"add_tags", "remove_tags"},
-            "model_version": {"add_tags", "remove_tags"},
-            "run_template": {"add_tags", "remove_tags"},
-            "service": {"endpoint", "labels", "status"},
-            "service_connector": {"labels"},
-            "snapshot": {"add_tags", "remove_tags"},
-            "stack": {"component_updates"},
-            "stack_component": {"configuration"},
-        }.get(resource_type, set())
-        false_noops = {
-            "model_version": {"force"},
-            "snapshot": {"replace"},
-            "stack_component": {"disconnect"},
-        }.get(resource_type, set())
+        empty_collection_noops = _EMPTY_COLLECTION_UPDATE_NOOPS.get(resource_type, ())
+        false_noops = _FALSE_UPDATE_NOOPS.get(resource_type, ())
         effective_fields = {
             field
             for field, item in value.items()
@@ -479,14 +473,38 @@ class MutationSpec:
     payload_constraints: Mapping[str, Any] = MappingProxyType({})
     example_payload: Mapping[str, Any] | None = None
 
-    def payload_schema(self) -> dict[str, Any]:
-        return {
+    def payload_schema(self, resource_type: str) -> dict[str, Any]:
+        properties = deepcopy(dict(self.payload_properties))
+        if self.operation == "update":
+            for field in _EMPTY_COLLECTION_UPDATE_NOOPS.get(resource_type, ()):
+                schema = properties[field]
+                if schema.get("type") == "array":
+                    schema["minItems"] = 1
+                elif schema.get("type") == "object":
+                    schema["minProperties"] = 1
+
+        schema: dict[str, Any] = {
             "type": "object",
-            "properties": dict(self.payload_properties),
+            "properties": properties,
             "required": list(self.required_payload),
             "additionalProperties": False,
-            **self.payload_constraints,
+            **deepcopy(dict(self.payload_constraints)),
         }
+        if self.operation == "update":
+            schema["minProperties"] = 1
+            false_noops = _FALSE_UPDATE_NOOPS.get(resource_type, ())
+            if false_noops:
+                schema["anyOf"] = [
+                    {
+                        "type": "object",
+                        "properties": {field: {"const": True}},
+                        "required": [field],
+                    }
+                    if field in false_noops
+                    else {"type": "object", "required": [field]}
+                    for field in properties
+                ]
+        return schema
 
     def operation_spec(self, resource: ResourceSpec) -> OperationSpec:
         fields: list[str] = []
@@ -516,7 +534,7 @@ class MutationSpec:
             fields.append("payload")
             if self.payload_required:
                 required.append("payload")
-            properties["payload"] = self.payload_schema()
+            properties["payload"] = self.payload_schema(resource.resource_type)
         return OperationSpec(
             resource_type=resource.resource_type,
             operation=self.operation,
@@ -644,6 +662,28 @@ _SOURCE_TYPE = {
     "enum": ["pipeline", "pipeline_run", "pipeline_snapshot"],
 }
 _DATETIME = {"type": "string", "format": "date-time"}
+_EMPTY_COLLECTION_UPDATE_NOOPS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "artifact": frozenset({"add_tags", "remove_tags"}),
+        "artifact_version": frozenset({"add_tags", "remove_tags"}),
+        "code_repository": frozenset({"config"}),
+        "model": frozenset({"add_tags", "remove_tags"}),
+        "model_version": frozenset({"add_tags", "remove_tags"}),
+        "run_template": frozenset({"add_tags", "remove_tags"}),
+        "service": frozenset({"endpoint", "labels", "status"}),
+        "service_connector": frozenset({"labels"}),
+        "snapshot": frozenset({"add_tags", "remove_tags"}),
+        "stack": frozenset({"component_updates"}),
+        "stack_component": frozenset({"configuration"}),
+    }
+)
+_FALSE_UPDATE_NOOPS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "model_version": frozenset({"force"}),
+        "snapshot": frozenset({"replace"}),
+        "stack_component": frozenset({"disconnect"}),
+    }
+)
 
 
 def _mutation(
@@ -717,12 +757,21 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                         "name": _NONEMPTY,
                         "components": {
                             "type": "object",
-                            "additionalProperties": {
-                                "anyOf": [
-                                    _UUID,
-                                    {"type": "array", "items": _UUID, "minItems": 1},
-                                ]
+                            "properties": {
+                                component_type: {
+                                    "anyOf": [
+                                        _UUID,
+                                        {
+                                            "type": "array",
+                                            "items": _UUID,
+                                            "minItems": 1,
+                                        },
+                                    ]
+                                }
+                                for component_type in _COMPONENT_TYPE["enum"]
                             },
+                            "required": ["orchestrator", "artifact_store"],
+                            "additionalProperties": False,
                         },
                     },
                     required=("name", "components"),
@@ -771,6 +820,43 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                         "connector_resource_id": _STR,
                     },
                     parents=("component_type",),
+                    constraints={
+                        "allOf": [
+                            {
+                                "not": {
+                                    "allOf": [
+                                        {
+                                            "type": "object",
+                                            "required": ["connector_resource_id"],
+                                        },
+                                        {
+                                            "not": {
+                                                "type": "object",
+                                                "required": ["connector_id"],
+                                            }
+                                        },
+                                    ]
+                                }
+                            },
+                            {
+                                "not": {
+                                    "type": "object",
+                                    "properties": {"disconnect": {"const": True}},
+                                    "required": ["disconnect", "connector_id"],
+                                }
+                            },
+                            {
+                                "not": {
+                                    "type": "object",
+                                    "properties": {"disconnect": {"const": True}},
+                                    "required": [
+                                        "disconnect",
+                                        "connector_resource_id",
+                                    ],
+                                }
+                            },
+                        ]
+                    },
                 ),
                 "delete": _mutation(
                     "delete",
@@ -801,7 +887,7 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                             "type": "object",
                             "properties": {
                                 field: _NONEMPTY
-                                if field in {"name", "model_name"}
+                                if field in {"name", "model_name", "service_name"}
                                 else _STR
                                 for field in (
                                     "name",
@@ -960,6 +1046,21 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                     {"delete_metadata": _BOOL, "delete_from_artifact_store": _BOOL},
                     parents=("artifact_id",),
                     payload_required=False,
+                    constraints={
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {"delete_metadata": {"const": True}},
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "delete_from_artifact_store": {"const": True}
+                                },
+                                "required": ["delete_from_artifact_store"],
+                            },
+                        ]
+                    },
                 ),
             }
         ),
@@ -1191,6 +1292,27 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                         "start_time": _DATETIME,
                         "end_time": _DATETIME,
                         "max_runs": _POSITIVE_INT,
+                    },
+                    constraints={
+                        "not": {
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "required": ["cron_expression", "interval"],
+                                },
+                                {
+                                    "type": "object",
+                                    "required": [
+                                        "cron_expression",
+                                        "run_once_start_time",
+                                    ],
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["interval", "run_once_start_time"],
+                                },
+                            ]
+                        }
                     },
                 ),
                 "delete": _mutation("delete", "delete_trigger", payload_required=False),

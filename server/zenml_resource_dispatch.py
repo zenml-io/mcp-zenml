@@ -1252,7 +1252,47 @@ def _reconciliation(
                 "Metadata absence does not prove that external infrastructure was removed."
             )
         return result
-    filters = {"name": payload["name"]} if "name" in payload else {}
+    if (
+        resource_type == "model_version"
+        and operation == "create"
+        and "name" not in payload
+    ):
+        return {
+            "operation": None,
+            "resource_type": resource_type,
+            **({"project_id": project_id} if project_id else {}),
+            "model_id": model_id,
+            "new_version_id": None,
+            "reconcilable": False,
+            "note": (
+                "The model version may have been created with an auto-generated name, "
+                "but its ID was lost with the response. The model ID alone cannot "
+                "identify the new version; do not retry automatically."
+            ),
+        }
+    if resource_type == "flavor" and operation == "create":
+        return {
+            "operation": None,
+            "resource_type": resource_type,
+            "source": payload["source"],
+            "component_type": payload["component_type"],
+            "new_flavor_id": None,
+            "reconcilable": False,
+            "note": (
+                "The flavor may have been created, but its generated ID and name were "
+                "lost with the response. Source and component type do not uniquely "
+                "identify it; do not retry automatically."
+            ),
+        }
+    if resource_type == "service" and operation == "create":
+        from zenml.services import ServiceConfig
+
+        service_config = ServiceConfig(**payload["config"])
+        filters = {"service_name": service_config.service_name}
+    elif resource_type == "stack_component" and operation == "create":
+        filters = {"name": payload["name"], "type": payload["component_type"]}
+    else:
+        filters = {"name": payload["name"]} if "name" in payload else {}
     if resource_type == "model_version" and model_id:
         filters["model_id"] = model_id
     return {
@@ -1450,13 +1490,22 @@ def mutate_resource(
             "effective_scope": effective_scope,
             "reconciliation": reconciliation,
         }
+        if reconciliation.get("operation"):
+            recovery_message = (
+                "Use the supplied reconciliation read and do not repeat automatically."
+            )
+        else:
+            recovery_message = (
+                "The created resource cannot be identified from the request; "
+                "do not retry automatically."
+            )
         return {
             **unknown,
             "error": {
                 "tool": f"zenml_{operation}_resource",
                 "message": (
                     "The connection was lost after mutation dispatch; the outcome is unknown. "
-                    "Use the supplied reconciliation read and do not repeat automatically."
+                    + recovery_message
                 ),
                 "type": "UnknownOutcome",
                 "details": unknown,
@@ -1464,6 +1513,20 @@ def mutate_resource(
         }
     projected = safe_project(result, resource_type=resource_type)
     result_id = _find_nested_id(result, "id", "id") if result is not None else None
+    if operation == "create" and result_id and spec.get_fields is not None:
+        reconciliation_component_type = component_type
+        if resource_type == "stack_component":
+            reconciliation_component_type = mutation_payload["component_type"]
+        reconciliation = _reconciliation(
+            resource_type,
+            operation,
+            resource_id=result_id,
+            project_id=project,
+            payload=mutation_payload,
+            artifact_id=artifact_id,
+            model_id=model_id,
+            component_type=reconciliation_component_type,
+        )
     response = {
         "resource_type": resource_type,
         "operation": operation,
