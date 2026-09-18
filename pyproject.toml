@@ -8,7 +8,7 @@
 
 [project]
 name = "mcp-zenml"
-version = "1.2.0"
+version = "2.0.0"
 description = "MCP server for ZenML API access"
 requires-python = ">=3.12"
 

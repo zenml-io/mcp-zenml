@@ -1,8 +1,11 @@
 # Human-editable dependency constraints.
 # Compile to requirements.txt with pinned versions + hashes:
-#   uv pip compile --generate-hashes --exclude-newer "7 days" --python-version 3.12 requirements.in -o requirements.txt
+#   uv pip compile --generate-hashes --exclude-newer "7 days" \
+#     --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
+#     --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+#     --python-version 3.12 requirements.in -o requirements.txt
 httpx
-mcp[cli]
-zenml~=0.93.0
+mcp[cli]==2.2.0
+zenml==0.96.4
 setuptools
 requests>=2.32.0

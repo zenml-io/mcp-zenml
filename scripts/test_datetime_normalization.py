@@ -3,11 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
@@ -28,12 +31,14 @@ Usage:
     uv run scripts/test_datetime_normalization.py
 """
 
+import json
 import sys
 from pathlib import Path
 
 # Add server directory to path so we can import zenml_server
 sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
+from zenml_resource_dispatch import normalize_datetime_filter
 from zenml_server import (
     _classify_exception,
     _normalize_datetime_filter,
@@ -163,6 +168,25 @@ def test_normalization() -> tuple[int, int, list[str]]:
     return passed, failed, failures
 
 
+def test_generic_resource_datetime_normalization() -> tuple[int, int, list[str]]:
+    """Generic read filters share upper-bound and ISO normalization behavior."""
+    cases = [
+        ("lte:2026-09-12", "lte:2026-09-12 23:59:59"),
+        ("lt:2026-09-12", "lt:2026-09-12 23:59:59"),
+        (
+            "range:2026-09-01..2026-09-12",
+            "in:2026-09-01 00:00:00,2026-09-12 23:59:59",
+        ),
+        ("2026-09-12T15:30:00+02:00", "2026-09-12 13:30:00"),
+    ]
+    failures = [
+        f"  FAIL: generic normalization {source!r}: expected {expected!r}, got {actual!r}"
+        for source, expected in cases
+        if (actual := normalize_datetime_filter(source)) != expected
+    ]
+    return len(cases) - len(failures), len(failures), failures
+
+
 # ---------------------------------------------------------------------------
 # Test cases for _classify_exception
 # ---------------------------------------------------------------------------
@@ -221,11 +245,11 @@ def test_classify_exception() -> tuple[int, int, list[str]]:
             failed += 1
             failures.append(f"  FAIL: {desc}\n    " + "\n    ".join(reasons))
 
-    # ValidationError on a list tool → should include filter syntax help
+    # ValidationError on a list tool → should include filter and sort help
     check(
         "filter ValidationError on list tool includes syntax help",
         category="ValidationError",
-        msg_contains="FILTER SYNTAX REFERENCE",
+        msg_contains="LIST INPUT REFERENCE",
         msg_not_contains=None,
         tool_name="list_pipeline_runs",
         exc=_make_pydantic_validation_error(),
@@ -236,19 +260,82 @@ def test_classify_exception() -> tuple[int, int, list[str]]:
         "ValidationError on get tool omits filter syntax",
         category="ValidationError",
         msg_contains="Validation failed",
-        msg_not_contains="FILTER SYNTAX REFERENCE",
+        msg_not_contains="LIST INPUT REFERENCE",
         tool_name="get_pipeline_run",
         exc=_make_non_filter_validation_error(),
     )
 
-    # A plain ValueError should NOT be classified as ValidationError
+    # Plain SDK ValueErrors are actionable without exposing upstream text.
     check(
-        "plain ValueError is not classified as ValidationError",
-        category="UnexpectedError",
-        msg_contains=None,
-        msg_not_contains="FILTER SYNTAX REFERENCE",
+        "plain ValueError is classified without exposing upstream text",
+        category="ValidationError",
+        msg_contains="Invalid input",
+        msg_not_contains="something went wrong",
         tool_name="list_pipeline_runs",
         exc=ValueError("something went wrong"),
+    )
+
+    check(
+        "generic compact list ValueError includes reachable filter help",
+        category="ValidationError",
+        msg_contains="LIST INPUT REFERENCE",
+        msg_not_contains="Invalid sort field",
+        tool_name="zenml_list_resources",
+        exc=ValueError("Invalid sort field 'wat'"),
+    )
+
+    check(
+        "unlabelled sensitive ValueError text is redacted",
+        category="ValidationError",
+        msg_contains="Invalid input",
+        msg_not_contains="FAKE-VALUE-123",
+        tool_name="get_project",
+        exc=ValueError("FAKE-VALUE-123"),
+    )
+
+    check(
+        "malformed upstream JSON is not classified as user input",
+        category="UpstreamError",
+        msg_contains="invalid JSON response",
+        msg_not_contains="FAKE-JSON-SECRET",
+        tool_name="get_step_logs",
+        exc=json.JSONDecodeError("FAKE-JSON-SECRET", "not-json", 0),
+    )
+
+    check(
+        "arbitrary RuntimeError stays redacted",
+        category="UnexpectedError",
+        msg_contains="RuntimeError",
+        msg_not_contains="super-secret",
+        tool_name="get_project",
+        exc=RuntimeError("credential=super-secret"),
+    )
+
+    check(
+        "known SDK RuntimeError maps to a safe lookup category",
+        category="NotFound",
+        msg_contains="resource was not found",
+        msg_not_contains="opaque-value-123",
+        tool_name="get_run_step",
+        exc=RuntimeError("Run step opaque-value-123 was not found"),
+    )
+
+    check(
+        "known SDK RuntimeError maps to a safe validation category",
+        category="ValidationError",
+        msg_contains="Invalid input",
+        msg_not_contains="opaque-value-456",
+        tool_name="zenml_create_resource",
+        exc=RuntimeError("invalid value opaque-value-456"),
+    )
+
+    check(
+        "arbitrary KeyError is not mislabeled as a missing resource",
+        category="UnexpectedError",
+        msg_contains="KeyError",
+        msg_not_contains="super-secret",
+        tool_name="get_project",
+        exc=KeyError("credential=super-secret"),
     )
 
     return passed, failed, failures
@@ -271,6 +358,13 @@ def main() -> None:
     # Normalization tests
     print("\n--- _normalize_datetime_filter ---")
     p, f, fails = test_normalization()
+    total_passed += p
+    total_failed += f
+    all_failures.extend(fails)
+    print(f"  {p} passed, {f} failed")
+
+    print("\n--- generic resource datetime filters ---")
+    p, f, fails = test_generic_resource_datetime_normalization()
     total_passed += p
     total_failed += f
     all_failures.extend(fails)

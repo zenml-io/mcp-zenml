@@ -33,6 +33,9 @@ USER appuser
 # Copy only what we need to run the server in stdio mode
 COPY --chown=appuser:appuser server/zenml_server.py /app/server/zenml_server.py
 COPY --chown=appuser:appuser server/zenml_mcp_analytics.py /app/server/zenml_mcp_analytics.py
+COPY --chown=appuser:appuser server/zenml_resource_registry.py /app/server/zenml_resource_registry.py
+COPY --chown=appuser:appuser server/zenml_resource_dispatch.py /app/server/zenml_resource_dispatch.py
+COPY --chown=appuser:appuser server/zenml_tool_catalog.py /app/server/zenml_tool_catalog.py
 COPY --chown=appuser:appuser server/ui /app/server/ui
 COPY --chown=appuser:appuser VERSION /app/VERSION
 

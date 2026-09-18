@@ -61,94 +61,126 @@ server, providing a way to get live information about:
 - **Models** - ML model registry entries
 - **Model Versions** - versioned model artifacts
 
-### Deprecated (migration recommended)
-- ~~Pipeline run templates~~ → use **Snapshots** instead (see [Migration Guide](#migration-run-templates--snapshots))
+### Compatibility APIs (migration recommended)
+- **Pipeline run templates** remain available in ZenML 0.96.4, while **Snapshots** are preferred for new workflows (see [Migration Guide](#migration-run-templates--snapshots))
 
-The server also allows you to **trigger new pipeline runs** using snapshots (preferred) or run templates (deprecated).
+The server also allows you to **trigger new pipeline runs** using snapshots (preferred) or the deprecated template-based trigger parameter.
 
 *Note: We're continuously improving this integration based on user feedback.
 Please join our [Slack community](https://zenml.io/slack) to share your experience
 and help us make it even better!*
 
-## Available Tools
+## Tool profiles and write policy
 
-The MCP server exposes the following tools, grouped by category:
+The default `compact` profile advertises 16 tools. Seven generic tools cover the
+resource catalog, reads, ordinary mutations, and finite lifecycle actions:
 
-### Pipeline Execution (New in v1.2)
-| Tool | Description |
-|------|-------------|
-| `get_snapshot` | Get a frozen pipeline configuration by name/ID |
-| `list_snapshots` | List snapshots with filters (runnable, deployable, deployed, tag) |
-| `get_deployment` | Get a deployment's runtime status and URL |
-| `list_deployments` | List deployments with filters (status, pipeline, tag) |
-| `get_deployment_logs` | Get bounded logs from a deployment (tail=100 default, max 1000) |
-| `trigger_pipeline` | Trigger a pipeline run (prefer `snapshot_name_or_id` parameter) |
+| Tool | Purpose |
+|------|---------|
+| `zenml_describe_resources` | Discover supported resource types and bounded operation schemas |
+| `zenml_list_resources` | List one resource type with validated filters and pagination |
+| `zenml_get_resource` | Get one resource, with parent and project scope where required |
+| `zenml_create_resource` | Create a supported resource from a typed payload |
+| `zenml_update_resource` | Update one exact resource UUID |
+| `zenml_delete_resource` | Delete or archive one exact resource UUID |
+| `zenml_action_resource` | Run an allowlisted lifecycle or relation action without retries |
 
-### Organization (New in v1.2)
-| Tool | Description |
-|------|-------------|
-| `get_active_project` | Get the currently active project |
-| `get_project` | Get project details by name/ID |
-| `list_projects` | List all projects |
-| `get_tag` | Get tag details (exclusive, colors) |
-| `list_tags` | List tags with filters (resource_type) |
-| `get_build` | Get build details (image, code embedding) |
-| `list_builds` | List builds with filters (is_local, contains_code) |
+Nine focused tools remain because they provide diagnostics, active context,
+streamed logs or code, pipeline execution, or an interactive App:
 
-### Core Entities
-| Tool | Description |
-|------|-------------|
-| `get_user`, `list_users`, `get_active_user` | User management |
-| `get_stack`, `list_stacks` | Stack configurations |
-| `get_stack_component`, `list_stack_components` | Stack components |
-| `get_flavor`, `list_flavors` | Component flavors |
-| `get_service_connector`, `list_service_connectors` | Cloud connectors |
-| `get_pipeline_run`, `list_pipeline_runs` | Pipeline runs |
-| `get_run_step`, `list_run_steps` | Step details |
-| `get_step_logs`, `get_step_code` | Step logs and source code |
-| `list_pipelines`, `get_pipeline_details` | Pipeline definitions |
-| `get_schedule`, `list_schedules` | Schedules |
-| `list_artifacts` | Artifact metadata |
-| `list_secrets` | Secret names (not values) |
-| `get_service`, `list_services` | Model services |
-| `get_model`, `list_models` | Model registry |
-| `get_model_version`, `list_model_versions` | Model versions |
+- `diagnose_zenml_setup`
+- `get_active_user` and `get_active_project`
+- `trigger_pipeline`
+- `get_step_logs`, `get_step_code`, and `get_deployment_logs`
+- `open_pipeline_run_dashboard` and `open_run_activity_chart`
 
-### Interactive Apps (Experimental)
-| Tool | Description |
-|------|-------------|
-| `open_pipeline_run_dashboard` | Open interactive pipeline runs dashboard (MCP App) |
-| `open_run_activity_chart` | Open 30-day run activity bar chart (MCP App) |
+Use `ZENML_MCP_PROFILE=legacy` when an existing client still depends on the old
+entity-specific names such as `list_pipeline_runs`. This retains the
+characterized tool-name and schema compatibility layer for ZenML 0.96.4. It
+does not add support for older ZenML server versions. Use it only while
+migrating: legacy response shapes may expose more operational metadata than the
+compact tools, although the server omits credential-bearing configuration and
+other sensitive fields from both profiles.
 
-### Analysis Tools
-| Tool | Description |
-|------|-------------|
-| `stack_components_analysis` | Analyze stack component usage |
-| `recent_runs_analysis` | Analyze recent pipeline runs |
-| `most_recent_runs` | Get N most recent runs |
+Registration and write access are independent:
 
-### Diagnostics
-| Tool | Description |
-|------|-------------|
-| `diagnose_zenml_setup` | Diagnose server setup (env vars, SDK, connectivity, auth). Works even when misconfigured. |
+| Profile | Policy | Advertised tools |
+|---------|--------|-----------------:|
+| `compact` | `read_write` | 16 |
+| `compact` | `read_only` | 11 |
+| `legacy` | `read_write` | 57 |
+| `legacy` | `read_only` | 52 |
 
-### Deprecated Tools
-| Tool | Replacement |
-|------|-------------|
-| `get_run_template` | Use `get_snapshot` instead |
-| `list_run_templates` | Use `list_snapshots` instead |
-| `trigger_pipeline(template_id=...)` | Use `trigger_pipeline(snapshot_name_or_id=...)` |
+Set `ZENML_MCP_WRITE_POLICY=read_only` to remove all four generic mutation tools
+and `trigger_pipeline` from MCP discovery and dispatch. Resource discovery also
+omits create, update, delete, and action schemas. The older
+`ZENML_MCP_READ_ONLY=true` setting remains accepted; invalid policy values fail
+closed to read-only mode. An invalid `ZENML_MCP_PROFILE` stops startup with a
+configuration error.
+
+Version 2.0.0 requires MCP Python SDK 2.2.0 and ZenML 0.96.4. The compact
+profile is the new default and is a breaking discovery change for clients that
+call entity-specific tool names. Set `ZENML_MCP_PROFILE=legacy` while migrating
+those clients, then move each call to the generic resource tools.
+
+Mutation results distinguish `completed`, `accepted`, and `unknown` outcomes.
+The server does not retry a mutation after it may have reached ZenML. For an
+accepted or unknown result, follow the reconciliation instructions in the
+response before deciding whether to call again. Use the named read when one is
+available. Webhook creation and secret rotation can return a new signing secret
+once; later reads omit it. Delete schemas state
+whether an operation archives metadata, removes metadata, deprovisions a live
+resource, or can delete stored artifact data.
+
+The first 2.0 release covers ordinary operations for projects, stacks and
+components, flavors, services, pipelines and runs, snapshots and templates,
+deployments, artifacts and versions, models and versions, tags, connectors,
+code repositories, webhooks, triggers, wait conditions, and hook invocations.
+Users, schedules, service connector types, secrets, and resource requests have
+the read-only coverage shown by `zenml_describe_resources`. It excludes ZenML
+Cloud control-plane administration, Resource Manager administration, user and
+credential administration, secret-value CRUD, connector login and verification,
+raw webhook events, and aggregate debugging or lineage tools.
+
+Start a generic workflow by discovering the precise schema, then calling it:
+
+```text
+zenml_describe_resources(resource_type="pipeline_run", operation="list")
+zenml_list_resources(
+    resource_type="pipeline_run",
+    filters={"status": "completed", "sort_by": "desc:created"},
+    page=1,
+    size=10,
+)
+```
+
+Prompts and resources remain available in both profiles. The analysis prompts,
+the bounded resource-schema endpoints, and `most_recent_runs` are MCP prompts or
+resources rather than tools.
+
+### Run-template compatibility
+
+ZenML 0.96.4 retains run-template CRUD APIs. Snapshots are preferred for new
+workflows. Pipeline convenience creation and the template-based trigger
+parameter are deprecated. In the legacy profile, `get_run_template` and
+`list_run_templates` remain available for existing clients.
+
+The legacy `tag` input remains in `list_run_templates` for schema compatibility,
+but ZenML 0.96.4 has no equivalent server-side filter. A non-null value is
+rejected before the SDK call. Snapshot tag filtering remains available.
 
 ## Migration: Run Templates → Snapshots
 
-**Why the change?** ZenML evolved its "runnable pipeline artifact" concept. Run Templates are now deprecated wrappers that internally just point to Snapshots. New code should use Snapshots directly.
+**Why the change?** Snapshots replaced run templates as ZenML's preferred
+runnable pipeline artifact. The 0.96.4 SDK still supports run-template CRUD,
+while new code should use snapshots.
 
 ### Quick Migration Guide
 
-| Old Pattern (Templates) | New Pattern (Snapshots) |
-|------------------------|------------------------|
-| `list_run_templates()` | `list_snapshots(runnable=True, named_only=True)` |
-| `get_run_template(name)` | `get_snapshot(name, include_config_schema=True)` |
+| Legacy Pattern (Templates) | Compact Pattern (Snapshots) |
+|----------------------------|-----------------------------|
+| `list_run_templates()` | `zenml_list_resources(resource_type="snapshot", filters={"runnable": true, "named_only": true})` |
+| `get_run_template(name)` | `zenml_get_resource(resource_type="snapshot", resource_id=id)` |
 | `trigger_pipeline(template_id=...)` | `trigger_pipeline(snapshot_name_or_id=...)` |
 
 ### Example Workflow (Snapshot-First)
@@ -158,13 +190,13 @@ The MCP server exposes the following tools, grouped by category:
    → get_active_project()
 
 2. Find runnable snapshots:
-   → list_snapshots(runnable=True, named_only=True)
+   → zenml_list_resources(resource_type="snapshot", filters={"runnable": true, "named_only": true})
 
 3. Trigger a run:
-   → trigger_pipeline(pipeline_name_or_id="my-pipeline", snapshot_name_or_id="my-snapshot")
+   → trigger_pipeline(snapshot_name_or_id="my-snapshot")
 
 4. Check deployments:
-   → list_deployments(status="running")
+   → zenml_list_resources(resource_type="deployment", filters={"status": "running"})
    → get_deployment_logs(name_id_or_prefix="my-deployment", tail=100)
 ```
 
@@ -232,41 +264,52 @@ currently support MCP Apps:
 
 ### Running MCP Apps with Docker
 
-MCP Apps require Streamable HTTP transport and a publicly reachable URL (for
-cloud-hosted clients like Claude.ai). The simplest setup uses Docker +
-Cloudflare tunnel:
+MCP Apps use Streamable HTTP. Keep the container port bound to loopback and put
+an authenticated reverse proxy or identity-aware access service in front of it
+before allowing remote access. Host and Origin validation protect against DNS
+rebinding; they do not authenticate callers.
 
 **1. Build and run the Docker container:**
 
 ```bash
 docker build -t mcp-zenml:apps .
 
-docker run --rm -d --name mcp-zenml-apps -p 8001:8001 \
+docker run --rm -d --name mcp-zenml-apps -p 127.0.0.1:8001:8001 \
   -e ZENML_STORE_URL="https://your-zenml-server.example.com" \
   -e ZENML_STORE_API_KEY="your-api-key" \
+  -e ZENML_MCP_PROFILE="compact" \
+  -e ZENML_MCP_WRITE_POLICY="read_write" \
   -e ZENML_ACTIVE_PROJECT_ID="your-project-id" \
   mcp-zenml:apps --transport streamable-http --host 0.0.0.0 --port 8001 \
   --disable-dns-rebinding-protection
 ```
 
-**2. Start a Cloudflare tunnel (for cloud clients):**
+**2. Configure authenticated remote access:**
+
+Create a named Cloudflare Tunnel, Tailscale Funnel with access controls, or an
+equivalent authenticated reverse proxy. Point its private origin at
+`http://127.0.0.1:8001`, require an identity or service credential for the
+public hostname, and pass only authenticated requests to the origin. Configure
+your MCP client to use the provider's supported OAuth flow or authorization
+headers.
+
+Before adding ZenML credentials to the container, verify that an unauthenticated
+request cannot reach MCP:
 
 ```bash
-npx cloudflared tunnel --url http://localhost:8001
+curl -i https://mcp.example.com/mcp
 ```
 
-This prints a public URL like `https://random-words.trycloudflare.com`.
+The response must be the access provider's `401`, `403`, or login redirect. A
+JSON-RPC or MCP response means the perimeter is open and must be fixed first.
 
-**3. Connect your client:**
-
-- In Claude Desktop or other clients, add the MCP server with URL:
-  `https://random-words.trycloudflare.com/mcp` e.g.:
+**3. Connect your authenticated client:**
 
 ```json
 {
 	"servers": {
 		"ZenML": {
-			"url": "https://USE-YOUR-OWN-URL.trycloudflare.com/mcp",
+			"url": "https://mcp.example.com/mcp",
 			"type": "http"
 		}
 	},
@@ -279,9 +322,10 @@ This prints a public URL like `https://random-words.trycloudflare.com`.
 **Important notes:**
 - `ZENML_ACTIVE_PROJECT_ID` is required — without it, pipeline run tools will
   fail with "No project is currently set as active"
-- The `--disable-dns-rebinding-protection` flag is needed when running behind
-  reverse proxies (cloudflared, ngrok) — it's safe when the proxy handles security
-- The tunnel URL changes on each restart — update your client integration accordingly
+- `--disable-dns-rebinding-protection` is only appropriate when the authenticated
+  proxy validates the public host and the container port remains loopback-only
+- Restrict the ZenML API key to the permissions the MCP client needs; use
+  `ZENML_MCP_WRITE_POLICY=read_only` for inspection-only clients
 
 ## Testing & Quality Assurance
 
@@ -298,6 +342,20 @@ The automated tests verify:
 - Basic tool functionality (when ZenML server is accessible)
 - Resource and prompt enumeration
 - `diagnose_zenml_setup` returns structured diagnostics even in constrained environments
+
+Credential-free CI covers every adapter through the MCP protocol. Persisted
+write receipts require an operator-provided disposable ZenML 0.96.4 server on a
+loopback address and `ZENML_MCP_DISPOSABLE_INTEGRATION=1`; the suite rejects
+shared or remote targets. Feature-enabled trigger, deployment, wait-condition,
+and resource-request receipts also require
+`ZENML_MCP_ACTION_INTEGRATION=1` plus the exact disposable fixture UUIDs named
+by `ZENML_MCP_ACTION_FIXTURE`. A gated skip is not evidence that those live
+features passed. Restricted-access evidence also requires
+`ZENML_MCP_RESTRICTED_INTEGRATION=1` and
+`ZENML_MCP_RESTRICTED_API_KEY`; the suite runs that read through a separate MCP
+process. Release CI sets `ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1`, which turns
+any missing live gate into a failure. Cloud infrastructure provisioning is
+never part of the default test run.
 
 ## Debugging with MCP Inspector
 
@@ -380,7 +438,7 @@ you can sign up for a free trial at [ZenML Pro](https://cloud.zenml.io) and we'l
 
 > **Tip:** Once you have a ZenML server, check out the [MCP Settings page](#quick-setup-via-dashboard-recommended) in your dashboard for the easiest setup experience.
 
-> **Compatibility:** This MCP server is tested with and recommended for **ZenML >= 0.93.0**.
+> **Compatibility:** Version 2.0.0 is tested against **ZenML 0.96.4**.
 > If you are running an older ZenML version, please use an [earlier release](https://github.com/zenml-io/mcp-zenml/releases) of this MCP server.
 
 You will also (probably) need to have `uv` installed locally. For more information, see
@@ -416,6 +474,8 @@ You will need to specify your ZenML MCP server in the following format:
                 "ZENML_LOGGING_COLORS_DISABLED": "true",
                 "ZENML_LOGGING_VERBOSITY": "WARN",
                 "ZENML_ENABLE_RICH_TRACEBACK": "false",
+                "ZENML_MCP_PROFILE": "compact",
+                "ZENML_MCP_WRITE_POLICY": "read_write",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONIOENCODING": "UTF-8",
                 "ZENML_STORE_URL": "https://your-zenml-server-goes-here.com",
@@ -509,7 +569,7 @@ docker pull zenmldocker/mcp-zenml:latest
 Versioned releases are tagged as `X.Y.Z`:
 
 ```bash
-docker pull zenmldocker/mcp-zenml:1.0.8
+docker pull zenmldocker/mcp-zenml:2.0.0
 ```
 
 Run with your ZenML credentials (stdio mode):
@@ -533,6 +593,8 @@ docker run -i --rm \
         "-e", "ZENML_STORE_URL=https://...",
         "-e", "ZENML_STORE_API_KEY=ZENKEY_...",
         "-e", "ZENML_ACTIVE_PROJECT_ID=...",
+        "-e", "ZENML_MCP_PROFILE=compact",
+        "-e", "ZENML_MCP_WRITE_POLICY=read_write",
         "-e", "LOGLEVEL=WARNING",
         "-e", "NO_COLOR=1",
         "-e", "ZENML_LOGGING_COLORS_DISABLED=true",
@@ -570,7 +632,15 @@ This project uses MCP Bundles (`.mcpb`) — the successor to Anthropic's Desktop
 
 Note on rename: MCP Bundles replace the older `.dxt` format. Claude Desktop remains backward‑compatible with existing `.dxt` files, but we now ship `mcp-zenml.mcpb` and recommend using it going forward.
 
-The `mcp-zenml.mcpb` file in the repository root contains everything needed to run the ZenML MCP server, eliminating the need for complex manual installation steps. This makes powerful ZenML integrations accessible to users without requiring technical setup expertise.
+The `mcp-zenml.mcpb` file in the repository root uses the MCPB 0.4 UV runtime.
+The host installs the pinned Python dependencies for the current operating
+system, so the same bundle works on macOS, Windows, and Linux without embedding
+platform-specific native extensions. Installation needs network access the
+first time UV resolves the bundled environment.
+
+Bundle builds reuse the committed `mcpb-uv.lock` and resolve its Python
+dependency graph in offline mode. Set `MCPB_REFRESH_LOCK=1` only when
+intentionally refreshing those pins.
 
 When you drag and drop the `.mcpb` file into Claude Desktop's settings, it automatically handles:
 - Runtime dependency installation

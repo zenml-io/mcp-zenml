@@ -56,6 +56,50 @@ ANALYTICS_DEBUG = os.getenv("LOGLEVEL", "").upper() == "DEBUG" or DEV_MODE
 # Fire-and-forget queue config
 ANALYTICS_QUEUE_MAXSIZE = 100
 
+# Analytics properties are deliberately metadata-only. Callers cannot add
+# arbitrary keys because those can accidentally contain tool inputs, response
+# bodies, entity names, URLs, credentials, or raw exception text.
+ALLOWED_ANALYTICS_PROPERTIES = frozenset(
+    {
+        "action",
+        "duration_ms",
+        "error_type",
+        "has_snapshot_id",
+        "has_stack_override",
+        "has_template_id",
+        "http_status_code",
+        "is_ci",
+        "is_docker",
+        "issues_count",
+        "mcp_client_name",
+        "mcp_client_version",
+        "operation",
+        "os",
+        "outcome",
+        "profile",
+        "python_version",
+        "resource_type",
+        "server_version",
+        "session_id",
+        "shutdown_reason",
+        "shutdown_signal",
+        "size",
+        "startup_validation_mode",
+        "startup_validation_ok",
+        "success",
+        "test_run",
+        "tool_name",
+        "total_tool_calls",
+        "transport",
+        "unique_tools_used",
+        "uptime_seconds",
+        "used_deprecated_template",
+        "zenml_sdk_version",
+        "zenml_server_version",
+    }
+)
+_MAX_ANALYTICS_STRING_LENGTH = 128
+
 # =============================================================================
 # Module state
 # =============================================================================
@@ -227,6 +271,19 @@ def _close_http_client() -> None:
         pass
     finally:
         _http_client = None
+
+
+def _sanitize_properties(properties: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded primitive values for explicitly approved metadata keys."""
+    sanitized: dict[str, Any] = {}
+    for key, value in properties.items():
+        if key not in ALLOWED_ANALYTICS_PROPERTIES or value is None:
+            continue
+        if isinstance(value, str):
+            sanitized[key] = value[:_MAX_ANALYTICS_STRING_LENGTH]
+        elif isinstance(value, (bool, int, float)):
+            sanitized[key] = value
+    return sanitized
 
 
 def _send_events_sync(events: list[dict[str, Any]]) -> None:
@@ -507,7 +564,7 @@ def set_session_properties(properties: dict[str, Any]) -> None:
     """Attach properties to all subsequent events in this process/session."""
     try:
         with _session_properties_lock:
-            _session_properties.update(properties)
+            _session_properties.update(_sanitize_properties(properties))
     except Exception:
         return
 
@@ -572,6 +629,8 @@ def track_event(event_name: str, properties: dict[str, Any] | None = None) -> No
         if "test_run" not in props and is_test_run_environment():
             props["test_run"] = True
 
+        props = _sanitize_properties(props)
+
         if DEV_MODE:
             print(f"[Analytics DEV] {event_name}: {props}", file=sys.stderr)
             return
@@ -590,6 +649,11 @@ def track_tool_call(
     http_status_code: int | None = None,
     mcp_client_name: str | None = None,
     mcp_client_version: str | None = None,
+    resource_type: str | None = None,
+    operation: str | None = None,
+    action: str | None = None,
+    profile: str | None = None,
+    outcome: str | None = None,
 ) -> None:
     """Track a tool call with session stats.
 
@@ -625,6 +689,16 @@ def track_tool_call(
             properties["mcp_client_name"] = mcp_client_name
         if mcp_client_version:
             properties["mcp_client_version"] = mcp_client_version
+        if resource_type:
+            properties["resource_type"] = resource_type
+        if operation:
+            properties["operation"] = operation
+        if action:
+            properties["action"] = action
+        if profile:
+            properties["profile"] = profile
+        if outcome:
+            properties["outcome"] = outcome
 
         track_event("Tool Called", properties)
     except Exception:
@@ -663,6 +737,7 @@ def _on_shutdown(
 
     IMPORTANT: This function never calls init_analytics() during shutdown.
     """
+    sender_stopped = False
     try:
         with _shutdown_lock:
             if _shutdown_once.is_set():
