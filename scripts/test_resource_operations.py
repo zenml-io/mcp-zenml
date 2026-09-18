@@ -211,6 +211,8 @@ class Recorder:
         elif name == "get_run_step":
             item["body"] = {"project_id": PROJECT_ID}
             item["metadata"] = {"pipeline_run_id": PARENT_ID}
+        elif name == "get_stack_component":
+            item["type"] = kwargs["component_type"]
         return item
 
 
@@ -411,6 +413,35 @@ def test_validation_happens_before_sdk_calls() -> None:
         else:
             raise AssertionError("invalid generic read reached the SDK")
         assert len(client.calls) == before
+
+
+def test_stack_component_get_rejects_uuid_from_another_type() -> None:
+    client = Recorder()
+    client.item_factory = lambda name, kwargs: {
+        "id": "target",
+        "type": "StackComponentType.ALERTER",
+    }
+    try:
+        get_resource(
+            client,
+            "stack_component",
+            "target",
+            component_type="orchestrator",
+        )
+    except ResourceNotFound:
+        pass
+    else:
+        raise AssertionError("stack component UUID bypassed component_type")
+    assert client.calls == [
+        (
+            "get_stack_component",
+            {
+                "name_id_or_prefix": "target",
+                "component_type": StackComponentType.ORCHESTRATOR,
+                "hydrate": False,
+            },
+        )
+    ]
 
 
 def test_typed_filters_are_forwarded_after_local_validation() -> None:

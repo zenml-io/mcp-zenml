@@ -181,7 +181,11 @@ async def test_http_security_and_lifespan() -> None:
     )
     security = server.create_transport_security_settings(config)
     assert security.enable_dns_rebinding_protection is True
-    assert "127.0.0.1:*" in security.allowed_hosts
+    assert security.allowed_hosts == [
+        "127.0.0.1:8000",
+        "localhost:8000",
+        "[::1]:8000",
+    ]
     assert config.forwarded_allow_ips == "10.0.0.0/8"
 
     disabled = server.HTTPTransportConfig(
@@ -198,7 +202,36 @@ async def test_http_security_and_lifespan() -> None:
     )
     assert disabled.forwarded_allow_ips == config.forwarded_allow_ips
 
-    for wildcard_host in ("0.0.0.0", "::"):
+    custom = server.create_transport_security_settings(
+        server.HTTPTransportConfig(host="mcp.internal.example", port=8443)
+    )
+    assert custom.allowed_hosts == ["mcp.internal.example:8443"]
+    assert custom.allowed_origins == [
+        "http://mcp.internal.example:*",
+        "https://mcp.internal.example:*",
+    ]
+
+    expanded_loopback = server.create_transport_security_settings(
+        server.HTTPTransportConfig(host="0:0:0:0:0:0:0:1", port=8000)
+    )
+    assert "[::1]:8000" in expanded_loopback.allowed_hosts
+    alternate_loopback = server.create_transport_security_settings(
+        server.HTTPTransportConfig(host="127.0.0.2", port=8000)
+    )
+    assert "127.0.0.2:8000" in alternate_loopback.allowed_hosts
+    assert "http://127.0.0.2:*" in alternate_loopback.allowed_origins
+
+    for wildcard_host in (
+        "",
+        "0",
+        "0x0",
+        "0.0",
+        "0.0.0",
+        "0.0.0.0",
+        "::",
+        "::0",
+        "0:0:0:0:0:0:0:0",
+    ):
         wildcard = server.HTTPTransportConfig(host=wildcard_host)
         try:
             server.create_transport_security_settings(wildcard)
@@ -244,6 +277,16 @@ async def test_http_security_and_lifespan() -> None:
             )
             assert bad_host.status_code == 421
 
+            malformed_port = await client.post(
+                "/mcp", headers={"host": "127.0.0.1:evil.com"}, json={}
+            )
+            assert malformed_port.status_code == 421
+
+            wrong_port = await client.post(
+                "/mcp", headers={"host": "127.0.0.1:8001"}, json={}
+            )
+            assert wrong_port.status_code == 421
+
             bad_origin = await client.post(
                 "/mcp",
                 headers={
@@ -253,6 +296,110 @@ async def test_http_security_and_lifespan() -> None:
                 json={},
             )
             assert bad_origin.status_code == 403
+
+            malformed_origin_port = await client.post(
+                "/mcp",
+                headers={
+                    "host": "127.0.0.1:8000",
+                    "origin": "http://127.0.0.1:evil.com",
+                },
+                json={},
+            )
+            assert malformed_origin_port.status_code == 403
+
+            for malformed_origin in (
+                "http://user@127.0.0.1:8000",
+                "http://127.0.0.1:8000/path",
+                "http://127.0.0.1:8000?query=yes",
+                "http://127.0.0.1:8000#fragment",
+                "http://127.0.0.1:8000, https://attacker.invalid",
+            ):
+                response = await client.post(
+                    "/mcp",
+                    headers={
+                        "host": "127.0.0.1:8000",
+                        "origin": malformed_origin,
+                    },
+                    json={},
+                )
+                assert response.status_code == 403, malformed_origin
+
+            cross_port_origin = await client.post(
+                "/mcp",
+                headers={
+                    "host": "127.0.0.1:8000",
+                    "origin": "http://127.0.0.1:43123",
+                },
+                json={},
+            )
+            assert cross_port_origin.status_code not in {403, 421}
+
+    disabled_app = server.create_streamable_http_app(disabled)
+    disabled_transport = httpx.ASGITransport(app=disabled_app)
+    async with disabled_app.router.lifespan_context(disabled_app):
+        async with httpx.AsyncClient(
+            transport=disabled_transport, base_url="http://test"
+        ) as client:
+            unprotected = await client.post(
+                "/mcp",
+                headers={
+                    "host": "127.0.0.1:evil.com",
+                    "origin": "http://127.0.0.1:evil.com",
+                },
+                json={},
+            )
+            assert unprotected.status_code not in {403, 421}
+
+
+def test_cli_port_validation_and_startup_failure_exit_nonzero() -> None:
+    """Invalid ports and bind failures are observable process failures."""
+    base_command = [
+        sys.executable,
+        str(REPO_ROOT / "server" / "zenml_server.py"),
+        "--transport",
+        "streamable-http",
+    ]
+    clean_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"ZENML_STORE_URL", "ZENML_STORE_API_KEY"}
+    }
+    clean_env["ZENML_MCP_ANALYTICS_ENABLED"] = "false"
+
+    for invalid_port in ("0", "65536", "not-a-port"):
+        result = subprocess.run(
+            [*base_command, "--port", invalid_port],
+            cwd=REPO_ROOT,
+            env=clean_env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "port" in result.stderr.lower()
+        assert "Traceback" not in result.stderr
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        occupied_port = listener.getsockname()[1]
+        result = subprocess.run(
+            [
+                *base_command,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(occupied_port),
+            ],
+            cwd=REPO_ROOT,
+            env=clean_env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    assert result.returncode != 0
 
 
 async def test_sanitized_tool_error_and_worker_thread() -> None:
@@ -566,11 +713,13 @@ async def main() -> int:
         print(f"PASS: {test.__name__}")
     test_singleton_initialization_and_zero_retry_session()
     print("PASS: test_singleton_initialization_and_zero_retry_session")
+    test_cli_port_validation_and_startup_failure_exit_nonzero()
+    print("PASS: test_cli_port_validation_and_startup_failure_exit_nonzero")
     test_analytics_metadata_allowlist()
     print("PASS: test_analytics_metadata_allowlist")
     test_dev_analytics_shutdown_returns_cleanly()
     print("PASS: test_dev_analytics_shutdown_returns_cleanly")
-    print(f"All {len(tests) + 3} MCP runtime tests passed.")
+    print(f"All {len(tests) + 4} MCP runtime tests passed.")
     return 0
 
 

@@ -55,13 +55,29 @@
   ],
   "input_schemas": {
     "diagnose_zenml_setup": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
     "get_step_logs": {
+      "additionalProperties": false,
       "properties": {
         "step_run_id": {
           "type": "string"
+        },
+        "source": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logs_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -70,6 +86,7 @@
       "type": "object"
     },
     "list_users": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -112,6 +129,7 @@
       "type": "object"
     },
     "get_user": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -123,14 +141,17 @@
       "type": "object"
     },
     "get_active_user": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
     "get_active_project": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
     "get_project": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -146,6 +167,7 @@
       "type": "object"
     },
     "list_projects": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -195,6 +217,7 @@
       "type": "object"
     },
     "get_stack": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -206,10 +229,12 @@
       "type": "object"
     },
     "easter_egg": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
     "list_stacks": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -252,6 +277,7 @@
       "type": "object"
     },
     "list_pipelines": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -283,6 +309,7 @@
       "type": "object"
     },
     "get_pipeline_details": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -298,6 +325,7 @@
       "type": "object"
     },
     "get_service": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -309,6 +337,7 @@
       "type": "object"
     },
     "list_services": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -393,6 +422,7 @@
       "type": "object"
     },
     "get_stack_component": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -404,6 +434,7 @@
       "type": "object"
     },
     "list_stack_components": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -460,6 +491,7 @@
       "type": "object"
     },
     "get_flavor": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -471,6 +503,7 @@
       "type": "object"
     },
     "list_flavors": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -527,9 +560,14 @@
       "type": "object"
     },
     "trigger_pipeline": {
+      "additionalProperties": false,
       "properties": {
         "pipeline_name_or_id": {
-          "type": "string"
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "snapshot_name_or_id": {
           "default": null,
@@ -553,12 +591,10 @@
           ]
         }
       },
-      "required": [
-        "pipeline_name_or_id"
-      ],
       "type": "object"
     },
     "get_run_template": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -570,6 +606,7 @@
       "type": "object"
     },
     "list_run_templates": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -615,6 +652,7 @@
       "type": "object"
     },
     "get_snapshot": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -651,6 +689,7 @@
       "type": "object"
     },
     "list_snapshots": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -742,6 +781,7 @@
       "type": "object"
     },
     "get_deployment": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -764,6 +804,7 @@
       "type": "object"
     },
     "list_deployments": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -848,6 +889,7 @@
       "type": "object"
     },
     "get_deployment_logs": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -870,6 +912,7 @@
       "type": "object"
     },
     "get_schedule": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -881,6 +924,7 @@
       "type": "object"
     },
     "list_schedules": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -944,6 +988,7 @@
       "type": "object"
     },
     "get_pipeline_run": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -955,6 +1000,7 @@
       "type": "object"
     },
     "list_pipeline_runs": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1053,6 +1099,7 @@
       "type": "object"
     },
     "get_run_step": {
+      "additionalProperties": false,
       "properties": {
         "step_run_id": {
           "type": "string"
@@ -1064,6 +1111,7 @@
       "type": "object"
     },
     "list_run_steps": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1134,6 +1182,7 @@
       "type": "object"
     },
     "list_artifacts": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1183,6 +1232,7 @@
       "type": "object"
     },
     "get_artifact_version": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -1201,6 +1251,7 @@
       "type": "object"
     },
     "list_artifact_versions": {
+      "additionalProperties": false,
       "properties": {
         "artifact_name_or_id": {
           "type": "string"
@@ -1249,6 +1300,7 @@
       "type": "object"
     },
     "list_secrets": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1291,6 +1343,7 @@
       "type": "object"
     },
     "get_service_connector": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -1302,6 +1355,7 @@
       "type": "object"
     },
     "list_service_connectors": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1351,6 +1405,7 @@
       "type": "object"
     },
     "get_model": {
+      "additionalProperties": false,
       "properties": {
         "name_id_or_prefix": {
           "type": "string"
@@ -1362,6 +1417,7 @@
       "type": "object"
     },
     "list_models": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1411,6 +1467,7 @@
       "type": "object"
     },
     "get_model_version": {
+      "additionalProperties": false,
       "properties": {
         "model_name_or_id": {
           "type": "string"
@@ -1426,6 +1483,7 @@
       "type": "object"
     },
     "list_model_versions": {
+      "additionalProperties": false,
       "properties": {
         "model_name_or_id": {
           "type": "string"
@@ -1495,6 +1553,7 @@
       "type": "object"
     },
     "get_step_code": {
+      "additionalProperties": false,
       "properties": {
         "step_run_id": {
           "type": "string"
@@ -1506,6 +1565,7 @@
       "type": "object"
     },
     "get_tag": {
+      "additionalProperties": false,
       "properties": {
         "tag_name_or_id": {
           "type": "string"
@@ -1521,6 +1581,7 @@
       "type": "object"
     },
     "list_tags": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1577,6 +1638,7 @@
       "type": "object"
     },
     "get_build": {
+      "additionalProperties": false,
       "properties": {
         "id_or_prefix": {
           "type": "string"
@@ -1599,6 +1661,7 @@
       "type": "object"
     },
     "list_builds": {
+      "additionalProperties": false,
       "properties": {
         "sort_by": {
           "default": "desc:created",
@@ -1669,10 +1732,12 @@
       "type": "object"
     },
     "open_pipeline_run_dashboard": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
     "open_run_activity_chart": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     }

@@ -8,6 +8,7 @@ is used by tests only to detect drift.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
@@ -174,16 +175,19 @@ def _scalar_or_array_schema(scalar: dict[str, Any]) -> dict[str, Any]:
 
 def _enum_filter_schema(values: tuple[str, ...]) -> dict[str, Any]:
     scalar = {"type": "string", "enum": list(values)}
-    return {
-        "anyOf": [
-            scalar,
-            {"type": "array", "items": scalar, "minItems": 1},
-            {
-                "type": "string",
-                "pattern": r"^(?:oneof|notoneof):\s*\[.*\]$",
-            },
-        ]
-    }
+    schema = _scalar_or_array_schema(scalar)
+    alternatives = "|".join(re.escape(value) for value in values)
+    schema["anyOf"].append(
+        {
+            "type": "string",
+            "pattern": (
+                rf"^(?:(?:equals|notequals):(?:{alternatives})|"
+                rf'(?:oneof|notoneof):\s*\[\s*"(?:{alternatives})"'
+                rf'(?:\s*,\s*"(?:{alternatives})")*\s*\])$'
+            ),
+        }
+    )
+    return schema
 
 
 def filter_schema(resource_type: str, field: str) -> dict[str, Any]:
@@ -320,6 +324,8 @@ def _matches_schema(value: Any, schema: Mapping[str, Any]) -> bool:
         if len(value) < schema.get("minLength", 0):
             return False
         if "enum" in schema and value not in schema["enum"]:
+            return False
+        if "pattern" in schema and re.fullmatch(schema["pattern"], value) is None:
             return False
         if schema.get("format") == "uuid":
             try:

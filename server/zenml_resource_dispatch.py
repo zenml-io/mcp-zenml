@@ -656,6 +656,14 @@ def _find_nested_value(value: Any, key: str) -> Any:
     return None
 
 
+def _component_type_value(value: Any) -> str | None:
+    """Normalize SDK component-type enum and string representations."""
+    if value is None:
+        return None
+    raw_value = getattr(value, "value", value)
+    return str(raw_value).rsplit(".", 1)[-1].lower()
+
+
 def get_resource(
     client: Any,
     resource_type: str,
@@ -725,6 +733,14 @@ def get_resource(
     item = _invoke_adapter(
         lambda: GET_ADAPTERS[resource_type](client, resource_id, kwargs)
     )
+    if resource_type == "stack_component":
+        observed_component_type = _component_type_value(
+            _find_nested_value(item, "type")
+        )
+        if observed_component_type != _component_type_value(normalized_component_type):
+            raise ResourceNotFound(
+                "'stack_component' was not found for the supplied component_type"
+            )
     relation_checks = {
         "artifact_version": (artifact_id, "artifact_id", "artifact"),
         "model_version": (model_id, "model_id", "model"),

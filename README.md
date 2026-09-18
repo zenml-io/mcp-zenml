@@ -97,7 +97,10 @@ streamed logs or code, pipeline execution, or an interactive App:
 Use `ZENML_MCP_PROFILE=legacy` when an existing client still depends on the old
 entity-specific names such as `list_pipeline_runs`. This retains the
 characterized tool-name and schema compatibility layer for ZenML 0.96.4. It
-does not add support for older ZenML server versions.
+does not add support for older ZenML server versions. Use it only while
+migrating: legacy response shapes may expose more operational metadata than the
+compact tools, although the server omits credential-bearing configuration and
+other sensitive fields from both profiles.
 
 Registration and write access are independent:
 
@@ -190,7 +193,7 @@ while new code should use snapshots.
    → zenml_list_resources(resource_type="snapshot", filters={"runnable": true, "named_only": true})
 
 3. Trigger a run:
-   → trigger_pipeline(pipeline_name_or_id="my-pipeline", snapshot_name_or_id="my-snapshot")
+   → trigger_pipeline(snapshot_name_or_id="my-snapshot")
 
 4. Check deployments:
    → zenml_list_resources(resource_type="deployment", filters={"status": "running"})

@@ -202,6 +202,8 @@ class Recorder:
             item["resources"] = {"artifact_id": PARENT}
         if method == "get_model_version":
             item["body"] = {"project_id": PROJECT, "model_id": PARENT}
+        if method == "get_stack_component":
+            item["type"] = kwargs["component_type"]
         if method == "get_platform_event_trigger":
             item["body"] = {
                 "project_id": PROJECT,
@@ -1332,6 +1334,40 @@ def test_project_parent_and_exact_target_mismatches_block_writes() -> None:
     assert not any(name.startswith("update_") for name, _ in wrong_project.calls)
     assert not any(name.startswith("update_") for name, _ in wrong_parent.calls)
     assert not any(name.startswith("update_") for name, _ in wrong_target.calls)
+
+
+def test_stack_component_type_mismatch_blocks_update_and_delete() -> None:
+    for operation in ("update", "delete"):
+        client = Recorder()
+
+        def get_stack_component(**kwargs: Any) -> dict[str, Any]:
+            client.calls.append(("get_stack_component", kwargs))
+            return {"id": TARGET, "type": "alerter"}
+
+        setattr(client, "get_stack_component", get_stack_component)
+        try:
+            if operation == "update":
+                update_resource(
+                    client,
+                    "stack_component",
+                    TARGET,
+                    payload={"name": "blocked"},
+                    component_type="orchestrator",
+                )
+            else:
+                delete_resource(
+                    client,
+                    "stack_component",
+                    TARGET,
+                    component_type="orchestrator",
+                )
+        except ResourceDispatchError:
+            pass
+        else:
+            raise AssertionError(f"stack component {operation} accepted wrong type")
+        assert not any(
+            name == f"{operation}_stack_component" for name, _ in client.calls
+        )
 
 
 def test_every_related_create_and_update_branch_blocks_mismatches() -> None:

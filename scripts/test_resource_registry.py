@@ -186,6 +186,30 @@ def test_filter_schemas_are_typed() -> None:
     assert "failed" in run_filters["status"]["anyOf"][0]["enum"]
     assert "completed" in run_filters["status"]["anyOf"][0]["enum"]
 
+    expected_statuses = {
+        "deployment": {"unknown", "pending", "running", "absent", "error"},
+        "resource_request": {
+            "pending",
+            "allocated",
+            "preempting",
+            "preempted",
+            "cancelled",
+            "rejected",
+            "released",
+        },
+        "run_wait_condition": {"pending", "resolved"},
+    }
+    for resource_type, expected in expected_statuses.items():
+        filters = describe_resources(resource_type, "list")["input_schema"][
+            "properties"
+        ]["filters"]["properties"]
+        assert set(filters["status"]["anyOf"][0]["enum"]) == expected
+        assert _matches_schema('oneof:["pending"]', filters["status"])
+        assert _matches_schema("equals:pending", filters["status"])
+        assert _matches_schema("notequals:pending", filters["status"])
+        assert not _matches_schema("oneof:[]", filters["status"])
+        assert not _matches_schema('oneof:["not-a-status"]', filters["status"])
+
     trigger_filters = describe_resources("schedule_trigger", "list")["input_schema"][
         "properties"
     ]["filters"]["properties"]

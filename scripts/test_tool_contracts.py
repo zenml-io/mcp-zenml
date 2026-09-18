@@ -29,6 +29,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from mcp import Client, ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -176,6 +177,47 @@ class FakeZenMLClient:
             "list_pipelines",
             {"items": [{"id": "pipeline-1"}], "total": 1, "page": 1, "size": 20},
             **kwargs,
+        )
+
+    def list_users(self, **kwargs: Any) -> FakeResponse:
+        return self._record(
+            "list_users",
+            {
+                "items": [
+                    {
+                        "id": "user-1",
+                        "name": "alex",
+                        "body": {"activation_token": "invite-secret", "active": True},
+                        "metadata": {"nested_token": "nested-secret"},
+                    }
+                ],
+                "total": 1,
+                "page": 1,
+                "size": 50,
+            },
+            **kwargs,
+        )
+
+    def get_user(self, *args: Any, **kwargs: Any) -> FakeResponse:
+        return self._record(
+            "get_user",
+            {
+                "id": "user-1",
+                "name": "alex",
+                "body": {"activation_token": "invite-secret", "active": True},
+            },
+            *args,
+            **kwargs,
+        )
+
+    @property
+    def active_user(self) -> FakeResponse:
+        return FakeResponse(
+            {
+                "id": "user-1",
+                "name": "alex",
+                "body": {"activation_token": "invite-secret", "active": True},
+            }
         )
 
     def get_project(self, *args: Any, **kwargs: Any) -> FakeResponse:
@@ -354,6 +396,10 @@ async def test_legacy_inventory_and_schemas() -> None:
     actual_schemas = {
         tool.name: _normalize_schema(tool.input_schema) for tool in result.tools
     }
+    assert all(
+        schema.get("additionalProperties") is False
+        for schema in actual_schemas.values()
+    )
     legacy_names = [name for name in actual_names if name not in GENERIC_TOOLS]
     assert legacy_names == expected["tool_names"]
     assert set(actual_names) == set(expected["tool_names"]) | GENERIC_TOOLS
@@ -368,6 +414,512 @@ async def test_legacy_inventory_and_schemas() -> None:
     unexpected = set(actual_names) | {"unregistered_tool"}
     errors = _profile_inventory_errors("legacy", "read_write", unexpected)
     assert errors and "unregistered_tool" in errors[0]
+
+
+async def test_unknown_arguments_are_rejected_before_mutations() -> None:
+    """Undeclared options fail before generic and retained tools execute."""
+    unexpected_client_calls = 0
+
+    def record_client_call() -> Any:
+        nonlocal unexpected_client_calls
+        unexpected_client_calls += 1
+        raise AssertionError("tool function executed after argument rejection")
+
+    calls = (
+        (
+            "zenml_create_resource",
+            {"resource_type": "tag", "dry_run": "FAKE-UNKNOWN-SECRET-789"},
+        ),
+        (
+            "zenml_update_resource",
+            {
+                "resource_type": "tag",
+                "resource_id": "11111111-1111-4111-8111-111111111111",
+                "dry_run": "FAKE-UNKNOWN-SECRET-789",
+            },
+        ),
+        (
+            "zenml_delete_resource",
+            {
+                "resource_type": "tag",
+                "resource_id": "11111111-1111-4111-8111-111111111111",
+                "dry_run": "FAKE-UNKNOWN-SECRET-789",
+            },
+        ),
+        (
+            "zenml_action_resource",
+            {
+                "resource_type": "deployment",
+                "action": "stop",
+                "resource_id": "11111111-1111-4111-8111-111111111111",
+                "dry_run": "FAKE-UNKNOWN-SECRET-789",
+            },
+        ),
+        (
+            "trigger_pipeline",
+            {
+                "snapshot_name_or_id": "snapshot-1",
+                "dry_run": "FAKE-UNKNOWN-SECRET-789",
+            },
+        ),
+    )
+
+    with patch.object(server, "get_zenml_client", record_client_call):
+        async with Client(server.mcp, mode="legacy") as session:
+            for tool_name, arguments in calls:
+                result = await session.call_tool(tool_name, arguments)
+                assert result.is_error is True
+                assert "dry_run" in repr(result)
+                assert "FAKE-UNKNOWN-SECRET-789" not in repr(result)
+
+    assert unexpected_client_calls == 0
+
+
+async def test_server_instructions_prefer_generic_resource_tools() -> None:
+    """Legacy discovery guides capable hosts toward the replacement tools."""
+    assert "Prefer zenml_describe_resources" in server.INSTRUCTIONS
+    assert "legacy compatibility profile" in server.INSTRUCTIONS
+    assert "advertised only when the write\npolicy is read_write" in (
+        server.INSTRUCTIONS
+    )
+    assert "Use the generic" in server.INSTRUCTIONS
+    assert "resource tools for new calls and migrations" in server.INSTRUCTIONS
+
+
+def _assert_no_token_keys(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert "token" not in key.lower(), value
+            _assert_no_token_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_token_keys(child)
+
+
+async def test_legacy_user_tools_redact_token_fields() -> None:
+    """Legacy user projections never expose activation or nested token fields."""
+    fake_client = FakeZenMLClient()
+    original_client = server.zenml_client
+    server.zenml_client = fake_client
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            payloads = [
+                _structured_payload(await session.call_tool("list_users", {})),
+                _structured_payload(
+                    await session.call_tool("get_user", {"name_id_or_prefix": "alex"})
+                ),
+                _structured_payload(await session.call_tool("get_active_user", {})),
+            ]
+        for payload in payloads:
+            _assert_no_token_keys(payload)
+            assert "invite-secret" not in repr(payload)
+            assert "nested-secret" not in repr(payload)
+    finally:
+        server.zenml_client = original_client
+
+
+async def test_legacy_sensitive_resources_redact_configuration() -> None:
+    """Legacy service and component reads omit credential-bearing configuration."""
+
+    class SensitiveClient:
+        def get_service(self, name_id_or_prefix: str) -> FakeResponse:
+            return FakeResponse(
+                {
+                    "id": name_id_or_prefix,
+                    "config": {"password": "FAKE-SERVICE-SECRET"},
+                    "endpoint": "https://internal.example",
+                    "name": "safe-service-name",
+                }
+            )
+
+        def list_stack_components(self, **kwargs: Any) -> FakeResponse:
+            component = FakeStackComponent(
+                id="11111111-1111-4111-8111-111111111111",
+                name="alerter",
+                type="alerter",
+            )
+            return FakeResponse({"items": [component], "total": 1})
+
+        def get_stack_component(self, **kwargs: Any) -> FakeResponse:
+            return FakeResponse(
+                {
+                    "id": kwargs["name_id_or_prefix"],
+                    "name": "alerter",
+                    "type": "alerter",
+                    "configuration": {"slack_token": "FAKE-COMPONENT-SECRET"},
+                }
+            )
+
+    original_client = server.zenml_client
+    server.zenml_client = SensitiveClient()
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            service = _structured_payload(
+                await session.call_tool(
+                    "get_service", {"name_id_or_prefix": "service-1"}
+                )
+            )
+            component = _structured_payload(
+                await session.call_tool(
+                    "get_stack_component",
+                    {"name_id_or_prefix": "11111111-1111-4111-8111-111111111111"},
+                )
+            )
+    finally:
+        server.zenml_client = original_client
+
+    serialized = repr((service, component))
+    assert "FAKE-SERVICE-SECRET" not in serialized
+    assert "FAKE-COMPONENT-SECRET" not in serialized
+    assert "configuration" not in serialized and "config" not in serialized
+    assert service["name"] == "safe-service-name"
+    assert component["name"] == "alerter"
+
+
+async def test_step_logs_send_source_or_logs_id() -> None:
+    """Step log calls always satisfy ZenML's exactly-one selector contract."""
+    calls: list[dict[str, Any]] = []
+
+    def record_logs(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"logs": []}
+
+    env = {
+        "ZENML_STORE_URL": "https://zenml.example",
+        "ZENML_STORE_API_KEY": "test-api-key",
+    }
+    with (
+        patch.dict(os.environ, env),
+        patch.object(server, "get_access_token", return_value="access-token"),
+        patch.object(server, "make_step_logs_request", side_effect=record_logs),
+    ):
+        async with Client(server.mcp, mode="legacy") as session:
+            _structured_payload(
+                await session.call_tool("get_step_logs", {"step_run_id": "step-1"})
+            )
+            _structured_payload(
+                await session.call_tool(
+                    "get_step_logs",
+                    {"step_run_id": "step-1", "logs_id": "logs-1"},
+                )
+            )
+            conflict = _structured_error(
+                await session.call_tool(
+                    "get_step_logs",
+                    {
+                        "step_run_id": "step-1",
+                        "source": "step",
+                        "logs_id": "logs-1",
+                    },
+                )
+            )
+            blank_source = _structured_error(
+                await session.call_tool(
+                    "get_step_logs", {"step_run_id": "step-1", "source": "  "}
+                )
+            )
+            blank_logs_id = _structured_error(
+                await session.call_tool(
+                    "get_step_logs", {"step_run_id": "step-1", "logs_id": ""}
+                )
+            )
+
+    assert calls == [
+        {"source": "step", "logs_id": None},
+        {"source": None, "logs_id": "logs-1"},
+    ]
+    assert conflict["type"] == "ValidationError"
+    assert "Only one" in conflict["message"]
+    assert blank_source["type"] == "ValidationError"
+    assert blank_logs_id["type"] == "ValidationError"
+
+    response = type(
+        "LogsResponse",
+        (),
+        {"raise_for_status": lambda self: None, "json": lambda self: []},
+    )()
+    with patch.object(server.requests, "get", return_value=response) as request:
+        assert server.make_step_logs_request(
+            "https://zenml.example",
+            "step-1",
+            "access-token",
+            source="step",
+        ) == {"logs": []}
+    assert request.call_args.kwargs["params"] == {"source": "step"}
+    for selectors in ({"source": " "}, {"logs_id": ""}):
+        try:
+            server.make_step_logs_request(
+                "https://zenml.example",
+                "step-1",
+                "access-token",
+                **selectors,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("blank log selector reached the HTTP client")
+
+
+async def test_diagnostics_fail_when_authentication_fails() -> None:
+    """A healthy public endpoint cannot hide invalid ZenML credentials."""
+    healthy = type(
+        "HealthyResponse",
+        (),
+        {"status_code": 200, "json": lambda self: {"version": "0.96.4"}},
+    )()
+    unauthorized = __import__("requests").Response()
+    unauthorized.status_code = 401
+    unauthorized.url = "https://zenml.example/api/v1/login"
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZENML_STORE_URL": "https://zenml.example",
+                "ZENML_STORE_API_KEY": "invalid-secret-value",
+            },
+        ),
+        patch.object(server.requests, "get", return_value=healthy),
+        patch.object(server.requests, "post", return_value=unauthorized),
+    ):
+        diagnostics = server.collect_zenml_setup_diagnostics()
+
+    assert diagnostics["ok"] is False
+    assert diagnostics["checks"]["connectivity"]["ok"] is True
+    assert diagnostics["checks"]["authentication"] == {
+        "attempted": True,
+        "ok": False,
+        "error_type": "HTTPError",
+        "status_code": 401,
+        "failure_kind": "rejected",
+    }
+    assert "authentication_failed" in {issue["code"] for issue in diagnostics["issues"]}
+    assert "invalid-secret-value" not in repr(diagnostics)
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZENML_STORE_URL": "https://zenml.example",
+                "ZENML_STORE_API_KEY": "valid-secret-value",
+            },
+        ),
+        patch.object(server.requests, "get", return_value=healthy),
+        patch.object(server, "get_access_token", return_value="access-token"),
+    ):
+        healthy_diagnostics = server.collect_zenml_setup_diagnostics()
+    assert healthy_diagnostics["checks"]["authentication"] == {
+        "attempted": True,
+        "ok": True,
+    }
+    assert healthy_diagnostics["ok"] is True
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZENML_STORE_URL": "https://zenml.example",
+                "ZENML_STORE_API_KEY": "unknown-secret-value",
+            },
+        ),
+        patch.object(server.requests, "get", side_effect=server.requests.Timeout()),
+        patch.object(server, "get_access_token", side_effect=server.requests.Timeout()),
+    ):
+        unreachable = server.collect_zenml_setup_diagnostics()
+    issue_codes = {issue["code"] for issue in unreachable["issues"]}
+    assert "authentication_unreachable" in issue_codes
+    assert "authentication_failed" not in issue_codes
+    assert "unknown-secret-value" not in repr(unreachable)
+
+    unavailable_response = server.requests.Response()
+    unavailable_response.status_code = 503
+    unavailable_error = server.requests.HTTPError(response=unavailable_response)
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZENML_STORE_URL": "https://zenml.example",
+                "ZENML_STORE_API_KEY": "unknown-secret-value",
+            },
+        ),
+        patch.object(server.requests, "get", return_value=healthy),
+        patch.object(server, "get_access_token", side_effect=unavailable_error),
+    ):
+        server_error = server.collect_zenml_setup_diagnostics()
+    issue_codes = {issue["code"] for issue in server_error["issues"]}
+    assert "authentication_server_error" in issue_codes
+    assert "authentication_unreachable" not in issue_codes
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZENML_STORE_URL": "https://zenml.example",
+                "ZENML_STORE_API_KEY": "unknown-secret-value",
+            },
+        ),
+        patch.object(server.requests, "get", return_value=healthy),
+        patch.object(server, "get_access_token", side_effect=KeyError("access_token")),
+    ):
+        invalid_response = server.collect_zenml_setup_diagnostics()
+    issue_codes = {issue["code"] for issue in invalid_response["issues"]}
+    assert "authentication_invalid_response" in issue_codes
+    assert "authentication_unreachable" not in issue_codes
+
+    class InvalidTokenResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def __init__(self, access_token: Any) -> None:
+            self.access_token = access_token
+
+        def json(self) -> dict[str, Any]:
+            return {"access_token": self.access_token}
+
+    for invalid_token in (None, "", 7):
+        with patch.object(
+            server.requests,
+            "post",
+            return_value=InvalidTokenResponse(invalid_token),
+        ):
+            try:
+                server.get_access_token("https://zenml.example", "api-key")
+            except RuntimeError as error:
+                assert str(error) == "Invalid ZenML authentication response"
+            else:
+                raise AssertionError(
+                    f"accepted invalid access token: {invalid_token!r}"
+                )
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "ZENML_STORE_URL": "https://zenml.example",
+                "ZENML_STORE_API_KEY": "unknown-secret-value",
+            },
+        ),
+        patch.object(
+            server,
+            "get_access_token",
+            side_effect=json.JSONDecodeError("FAKE-LOGIN-SECRET", "not-json", 0),
+        ),
+    ):
+        async with Client(server.mcp, mode="legacy") as session:
+            malformed_login = _structured_error(
+                await session.call_tool(
+                    "get_step_logs",
+                    {"step_run_id": "step-1", "source": "step"},
+                )
+            )
+    assert malformed_login["type"] == "UpstreamError"
+    assert "invalid JSON response" in malformed_login["message"]
+    assert "FAKE-LOGIN-SECRET" not in repr(malformed_login)
+
+
+async def test_trigger_pipeline_selector_contract() -> None:
+    """Snapshot-only triggering works and conflicting selectors fail closed."""
+
+    class TriggerClient:
+        active_project = type("Project", (), {"id": "project-1"})()
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def trigger_pipeline(self, **kwargs: Any) -> FakeResponse:
+            self.calls.append(kwargs)
+            return FakeResponse({"id": "run-1"})
+
+    fake_client = TriggerClient()
+    original_client = server.zenml_client
+    server.zenml_client = fake_client
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            snapshot = _structured_payload(
+                await session.call_tool(
+                    "trigger_pipeline", {"snapshot_name_or_id": "snapshot-1"}
+                )
+            )
+            template = _structured_payload(
+                await session.call_tool(
+                    "trigger_pipeline",
+                    {"template_id": "11111111-1111-4111-8111-111111111111"},
+                )
+            )
+            conflict = _structured_error(
+                await session.call_tool(
+                    "trigger_pipeline",
+                    {
+                        "snapshot_name_or_id": "snapshot-1",
+                        "template_id": "11111111-1111-4111-8111-111111111111",
+                    },
+                )
+            )
+            missing = _structured_error(await session.call_tool("trigger_pipeline", {}))
+    finally:
+        server.zenml_client = original_client
+
+    assert snapshot["pipeline_run"] == {"id": "run-1"}
+    assert fake_client.calls == [
+        {"snapshot_name_or_id": "snapshot-1"},
+        {"template_id": "11111111-1111-4111-8111-111111111111"},
+    ]
+    assert "deprecated" in template["deprecation_warning"].lower()
+    assert conflict["type"] == "ValidationError"
+    assert "mutually exclusive" in conflict["message"]
+    assert missing["type"] == "ValidationError"
+    assert "at least one" in missing["message"]
+
+
+async def test_missing_step_source_code_is_an_error() -> None:
+    """Missing source code is never serialized as a successful 'None' string."""
+
+    class StepClient:
+        def get_run_step(self, step_run_id: str) -> Any:
+            return type("Step", (), {"source_code": None})()
+
+    original_client = server.zenml_client
+    server.zenml_client = StepClient()
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            error = _structured_error(
+                await session.call_tool("get_step_code", {"step_run_id": "step-1"})
+            )
+    finally:
+        server.zenml_client = original_client
+
+    assert error["type"] == "FeatureUnavailable"
+    assert error["message"] == "Source code is unavailable for this step run."
+
+    class MissingStepClient:
+        def get_run_step(self, step_run_id: str) -> Any:
+            raise KeyError(step_run_id)
+
+    server.zenml_client = MissingStepClient()
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            not_found = _structured_error(
+                await session.call_tool("get_step_code", {"step_run_id": "missing"})
+            )
+    finally:
+        server.zenml_client = original_client
+    assert not_found["type"] == "NotFound"
+
+    from zenml.exceptions import DoesNotExistException
+
+    class SdkMissingStepClient:
+        def get_run_step(self, step_run_id: str) -> Any:
+            raise DoesNotExistException("missing step")
+
+    server.zenml_client = SdkMissingStepClient()
+    try:
+        async with Client(server.mcp, mode="legacy") as session:
+            sdk_not_found = _structured_error(
+                await session.call_tool("get_step_code", {"step_run_id": "missing"})
+            )
+    finally:
+        server.zenml_client = original_client
+    assert sdk_not_found["type"] == "NotFound"
 
 
 async def test_discovery_does_not_initialize_zenml_client() -> None:
@@ -743,6 +1295,38 @@ async def main() -> int:
             test_app_openers_have_truthful_text_fallbacks,
         ),
         ("test_legacy_inventory_and_schemas", test_legacy_inventory_and_schemas),
+        (
+            "test_unknown_arguments_are_rejected_before_mutations",
+            test_unknown_arguments_are_rejected_before_mutations,
+        ),
+        (
+            "test_server_instructions_prefer_generic_resource_tools",
+            test_server_instructions_prefer_generic_resource_tools,
+        ),
+        (
+            "test_legacy_user_tools_redact_token_fields",
+            test_legacy_user_tools_redact_token_fields,
+        ),
+        (
+            "test_legacy_sensitive_resources_redact_configuration",
+            test_legacy_sensitive_resources_redact_configuration,
+        ),
+        (
+            "test_step_logs_send_source_or_logs_id",
+            test_step_logs_send_source_or_logs_id,
+        ),
+        (
+            "test_diagnostics_fail_when_authentication_fails",
+            test_diagnostics_fail_when_authentication_fails,
+        ),
+        (
+            "test_trigger_pipeline_selector_contract",
+            test_trigger_pipeline_selector_contract,
+        ),
+        (
+            "test_missing_step_source_code_is_an_error",
+            test_missing_step_source_code_is_an_error,
+        ),
         (
             "test_discovery_does_not_initialize_zenml_client",
             test_discovery_does_not_initialize_zenml_client,

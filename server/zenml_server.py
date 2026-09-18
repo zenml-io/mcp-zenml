@@ -22,18 +22,22 @@ try:
 except ImportError:
     pass
 
+import argparse
 import asyncio
 import functools
 import inspect
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import sys
 import warnings
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast
@@ -43,6 +47,7 @@ import requests
 import zenml_mcp_analytics as analytics
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent
+from pydantic import ConfigDict
 from urllib3.util.retry import Retry
 from zenml_resource_dispatch import (
     ResourceDispatchError,
@@ -51,6 +56,7 @@ from zenml_resource_dispatch import (
     ResourcePermissionDenied,
     _is_pre_dispatch_connection_failure,
     ensure_writes_enabled,
+    safe_project,
 )
 from zenml_resource_dispatch import (
     action_resource as dispatch_action_resource,
@@ -325,6 +331,33 @@ def _normalize_datetime_filter(value: str) -> str:
 _ERROR_MISSING_ENV_RE = re.compile(
     r"^(?P<var>[A-Z0-9_]+) environment variable not set$"
 )
+_SENSITIVE_ERROR_TEXT_RE = re.compile(
+    r"(?i)(?:api[_ -]?key|authorization|bearer|credential|password|secret|token)"
+)
+
+
+def _list_input_help(tool_name: str) -> str:
+    """Return compact filter and sort guidance for list-tool input failures."""
+    if not (tool_name.startswith("list_") or tool_name == "zenml_list_resources"):
+        return ""
+    return (
+        "\n\nLIST INPUT REFERENCE:\n"
+        "- Sort fields use direction:field, for example desc:created.\n"
+        "- Filter operators include gte:, lte:, contains:, startswith:, oneof:, "
+        "notoneof:, and in:.\n"
+        '- Multi-value filters use a JSON array, for example oneof:["running","error"].\n'
+        "- Datetimes use YYYY-MM-DD HH:MM:SS; date-only and ISO-8601 inputs are normalized."
+    )
+
+
+def _bounded_input_error_message(exc: Exception) -> str | None:
+    """Return a short SDK input error unless it looks capable of leaking a secret."""
+    message = str(exc).strip().strip("'")
+    if not message or len(message) > 500 or _SENSITIVE_ERROR_TEXT_RE.search(message):
+        return None
+    if any(ord(character) < 32 and character not in "\n\t" for character in message):
+        return None
+    return message
 
 
 def _redact_url(url: str | None) -> str | None:
@@ -359,7 +392,7 @@ def _classify_exception(
     if isinstance(exc, ResourceFeatureUnavailable):
         return (
             "FeatureUnavailable",
-            "This ZenML server feature is disabled or unavailable.",
+            str(exc) or "This ZenML server feature is disabled or unavailable.",
             details,
         )
     if isinstance(exc, ResourceNotFound):
@@ -369,6 +402,13 @@ def _classify_exception(
 
     if isinstance(exc, FilterSyntaxError):
         return ("ValidationError", str(exc), details)
+
+    if isinstance(exc, (json.JSONDecodeError, requests.exceptions.JSONDecodeError)):
+        return (
+            "UpstreamError",
+            "ZenML server returned an invalid JSON response.",
+            details,
+        )
 
     # ---- HTTP errors (requests) ----
     if isinstance(exc, requests.HTTPError):
@@ -437,17 +477,7 @@ def _classify_exception(
     )
     if is_validation:
         msg = "Validation failed. Please check your inputs."
-        # Add filter-syntax help only for tools that accept filters
-        if tool_name.startswith("list_"):
-            msg += (
-                "\n\nFILTER SYNTAX REFERENCE:\n"
-                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, "
-                "oneof:, notoneof:, in:\n"
-                '- List operators use JSON arrays, e.g. oneof:["running","error"]\n'
-                "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
-                "- Date-only and ISO-8601 inputs are auto-normalized\n"
-                "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59"
-            )
+        msg += _list_input_help(tool_name)
         return ("ValidationError", msg, details)
 
     # ---- Common configuration errors (missing env vars) ----
@@ -462,6 +492,12 @@ def _classify_exception(
                 f"Missing required environment variable: {var}.",
                 details,
             )
+        return (
+            "ValidationError",
+            "Invalid input. Please check the supplied values."
+            + _list_input_help(tool_name),
+            details,
+        )
 
     # ---- Missing Python deps / integrations ----
     if isinstance(exc, (ImportError, ModuleNotFoundError)):
@@ -504,6 +540,37 @@ def _classify_exception(
             "Version mismatch between this MCP server and your ZenML installation/server.",
             details,
         )
+
+    # A few ZenML SDK paths still use RuntimeError for ordinary lookup and
+    # argument failures. Recognize their shape but keep their text redacted;
+    # arbitrary RuntimeErrors stay on the fully redacted default path.
+    if isinstance(exc, RuntimeError):
+        bounded_message = _bounded_input_error_message(exc)
+        lowered = bounded_message.lower() if bounded_message else ""
+        if any(
+            marker in lowered
+            for marker in ("not found", "does not exist", "could not find")
+        ):
+            return (
+                "NotFound",
+                "The requested ZenML resource was not found.",
+                details,
+            )
+        if any(
+            marker in lowered
+            for marker in (
+                "already exists",
+                "invalid value",
+                "must be",
+                "expected one of",
+            )
+        ):
+            return (
+                "ValidationError",
+                "Invalid input. Please check the supplied values."
+                + _list_input_help(tool_name),
+                details,
+            )
 
     # ---- Default ----
     return ("UnexpectedError", f"Error in {tool_name}: {raw_type}", details)
@@ -802,6 +869,12 @@ through the pages and so on.)
 Most tools return structured JSON data. You should present this data to the
 user in a more readable format (e.g. a table or summary) rather than showing
 raw JSON.
+
+Prefer zenml_describe_resources and the advertised generic resource tools.
+The create, update, delete, and action tools are advertised only when the write
+policy is read_write. Entity-specific list and get tools may be advertised by
+the legacy compatibility profile for existing clients. Use the generic
+resource tools for new calls and migrations.
 """
 
 logger.debug("Initializing MCP server...")
@@ -890,7 +963,12 @@ def get_zenml_client():
     return zenml_client
 
 
-def get_access_token(server_url: str, api_key: str) -> str:
+def get_access_token(
+    server_url: str,
+    api_key: str,
+    *,
+    timeout: tuple[float, float] = (3.05, 30),
+) -> str:
     """
     Generate a short-lived access token using the ZenML API key.
 
@@ -903,7 +981,7 @@ def get_access_token(server_url: str, api_key: str) -> str:
 
     Raises:
         requests.HTTPError: If the request fails
-        ValueError: If the response doesn't contain an access token
+        RuntimeError: If the response doesn't contain a usable access token
     """
     # Ensure the server URL doesn't end with a slash
     server_url = server_url.rstrip("/")
@@ -918,22 +996,30 @@ def get_access_token(server_url: str, api_key: str) -> str:
         url,
         data={"password": api_key},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=(3.05, 30),
+        timeout=timeout,
     )
     response.raise_for_status()
 
-    # Parse the response
-    token_data = response.json()
-
-    # Check if the access token is in the response
-    if "access_token" not in token_data:
-        raise ValueError("No access token in response")
-
-    return token_data["access_token"]
+    try:
+        token_data = response.json()
+    except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
+        raise
+    try:
+        access_token = token_data["access_token"]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError("Invalid ZenML authentication response") from error
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise RuntimeError("Invalid ZenML authentication response")
+    return access_token
 
 
 def make_step_logs_request(
-    server_url: str, step_id: str, access_token: str
+    server_url: str,
+    step_id: str,
+    access_token: str,
+    *,
+    source: str | None = None,
+    logs_id: str | None = None,
 ) -> Dict[str, Any]:
     """Get logs for a specific step from the ZenML API.
 
@@ -959,8 +1045,16 @@ def make_step_logs_request(
 
     logger.debug(f"Fetching logs for step {step_id}")
 
+    if source is not None:
+        source = source.strip()
+    if logs_id is not None:
+        logs_id = logs_id.strip()
+    if (not source and not logs_id) or (source is not None and logs_id is not None):
+        raise ValueError("Exactly one of source or logs_id must be provided.")
+    params = {"source": source} if source is not None else {"logs_id": logs_id}
+
     # Make the request
-    response = requests.get(url, headers=headers, timeout=(3.05, 30))
+    response = requests.get(url, headers=headers, params=params, timeout=(3.05, 30))
     response.raise_for_status()  # Raise an exception for HTTP errors
 
     data = response.json()
@@ -984,7 +1078,8 @@ def collect_zenml_setup_diagnostics(
     or the server URL is unreachable.
     """
     store_url = os.environ.get("ZENML_STORE_URL")
-    api_key_present = bool(os.environ.get("ZENML_STORE_API_KEY"))
+    api_key = os.environ.get("ZENML_STORE_API_KEY")
+    api_key_present = bool(api_key)
     active_project_id_present = bool(os.environ.get("ZENML_ACTIVE_PROJECT_ID"))
 
     checks: dict[str, Any] = {
@@ -1044,6 +1139,46 @@ def collect_zenml_setup_diagnostics(
 
     checks["connectivity"] = connectivity
 
+    authentication: dict[str, Any] = {"attempted": False}
+    if store_url and api_key:
+        authentication["attempted"] = True
+        try:
+            get_access_token(store_url, api_key, timeout=(1.0, 2.5))
+            authentication["ok"] = True
+        except requests.HTTPError as error:
+            status_code = (
+                error.response.status_code
+                if getattr(error, "response", None) is not None
+                else None
+            )
+            authentication.update(
+                {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "status_code": status_code,
+                    "failure_kind": (
+                        "rejected" if status_code in {401, 403} else "server_error"
+                    ),
+                }
+            )
+        except (requests.Timeout, requests.ConnectionError) as error:
+            authentication.update(
+                {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "failure_kind": "unreachable",
+                }
+            )
+        except Exception as error:
+            authentication.update(
+                {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "failure_kind": "invalid_response",
+                }
+            )
+    checks["authentication"] = authentication
+
     if include_client_info:
         checks["mcp_client"] = _get_mcp_client_info_safe()
 
@@ -1063,6 +1198,38 @@ def collect_zenml_setup_diagnostics(
                 "severity": "error",
                 "code": "missing_api_key",
                 "message": "ZENML_STORE_API_KEY is not set.",
+            }
+        )
+    if authentication.get("failure_kind") == "rejected":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_failed",
+                "message": "ZenML authentication failed. Check ZENML_STORE_API_KEY.",
+            }
+        )
+    elif authentication.get("failure_kind") == "server_error":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_server_error",
+                "message": "The ZenML authentication endpoint returned a server error.",
+            }
+        )
+    elif authentication.get("failure_kind") == "unreachable":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_unreachable",
+                "message": "Could not validate ZenML credentials because the authentication endpoint was unavailable.",
+            }
+        )
+    elif authentication.get("failure_kind") == "invalid_response":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_invalid_response",
+                "message": "The ZenML authentication endpoint returned an invalid response.",
             }
         )
     if store_url and connectivity.get("attempted") and connectivity.get("ok") is False:
@@ -1100,11 +1267,17 @@ def diagnose_zenml_setup() -> dict[str, Any]:
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_step_logs(step_run_id: str) -> dict[str, Any]:
+def get_step_logs(
+    step_run_id: str,
+    source: str | None = None,
+    logs_id: str | None = None,
+) -> dict[str, Any]:
     """Get the logs for a specific step run.
 
     Args:
-        step_run_id: The ID of the step run to get logs for
+        step_run_id: The ID of the step run to get logs for.
+        source: Optional log source. Defaults to ZenML's ordinary ``step`` source.
+        logs_id: Optional exact log record ID. Cannot be combined with ``source``.
     """
     # Get server URL and API key from environment variables
     server_url = os.environ.get("ZENML_STORE_URL")
@@ -1116,11 +1289,30 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
     if not api_key:
         raise ValueError("ZENML_STORE_API_KEY environment variable not set")
 
+    if source is not None:
+        source = source.strip()
+        if not source:
+            raise ResourceDispatchError("source must be a non-empty string.")
+    if logs_id is not None:
+        logs_id = logs_id.strip()
+        if not logs_id:
+            raise ResourceDispatchError("logs_id must be a non-empty string.")
+    if source is not None and logs_id is not None:
+        raise ResourceDispatchError("Only one of source or logs_id may be provided.")
+    if source is None and logs_id is None:
+        source = "step"
+
     # Generate a short-lived access token
     access_token = get_access_token(server_url, api_key)
 
     # Get the logs using the access token
-    return make_step_logs_request(server_url, step_run_id, access_token)
+    return make_step_logs_request(
+        server_url,
+        step_run_id,
+        access_token,
+        source=source,
+        logs_id=logs_id,
+    )
 
 
 # =============================================================================
@@ -1385,7 +1577,7 @@ def list_users(
         updated=updated,
         active=active,
     )
-    return users.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(users, resource_type="user"))
 
 
 @mcp.tool()
@@ -1397,7 +1589,7 @@ def get_user(name_id_or_prefix: str) -> dict[str, Any]:
         name_id_or_prefix: The name, ID or prefix of the user to retrieve
     """
     user = get_zenml_client().get_user(name_id_or_prefix)
-    return user.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(user, resource_type="user"))
 
 
 @mcp.tool()
@@ -1405,7 +1597,7 @@ def get_user(name_id_or_prefix: str) -> dict[str, Any]:
 def get_active_user() -> dict[str, Any]:
     """Get the currently active user."""
     user = get_zenml_client().active_user
-    return user.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(user, resource_type="user"))
 
 
 # =============================================================================
@@ -1631,7 +1823,7 @@ def get_service(name_id_or_prefix: str) -> dict[str, Any]:
         name_id_or_prefix: The name, ID or prefix of the service to retrieve
     """
     service = get_zenml_client().get_service(name_id_or_prefix)
-    return service.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(service, resource_type="service"))
 
 
 @mcp.tool()
@@ -1752,7 +1944,10 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
         name_id_or_prefix=str(resolved.id),
         allow_name_prefix_match=False,
     )
-    return stack_component.model_dump(mode="json")
+    return cast(
+        dict[str, Any],
+        safe_project(stack_component, resource_type="stack_component"),
+    )
 
 
 @mcp.tool()
@@ -1859,7 +2054,7 @@ def list_flavors(
 @mcp.tool()
 @handle_tool_exceptions
 def trigger_pipeline(
-    pipeline_name_or_id: str,
+    pipeline_name_or_id: str | None = None,
     snapshot_name_or_id: str | None = None,
     stack_name_or_id: str | None = None,
     template_id: str | None = None,
@@ -1867,7 +2062,8 @@ def trigger_pipeline(
     """Trigger a pipeline to run from the server.
 
     Args:
-        pipeline_name_or_id: The name or ID of the pipeline to trigger
+        pipeline_name_or_id: Optional name or ID of the pipeline to trigger. A
+            snapshot or template can be triggered without it.
         snapshot_name_or_id: The name or ID of a specific snapshot to run (preferred)
         stack_name_or_id: Optional stack override for the run
         template_id: Deprecated template-based trigger parameter. Use
@@ -1889,21 +2085,33 @@ def trigger_pipeline(
         * Run a specific snapshot (RECOMMENDED):
         ```python
         trigger_pipeline(
-            pipeline_name_or_id=<NAME>,
             snapshot_name_or_id=<SNAPSHOT_NAME_OR_ID>
         )
         ```
         * Run a specific template (DEPRECATED - use snapshot_name_or_id instead):
         ```python
-        trigger_pipeline(pipeline_name_or_id=<NAME>, template_id=<ID>)
+        trigger_pipeline(template_id=<ID>)
         ```
     """
     ensure_writes_enabled()
-    # Build kwargs for SDK call, preferring snapshot_name_or_id over deprecated template_id
-    trigger_kwargs: Dict[str, Any] = {
-        "pipeline_name_or_id": pipeline_name_or_id,
-        "stack_name_or_id": stack_name_or_id,
-    }
+    if snapshot_name_or_id is not None and template_id is not None:
+        raise ResourceDispatchError(
+            "snapshot_name_or_id and template_id are mutually exclusive; provide only one."
+        )
+    if (
+        pipeline_name_or_id is None
+        and snapshot_name_or_id is None
+        and template_id is None
+    ):
+        raise ResourceDispatchError(
+            "Provide at least one of pipeline_name_or_id, snapshot_name_or_id, or template_id."
+        )
+
+    trigger_kwargs: Dict[str, Any] = {}
+    if pipeline_name_or_id is not None:
+        trigger_kwargs["pipeline_name_or_id"] = pipeline_name_or_id
+    if stack_name_or_id is not None:
+        trigger_kwargs["stack_name_or_id"] = stack_name_or_id
 
     deprecation_warning: str | None = None
     used_deprecated_template = False
@@ -2926,8 +3134,17 @@ def get_step_code(
     Args:
         step_run_id: The ID of the step to retrieve
     """
-    step_code = get_zenml_client().get_run_step(step_run_id).source_code
-    return f"""{step_code}"""
+    from zenml.exceptions import DoesNotExistException
+
+    try:
+        step_code = get_zenml_client().get_run_step(step_run_id).source_code
+    except (KeyError, DoesNotExistException) as error:
+        raise ResourceNotFound("Step run not found.") from error
+    if step_code is None:
+        raise ResourceFeatureUnavailable(
+            "Source code is unavailable for this step run."
+        )
+    return str(step_code)
 
 
 # =============================================================================
@@ -3214,6 +3431,26 @@ for _tool_name in ALL_TOOL_NAMES:
         mcp.remove_tool(_tool_name)
 
 
+def _enforce_strict_tool_arguments(server: MCPServer) -> None:
+    """Harden MCP 2.2's generated argument models against unknown input."""
+    if distribution_version("mcp") != "2.2.0":
+        raise RuntimeError("Strict tool argument setup requires mcp==2.2.0")
+    for tool in server._tool_manager.list_tools():
+        argument_model = tool.fn_metadata.arg_model
+        argument_model.model_config = ConfigDict(
+            **{
+                **dict(argument_model.model_config),
+                "extra": "forbid",
+                "hide_input_in_errors": True,
+            }
+        )
+        argument_model.model_rebuild(force=True)
+        tool.parameters = argument_model.model_json_schema(by_alias=True)
+
+
+_enforce_strict_tool_arguments(mcp)
+
+
 @mcp.resource(uri="resource://zenml_server/most_recent_runs?run_count={run_count}")
 @handle_exceptions
 def most_recent_runs(run_count: int = 10) -> str:
@@ -3243,33 +3480,123 @@ class HTTPTransportConfig:
     forwarded_allow_ips: str = "127.0.0.1"
 
 
+def _origin_matches_strict_allowlist(origin: str, allowed_origins: list[str]) -> bool:
+    """Match an Origin without MCP 2.2's wildcard-prefix ambiguity."""
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    base = f"{parsed.scheme}://{host}"
+    candidate = base if port is None else f"{base}:{port}"
+    return any(
+        candidate == allowed
+        or (allowed.endswith(":*") and port is not None and base == allowed[:-2])
+        for allowed in allowed_origins
+    )
+
+
+class _StrictOriginMiddleware:
+    """Reject malformed wildcard-port Origins before MCP's middleware sees them."""
+
+    def __init__(self, app: Any, *, allowed_origins: list[str]) -> None:
+        self.app = app
+        self.allowed_origins = allowed_origins
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            headers = {
+                key.decode("latin-1").lower(): value.decode("latin-1")
+                for key, value in scope.get("headers", ())
+            }
+            origin = headers.get("origin")
+            if origin and not _origin_matches_strict_allowlist(
+                origin, self.allowed_origins
+            ):
+                from starlette.responses import PlainTextResponse
+
+                response = PlainTextResponse("Invalid Origin header", status_code=403)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def create_transport_security_settings(config: HTTPTransportConfig) -> Any:
     """Build Host/Origin policy independently from proxy-header trust."""
     from mcp.server.transport_security import TransportSecuritySettings
 
     if config.disable_dns_rebinding_protection:
         return TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    if config.host in {"0.0.0.0", "::"}:
+    host = config.host.strip()
+    unbracketed_host = (
+        host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    )
+    parsed_host: ipaddress.IPv4Address | ipaddress.IPv6Address | None
+    try:
+        parsed_host = ipaddress.ip_address(unbracketed_host)
+        is_unspecified = parsed_host.is_unspecified
+    except ValueError:
+        parsed_host = None
+        is_unspecified = False
+    try:
+        is_unspecified = is_unspecified or socket.inet_aton(unbracketed_host) == bytes(
+            4
+        )
+    except OSError:
+        pass
+    if not host or is_unspecified:
         raise ValueError(
             f"DNS rebinding protection cannot derive an allowlist from wildcard "
             f"host {config.host!r}. Bind to a concrete host or explicitly pass "
             "--disable-dns-rebinding-protection."
         )
 
-    host = config.host
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    if unbracketed_host == "localhost" or (
+        parsed_host is not None and parsed_host.is_loopback
+    ):
+        allowed_hosts = [
+            f"127.0.0.1:{config.port}",
+            f"localhost:{config.port}",
+            f"[::1]:{config.port}",
+        ]
         allowed_origins = [
             "http://127.0.0.1:*",
             "http://localhost:*",
             "http://[::1]:*",
         ]
+        if parsed_host is not None:
+            configured_loopback = (
+                f"[{parsed_host.compressed}]"
+                if isinstance(parsed_host, ipaddress.IPv6Address)
+                else parsed_host.compressed
+            )
+            configured_host = f"{configured_loopback}:{config.port}"
+            configured_origin = f"http://{configured_loopback}:*"
+            if configured_host not in allowed_hosts:
+                allowed_hosts.append(configured_host)
+            if configured_origin not in allowed_origins:
+                allowed_origins.append(configured_origin)
     else:
         bracketed_host = (
-            f"[{host}]" if ":" in host and not host.startswith("[") else host
+            f"[{unbracketed_host}]" if ":" in unbracketed_host else unbracketed_host
         )
-        allowed_hosts = [f"{bracketed_host}:*"]
-        allowed_origins = [f"http://{bracketed_host}:*", f"https://{bracketed_host}:*"]
+        allowed_hosts = [f"{bracketed_host}:{config.port}"]
+        allowed_origins = [
+            f"http://{bracketed_host}:*",
+            f"https://{bracketed_host}:*",
+        ]
 
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -3280,10 +3607,17 @@ def create_transport_security_settings(config: HTTPTransportConfig) -> Any:
 
 def create_streamable_http_app(config: HTTPTransportConfig) -> Any:
     """Create the v2 ASGI app with its required session-manager lifespan."""
-    return mcp.streamable_http_app(
+    security = create_transport_security_settings(config)
+    app = mcp.streamable_http_app(
         host=config.host,
-        transport_security=create_transport_security_settings(config),
+        transport_security=security,
     )
+    if security.enable_dns_rebinding_protection:
+        app.add_middleware(
+            _StrictOriginMiddleware,
+            allowed_origins=security.allowed_origins,
+        )
+    return app
 
 
 async def run_streamable_http(config: HTTPTransportConfig) -> None:
@@ -3303,9 +3637,18 @@ async def run_streamable_http(config: HTTPTransportConfig) -> None:
     await uvicorn.Server(uvicorn_config).serve()
 
 
-if __name__ == "__main__":
-    import argparse
+def _valid_port(value: str) -> int:
+    """Parse a TCP port accepted by the HTTP server CLI."""
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("port must be an integer") from error
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
 
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ZenML MCP Server")
     parser.add_argument(
         "--transport",
@@ -3315,7 +3658,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--port",
-        type=int,
+        type=_valid_port,
         default=8000,
         help="Port for HTTP transport (default: 8000)",
     )
@@ -3361,6 +3704,7 @@ if __name__ == "__main__":
             create_transport_security_settings(
                 HTTPTransportConfig(
                     host=args.host,
+                    port=args.port,
                     disable_dns_rebinding_protection=args.disable_dns_rebinding_protection,
                 )
             )
@@ -3445,3 +3789,4 @@ if __name__ == "__main__":
             mcp.run(transport="stdio")
     except Exception as e:
         logger.error("Error running MCP server: %s", type(e).__name__)
+        raise SystemExit(1)
