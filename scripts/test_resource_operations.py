@@ -393,9 +393,6 @@ def test_validation_happens_before_sdk_calls() -> None:
             client, "service_connector", filters={"resource_type": ["s3"]}
         ),
         lambda: list_resources(
-            client, "pipeline", filters={"latest_run_status": ["running"]}
-        ),
-        lambda: list_resources(
             client, "snapshot", filters={"trigger_id": "not-a-uuid"}
         ),
         lambda: get_resource(
@@ -430,7 +427,7 @@ def test_typed_filters_are_forwarded_after_local_validation() -> None:
     )
     kwargs = client.calls[-1][1]
     assert kwargs["active"] is True
-    assert kwargs["concurrency"] == ["skip", "submit"]
+    assert kwargs["concurrency"] == 'oneof:["skip","submit"]'
     assert kwargs["next_occurrence"] == [
         "gte:2026-09-12 00:00:00",
         "lt:2026-09-14 23:59:59",
@@ -443,6 +440,60 @@ def test_typed_filters_are_forwarded_after_local_validation() -> None:
         filters={"labels": {"team": "ml", "region": None}},
     )
     assert client.calls[-1][1]["labels"] == {"team": "ml", "region": None}
+
+
+def test_list_arrays_use_single_field_or_semantics() -> None:
+    client = Recorder()
+    list_resources(
+        client,
+        "pipeline_run",
+        project_id=PROJECT_ID,
+        filters={
+            "status": ["failed", "completed"],
+            "pipeline_name": "important",
+            "logical_operator": "and",
+        },
+    )
+    kwargs = client.calls[-1][1]
+    assert kwargs["status"] == 'oneof:["failed","completed"]'
+    assert kwargs["pipeline_name"] == "important"
+    assert kwargs["logical_operator"] == "and"
+
+    client = Recorder()
+    list_resources(
+        client,
+        "pipeline_run",
+        project_id=PROJECT_ID,
+        filters={
+            "status": 'oneof:["failed","completed"]',
+            "pipeline_name": "important",
+            "logical_operator": "or",
+        },
+    )
+    kwargs = client.calls[-1][1]
+    assert kwargs["status"] == 'oneof:["failed","completed"]'
+    assert kwargs["logical_operator"] == "or"
+
+
+def test_execution_status_filters_reject_misspellings_before_sdk_calls() -> None:
+    for value in (
+        "complete",
+        ["failed", "complete"],
+        'oneof:["failed","complete"]',
+    ):
+        client = Recorder()
+        try:
+            list_resources(
+                client,
+                "pipeline_run",
+                project_id=PROJECT_ID,
+                filters={"status": value},
+            )
+        except ResourceDispatchError:
+            pass
+        else:
+            raise AssertionError(f"invalid execution status {value!r} was accepted")
+        assert client.calls == []
 
 
 def test_trigger_discriminators_and_datetime_bounds() -> None:
@@ -543,6 +594,36 @@ def test_safe_projection_and_connector_flags() -> None:
     client = Recorder()
     list_resources(client, "service_connector")
     assert client.calls[-1][1]["expand_secrets"] is False
+
+    repeated_documentation = "connector documentation " * 1_000
+    client.page_items["list_service_connectors"] = [
+        {
+            "id": f"connector-{index}",
+            "name": f"connector-{index}",
+            "body": {
+                "connector_type": {
+                    "connector_type": "aws",
+                    "name": "AWS",
+                    "description": repeated_documentation,
+                    "auth_methods": [
+                        {
+                            "auth_method": "secret-key",
+                            "config_schema": {"description": repeated_documentation},
+                        }
+                    ],
+                },
+                "auth_method": "secret-key",
+                "resource_types": ["s3-bucket"],
+            },
+        }
+        for index in range(20)
+    ]
+    connector_page = list_resources(client, "service_connector", size=20)
+    assert connector_page["items"][0]["body"]["connector_type"] == "aws"
+    assert "auth_methods" not in repr(connector_page)
+    assert repeated_documentation not in repr(connector_page)
+    assert len(repr(connector_page)) < 20_000
+
     client = Recorder()
     get_resource(client, "service_connector", "target")
     assert client.calls[-1][1]["expand_secrets"] is False

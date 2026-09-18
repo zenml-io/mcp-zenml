@@ -1122,6 +1122,20 @@ def test_false_zero_and_clear_values_reach_the_sdk() -> None:
     assert write[1]["source_id"] == uuid.UUID(RELATED)
 
 
+def test_project_update_keeps_name_and_display_name_distinct() -> None:
+    client = Recorder()
+    update_resource(client, "project", TARGET, payload={"name": "canonical-name"})
+    write = next(call for call in client.calls if call[0] == "update_project")
+    assert write[1]["new_name"] == "canonical-name"
+    assert write[1]["new_display_name"] is None
+
+    client = Recorder()
+    update_resource(client, "project", TARGET, payload={"display_name": "Visible name"})
+    write = next(call for call in client.calls if call[0] == "update_project")
+    assert write[1]["new_name"] is None
+    assert write[1]["new_display_name"] == "Visible name"
+
+
 def test_validation_and_read_only_precede_sdk_access() -> None:
     client = Recorder()
     invalid = [

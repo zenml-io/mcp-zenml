@@ -8,7 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
-from zenml_resource_registry import RESOURCE_REGISTRY, describe_resources
+from zenml_resource_registry import (
+    RESOURCE_REGISTRY,
+    _matches_schema,
+    describe_resources,
+)
 
 
 def test_exact_read_coverage() -> None:
@@ -179,6 +183,8 @@ def test_filter_schemas_are_typed() -> None:
         "properties"
     ]["filters"]["properties"]
     assert run_filters["index"]["anyOf"][0]["anyOf"][0]["type"] == "integer"
+    assert "failed" in run_filters["status"]["anyOf"][0]["enum"]
+    assert "completed" in run_filters["status"]["anyOf"][0]["enum"]
 
     trigger_filters = describe_resources("schedule_trigger", "list")["input_schema"][
         "properties"
@@ -198,6 +204,22 @@ def test_filter_schemas_are_typed() -> None:
         "properties"
     ]["filters"]["properties"]
     assert snapshot_filters["trigger_id"] == {"type": "string", "format": "uuid"}
+
+
+def test_every_update_example_satisfies_its_advertised_schema() -> None:
+    updates = 0
+    for resource_type, resource in RESOURCE_REGISTRY.items():
+        if "update" not in resource.operations:
+            continue
+        described = describe_resources(
+            resource_type, "update", write_policy="read_write"
+        )
+        assert _matches_schema(described["example"], described["input_schema"]), (
+            resource_type,
+            described["example"],
+        )
+        updates += 1
+    assert updates == 17
 
 
 def test_aliases_and_unsupported_operations_are_rejected() -> None:
@@ -225,6 +247,7 @@ def main() -> int:
         test_all_operation_schemas_require_exact_resource_type,
         test_returned_read_schemas_do_not_mutate_registry_contracts,
         test_filter_schemas_are_typed,
+        test_every_update_example_satisfies_its_advertised_schema,
         test_aliases_and_unsupported_operations_are_rejected,
     ]
     for test in tests:

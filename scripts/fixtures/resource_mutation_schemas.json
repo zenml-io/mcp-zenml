@@ -1511,6 +1511,10 @@
               "minLength": 1,
               "type": "string"
             },
+            "display_name": {
+              "minLength": 1,
+              "type": "string"
+            },
             "name": {
               "minLength": 1,
               "type": "string"
@@ -1538,6 +1542,10 @@
     },
     "properties": {
       "description": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "display_name": {
         "minLength": 1,
         "type": "string"
       },

@@ -205,6 +205,7 @@
     "kwargs": {
       "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
       "new_description": null,
+      "new_display_name": null,
       "new_name": "renamed"
     },
     "method": "update_project"

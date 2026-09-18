@@ -142,6 +142,13 @@ def _validate_filter_expression(value: Any) -> None:
         )
 
 
+def _has_filter_operator(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    operation, separator, _ = value.partition(":")
+    return bool(separator and operation in _KNOWN_OPS)
+
+
 def _model_dump(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
@@ -488,6 +495,10 @@ def _list_kwargs(
                 supplied[key] = normalize_datetime_filter(value)
             elif isinstance(value, list):
                 supplied[key] = [normalize_datetime_filter(item) for item in value]
+        elif isinstance(value, list) and not any(
+            _has_filter_operator(item) for item in value
+        ):
+            supplied[key] = f"oneof:{json.dumps(value, separators=(',', ':'))}"
     if spec.resource_type == "artifact_version":
         supplied["artifact"] = supplied.pop("artifact_id")
     elif spec.resource_type == "model_version":
@@ -508,6 +519,24 @@ def _list_kwargs(
     if spec.resource_type == "service_connector":
         supplied["expand_secrets"] = False
     return supplied
+
+
+def _compact_service_connector_list_item(value: Any) -> Any:
+    dumped = _model_dump(value)
+    if not isinstance(dumped, Mapping):
+        return dumped
+    compact = dict(dumped)
+    body = _model_dump(compact.get("body"))
+    if not isinstance(body, Mapping):
+        return compact
+    compact_body = dict(body)
+    connector_type = _model_dump(compact_body.get("connector_type"))
+    if isinstance(connector_type, Mapping):
+        compact_body["connector_type"] = connector_type.get(
+            "connector_type"
+        ) or connector_type.get("name")
+    compact["body"] = compact_body
+    return compact
 
 
 def _page_payload(
@@ -535,6 +564,12 @@ def _page_payload(
             f"{resource_type!r} list adapter returned a non-page result"
         )
     raw_items = dumped.get("items", [])
+    if (
+        resource_type == "service_connector"
+        and isinstance(raw_items, Sequence)
+        and not isinstance(raw_items, (str, bytes, bytearray))
+    ):
+        raw_items = [_compact_service_connector_list_item(item) for item in raw_items]
     total = dumped.get(
         "total", len(raw_items) if isinstance(raw_items, Sequence) else 0
     )
@@ -1033,6 +1068,7 @@ def _update_call(
         return client.update_project(
             name_id_or_prefix=target,
             new_name=kwargs.get("name"),
+            new_display_name=kwargs.get("display_name"),
             new_description=kwargs.get("description"),
         )
     if resource_type == "stack":

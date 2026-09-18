@@ -7,6 +7,7 @@ is used by tests only to detect drift.
 
 from __future__ import annotations
 
+import json
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
@@ -65,7 +66,6 @@ NUMBER_FILTERS = frozenset({"interval_second"})
 _SCALAR_STRING_FILTERS = frozenset(
     {
         ("artifact_version", "name"),
-        ("pipeline", "latest_run_status"),
         ("pipeline", "latest_run_user"),
         ("service_connector", "resource_id"),
         ("service_connector", "resource_type"),
@@ -76,8 +76,48 @@ _SCALAR_STRING_FILTERS = frozenset(
 )
 _UUID_ONLY_FILTERS = frozenset({("snapshot", "trigger_id")})
 
+_EXECUTION_STATUSES = (
+    "initializing",
+    "provisioning",
+    "queued",
+    "running",
+    "failed",
+    "completed",
+    "cached",
+    "skipped",
+    "retrying",
+    "retried",
+    "cancelling",
+    "cancelled",
+    "paused",
+    "resuming",
+    "stopped",
+    "stopping",
+)
+
 _ENUM_FILTERS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType(
     {
+        ("pipeline", "latest_run_status"): _EXECUTION_STATUSES,
+        ("pipeline_run", "status"): _EXECUTION_STATUSES,
+        ("run_step", "status"): _EXECUTION_STATUSES,
+        ("hook_invocation", "status"): _EXECUTION_STATUSES,
+        ("deployment", "status"): (
+            "unknown",
+            "pending",
+            "running",
+            "absent",
+            "error",
+        ),
+        ("resource_request", "status"): (
+            "pending",
+            "allocated",
+            "preempting",
+            "preempted",
+            "cancelled",
+            "rejected",
+            "released",
+        ),
+        ("run_wait_condition", "status"): ("pending", "resolved"),
         ("model_version", "stage"): (
             "none",
             "staging",
@@ -132,6 +172,20 @@ def _scalar_or_array_schema(scalar: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _enum_filter_schema(values: tuple[str, ...]) -> dict[str, Any]:
+    scalar = {"type": "string", "enum": list(values)}
+    return {
+        "anyOf": [
+            scalar,
+            {"type": "array", "items": scalar, "minItems": 1},
+            {
+                "type": "string",
+                "pattern": r"^(?:oneof|notoneof):\s*\[.*\]$",
+            },
+        ]
+    }
+
+
 def filter_schema(resource_type: str, field: str) -> dict[str, Any]:
     """Return the public JSON schema for one allowlisted filter."""
     if field == "logical_operator":
@@ -164,8 +218,25 @@ def filter_schema(resource_type: str, field: str) -> dict[str, Any]:
         )
     enum_values = _ENUM_FILTERS.get((resource_type, field))
     if enum_values is not None:
-        return _scalar_or_array_schema({"type": "string", "enum": list(enum_values)})
+        return _enum_filter_schema(enum_values)
     return _scalar_or_array_schema({"type": "string", "minLength": 1})
+
+
+def _filter_operands(value: Any) -> list[Any]:
+    if not isinstance(value, str):
+        return value if isinstance(value, list) else [value]
+    operation, separator, operand = value.partition(":")
+    if not separator:
+        return [value]
+    if operation in {"oneof", "notoneof"}:
+        try:
+            decoded = json.loads(operand)
+        except json.JSONDecodeError:
+            return []
+        return decoded if isinstance(decoded, list) else []
+    if operation in {"equals", "notequals"}:
+        return [operand]
+    return [value]
 
 
 def validate_filter_value(resource_type: str, field: str, value: Any) -> None:
@@ -189,7 +260,7 @@ def validate_filter_value(resource_type: str, field: str, value: Any) -> None:
     elif field in BOOLEAN_FILTERS:
         valid = isinstance(value, bool)
     else:
-        values = value if isinstance(value, list) else [value]
+        values = _filter_operands(value)
         valid = bool(values)
         if field in INTEGER_FILTERS:
             valid = valid and all(
@@ -778,7 +849,11 @@ _MUTATION_SPECS: Mapping[str, Mapping[str, MutationSpec]] = MappingProxyType(
                 "update": _mutation(
                     "update",
                     "update_project",
-                    {"name": _NONEMPTY, "description": _NONEMPTY},
+                    {
+                        "name": _NONEMPTY,
+                        "display_name": _NONEMPTY,
+                        "description": _NONEMPTY,
+                    },
                 ),
                 "delete": _mutation("delete", "delete_project", payload_required=False),
             }
@@ -2149,6 +2224,65 @@ def get_resource_spec(resource_type: str) -> ResourceSpec:
         ) from error
 
 
+_EXAMPLE_UUID = "00000000-0000-4000-8000-000000000001"
+
+
+def _example_value(schema: Mapping[str, Any]) -> Any:
+    """Build a small concrete value accepted by a registry-owned schema."""
+    if "const" in schema:
+        return schema["const"]
+    if schema.get("enum"):
+        return schema["enum"][0]
+    for keyword in ("anyOf", "oneOf"):
+        for alternative in schema.get(keyword, ()):
+            candidate = _example_value(alternative)
+            if _matches_schema(candidate, alternative):
+                return candidate
+    schema_type = schema.get("type")
+    if schema_type == "string":
+        if schema.get("format") == "uuid":
+            return _EXAMPLE_UUID
+        if schema.get("format") == "date-time":
+            return "2026-01-01T00:00:00Z"
+        return "example"
+    if schema_type == "boolean":
+        return True
+    if schema_type in {"integer", "number"}:
+        return max(1, schema.get("minimum", 1))
+    if schema_type == "array":
+        return [_example_value(schema.get("items", {}))]
+    if schema_type == "object":
+        properties = schema.get("properties", {})
+        required = schema.get("required", ())
+        if required:
+            return {
+                field: _example_value(properties[field])
+                for field in required
+                if field in properties
+            }
+        if schema.get("additionalProperties") is not False:
+            additional = schema.get("additionalProperties", {})
+            additional_schema = additional if isinstance(additional, Mapping) else {}
+            return {"example": _example_value(additional_schema)}
+        return {}
+    return "example"
+
+
+def _update_example_payload(
+    resource_type: str, mutation: MutationSpec
+) -> dict[str, Any]:
+    if mutation.example_payload is not None:
+        return dict(mutation.example_payload)
+    for field, schema in mutation.payload_properties.items():
+        candidate = {field: _example_value(schema)}
+        try:
+            validate_mutation_payload(resource_type, "update", candidate)
+        except ResourceRegistryError:
+            continue
+        return candidate
+    raise ResourceRegistryError(f"Unable to build update example for {resource_type!r}")
+
+
 def describe_resources(
     resource_type: str | None = None,
     operation: str | None = None,
@@ -2256,6 +2390,7 @@ def describe_resources(
             ),
         }
     operation_spec = spec.operation_spec(operation)
+    input_schema = operation_spec.schema()
     example: dict[str, Any] = {"resource_type": resource_type}
     if operation == "list":
         example.update(
@@ -2271,6 +2406,14 @@ def describe_resources(
         example.update(
             {field: f"<{field}>" for field in operation_spec.required_fields}
         )
+    elif operation == "update":
+        mutation = spec.mutations[operation]
+        for field in operation_spec.required_fields:
+            example[field] = (
+                _update_example_payload(resource_type, mutation)
+                if field == "payload"
+                else _example_value(input_schema["properties"][field])
+            )
     else:
         for field in operation_spec.required_fields:
             if field == "payload":
@@ -2287,7 +2430,7 @@ def describe_resources(
         "operation": operation,
         "scope": spec.scope,
         "description": operation_spec.description,
-        "input_schema": operation_spec.schema(),
+        "input_schema": input_schema,
         "example": example,
         "output_projection": (
             "Credential keys and opaque configuration, environment, parameter, "
