@@ -3,15 +3,24 @@ name: Release Docker
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish to the MCP Registry
+        required: true
+        type: string
 
 env:
   IMAGE_NAME: docker.io/zenmldocker/mcp-zenml
+  MCP_PUBLISHER_VERSION: "1.8.1"
+  MCP_PUBLISHER_LINUX_AMD64_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
 
 permissions:
   contents: write
 
 jobs:
   docker:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     environment: docker
     permissions:
@@ -86,14 +95,12 @@ jobs:
 
       - name: Install MCP Publisher
         run: |
-          # Build publisher from source (requires Go)
-          # Pinned to specific commit for supply chain security
-          git clone https://github.com/modelcontextprotocol/registry publisher-repo
-          cd publisher-repo
-          git checkout c5c4b9e8890dd5754bee889b2f1417f4fe3b5ce5  # 2026-03-22
-          make publisher
-          cp bin/mcp-publisher ../mcp-publisher
-          cd ..
+          ARCHIVE="${RUNNER_TEMP}/mcp-publisher.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            --output "${ARCHIVE}"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${ARCHIVE}" | sha256sum --check
+          tar -xzf "${ARCHIVE}" mcp-publisher
           chmod +x mcp-publisher
 
       - name: Login to MCP Registry (OIDC)
@@ -114,3 +121,54 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+
+  registry-recovery:
+    name: Publish existing release to MCP Registry
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: docker
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release_tag must be an exact SemVer tag such as v2.0.0" >&2
+            exit 1
+          fi
+
+      - name: Checkout released source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+
+      - name: Verify released version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          EXPECTED_VERSION="${RELEASE_TAG#v}"
+          ACTUAL_VERSION="$(tr -d '\n\r' < VERSION)"
+          if [ "${ACTUAL_VERSION}" != "${EXPECTED_VERSION}" ]; then
+            echo "Release tag ${RELEASE_TAG} contains VERSION=${ACTUAL_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Install MCP Publisher
+        run: |
+          ARCHIVE="${RUNNER_TEMP}/mcp-publisher.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            --output "${ARCHIVE}"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${ARCHIVE}" | sha256sum --check
+          tar -xzf "${ARCHIVE}" mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Login to MCP Registry (OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
