@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.zenml-io/mcp-zenml",
-  "description": "MCP server for discovering, reading, and changing supported ZenML resources through compact generic tools",
+  "description": "MCP server for discovering, reading, and changing ZenML resources with compact generic tools",
   "repository": {
     "url": "https://github.com/zenml-io/mcp-zenml",
     "source": "github"
