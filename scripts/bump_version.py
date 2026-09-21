@@ -6,7 +6,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 # Resolve repository root relative to this script (scripts/ -> repo root)
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +50,7 @@ def _write_version_file(version: str) -> None:
     VERSION_FILE.write_text(f"{version}\n", encoding="utf-8")
 
 
-def _load_json(path: Path) -> Dict[str, Any]:
+def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         print(f"Error: JSON file not found: {path}", file=sys.stderr)
         sys.exit(1)
@@ -61,7 +61,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
         sys.exit(1)
 
 
-def _dump_json(path: Path, data: Dict[str, Any]) -> None:
+def _dump_json(path: Path, data: dict[str, Any]) -> None:
     # Always pretty-print with indent=2 and write a trailing newline
     text = json.dumps(data, indent=2, ensure_ascii=False)
     path.write_text(text + "\n", encoding="utf-8")
@@ -80,6 +80,16 @@ def _update_server_versions(version: str) -> None:
     server = _load_json(SERVER_JSON)
     if "version" not in server:
         print("Error: server.json missing required 'version' field", file=sys.stderr)
+        sys.exit(1)
+    description = server.get("description")
+    if not isinstance(description, str) or not description.strip():
+        print("Error: server.json missing a non-empty 'description' field", file=sys.stderr)
+        sys.exit(1)
+    if len(description) > 100:
+        print(
+            "Error: server.json 'description' exceeds the MCP Registry 100-character limit",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if (
         "packages" not in server

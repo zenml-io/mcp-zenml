@@ -140,10 +140,9 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout released source
+      - name: Checkout current release metadata
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
           persist-credentials: false
 
       - name: Verify released version
@@ -153,7 +152,11 @@ jobs:
           EXPECTED_VERSION="${RELEASE_TAG#v}"
           ACTUAL_VERSION="$(tr -d '\n\r' < VERSION)"
           if [ "${ACTUAL_VERSION}" != "${EXPECTED_VERSION}" ]; then
-            echo "Release tag ${RELEASE_TAG} contains VERSION=${ACTUAL_VERSION}" >&2
+            echo "Current release metadata has VERSION=${ACTUAL_VERSION}, expected ${EXPECTED_VERSION}" >&2
+            exit 1
+          fi
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release tag ${RELEASE_TAG} does not exist" >&2
             exit 1
           fi
 
