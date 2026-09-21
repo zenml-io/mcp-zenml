@@ -319,7 +319,7 @@ def run_disposable_crud(target: str) -> None:
             "webhook",
             {
                 "name": f"mcp-disposable-u8-webhook-{suffix}",
-                "webhook_type": "generic",
+                "webhook_type": "custom",
                 "active": True,
             },
             {"active": False},
@@ -364,7 +364,9 @@ def run_disposable_crud(target: str) -> None:
             record = (resource_type, created_id, scoped_project_id)
             created_records.append(record)
 
-            persisted = get_resource(client, resource_type, created_id, **kwargs)
+            persisted = get_resource(
+                client, resource_type, created_id, hydrate=True, **kwargs
+            )
             assert persisted["item"]["id"] == created_id
             listed = list_resources(
                 client,
@@ -384,9 +386,13 @@ def run_disposable_crud(target: str) -> None:
                 **kwargs,
             )
             assert updated["outcome"] == "completed"
-            persisted_update = get_resource(client, resource_type, created_id, **kwargs)
-            assert (
-                _nested_value(persisted_update["item"], updated_field) == updated_value
+            persisted_update = get_resource(
+                client, resource_type, created_id, hydrate=True, **kwargs
+            )
+            actual_value = _nested_value(persisted_update["item"], updated_field)
+            assert actual_value == updated_value, (
+                f"{resource_type} update did not persist {updated_field}: "
+                f"expected {updated_value!r}, received {actual_value!r}"
             )
 
             deleted = delete_resource(client, resource_type, created_id, **kwargs)
@@ -475,7 +481,13 @@ def run_project_isolation(target: str) -> None:
 
         assert model_ids[0][0] != model_ids[1][0]
         for model_id, project_id in model_ids:
-            persisted = get_resource(client, "model", model_id, project_id=project_id)
+            persisted = get_resource(
+                client,
+                "model",
+                model_id,
+                project_id=project_id,
+                hydrate=True,
+            )
             assert persisted["item"]["id"] == model_id
             listed = list_resources(
                 client,
@@ -507,10 +519,18 @@ def run_project_isolation(target: str) -> None:
             payload={"description": "Updated only in project a"},
         )
         first = get_resource(
-            client, "model", model_ids[0][0], project_id=project_ids[0]
+            client,
+            "model",
+            model_ids[0][0],
+            project_id=project_ids[0],
+            hydrate=True,
         )
         second = get_resource(
-            client, "model", model_ids[1][0], project_id=project_ids[1]
+            client,
+            "model",
+            model_ids[1][0],
+            project_id=project_ids[1],
+            hydrate=True,
         )
         assert _nested_value(first["item"], "description") == (
             "Updated only in project a"
@@ -660,7 +680,7 @@ def run_disposable_actions(target: str) -> None:
             project_id=project_id,
             payload={
                 "name": f"mcp-disposable-u6-{suffix}",
-                "webhook_type": "generic",
+                "webhook_type": "custom",
             },
         )
         webhook_id = created["resource_id"]

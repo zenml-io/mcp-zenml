@@ -14,17 +14,23 @@ when `dry_run` is false.
    `python scripts/generate_manifest_fields.py` and
    `python scripts/generate_manifest_fields.py --check`.
 3. Run the credential-free tests from `.github/workflows/pr-test.yml`.
-4. Run the disposable integration suite against a dedicated loopback ZenML
-   0.96.4 server. Set `ZENML_MCP_DISPOSABLE_INTEGRATION=1` and provide its URL
-   and API key. The suite rejects remote and shared targets.
-5. For trigger, deployment, wait-condition, and resource-request claims, also
+4. Run `bash scripts/run_disposable_resource_integration.sh`. PR and release CI
+   use this command to start a fresh loopback-only ZenML 0.96.4 OSS server, run
+   persisted CRUD and same-name project-isolation receipts, and remove the
+   temporary server and database. No repository environment, self-hosted
+   runner, or ZenML credential is required.
+5. To collect separate trigger, deployment, wait-condition, and
+   resource-request evidence, use a compatible externally provisioned target,
    set `ZENML_MCP_ACTION_INTEGRATION=1` and supply the exact disposable fixture
    UUIDs in `ZENML_MCP_ACTION_FIXTURE`. A skipped gate is an incomplete receipt.
-6. Set `ZENML_MCP_RESTRICTED_INTEGRATION=1` with
+6. To collect separate restricted-access evidence, set
+   `ZENML_MCP_RESTRICTED_INTEGRATION=1` with
    `ZENML_MCP_RESTRICTED_API_KEY` to prove the restricted read through a
-   separately credentialed MCP process. Release CI sets all three gates and
-   `ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1`, so missing prerequisites fail
-   before any publishing step.
+   separately credentialed MCP process. ZenML's local OSS server disables
+   authentication and its SQL store cannot execute replay or external
+   deployments, so these two opt-in receipts are not part of the default
+   release gate. Set `ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1` only when an
+   external target supplies every prerequisite.
 7. Build and verify both distributions. CI initializes MCP inside the Docker
    image and inside an unpacked `mcp-zenml.mcpb`, then checks the exact compact
    inventory, packaged modules, dependency versions, and Python requirements.
@@ -61,12 +67,10 @@ and update the MCP registry from the tagged commit.
 
 `GH_RELEASE_PAT` must allow pushes to `main`, tags, GitHub releases, and
 downstream workflow triggers. The registry publisher uses GitHub OIDC.
-The `release-integration` environment and a self-hosted Linux runner labeled
-`zenml-mcp-integration` must provide a dedicated loopback ZenML 0.96.4 target
-and the disposable, restricted, and action-fixture secrets named above. The
-runner keeps that target and its pre-seeded fixture IDs local to the test job.
-The release gate waits or fails if the runner, target, or complete receipt is
-unavailable.
+The disposable OSS integration job runs on GitHub-hosted Ubuntu and provisions
+its own loopback ZenML target. It requires no `release-integration` environment,
+self-hosted runner, or ZenML secrets. The release gate fails if that server does
+not start or if the persisted CRUD or project-isolation receipt fails.
 
 ## Version 2.0.0 candidate receipt
 
@@ -78,9 +82,12 @@ unavailable.
   generic reads and writes, finite actions, write policy, stdio and real
   localhost HTTP, timeout and cancellation outcomes, Apps browser flows,
   manifest consistency, and packaged discovery.
-- Live evidence required before release: disposable CRUD, restricted-credential
-  rejection, and feature-enabled actions. Record the exact server image or
-  version, fixture IDs, commands, and cleanup result in the workflow run.
+- Live OSS evidence required before release: disposable CRUD and same-name
+  project isolation against the exact ZenML 0.96.4 server started by CI.
+- Optional external evidence: restricted-credential rejection and
+  feature-enabled actions. Record the target version, fixture IDs, commands,
+  and cleanup result when collecting either opt-in receipt; do not describe a
+  skipped gate as passed.
 - Excluded capabilities: ZenML Cloud control-plane and Resource Manager
   administration, user and credential administration, secret-value CRUD,
   connector login and verification, raw webhook events, and aggregate debugging

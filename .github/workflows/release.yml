@@ -87,9 +87,9 @@ jobs:
         run: uv run scripts/test_distributions.py reproducible mcp-zenml.mcpb
 
   live-integration:
-    name: Disposable ZenML integration receipt
-    runs-on: [self-hosted, linux, zenml-mcp-integration]
-    environment: release-integration
+    name: Disposable OSS ZenML integration receipt
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
@@ -113,17 +113,8 @@ jobs:
           version: "0.11.28"
           enable-cache: false
 
-      - name: Require complete disposable integration receipt
-        env:
-          ZENML_STORE_URL: ${{ secrets.ZENML_STORE_URL }}
-          ZENML_STORE_API_KEY: ${{ secrets.ZENML_STORE_API_KEY }}
-          ZENML_MCP_DISPOSABLE_INTEGRATION: "1"
-          ZENML_MCP_RESTRICTED_INTEGRATION: "1"
-          ZENML_MCP_RESTRICTED_API_KEY: ${{ secrets.ZENML_MCP_RESTRICTED_API_KEY }}
-          ZENML_MCP_ACTION_INTEGRATION: "1"
-          ZENML_MCP_ACTION_FIXTURE: ${{ secrets.ZENML_MCP_ACTION_FIXTURE }}
-          ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION: "1"
-        run: uv run scripts/test_resource_integration.py
+      - name: Run disposable OSS integration receipt
+        run: bash scripts/run_disposable_resource_integration.sh
 
   prepare-candidate:
     name: Prepare release candidate

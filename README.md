@@ -343,19 +343,23 @@ The automated tests verify:
 - Resource and prompt enumeration
 - `diagnose_zenml_setup` returns structured diagnostics even in constrained environments
 
-Credential-free CI covers every adapter through the MCP protocol. Persisted
-write receipts require an operator-provided disposable ZenML 0.96.4 server on a
-loopback address and `ZENML_MCP_DISPOSABLE_INTEGRATION=1`; the suite rejects
-shared or remote targets. Feature-enabled trigger, deployment, wait-condition,
-and resource-request receipts also require
-`ZENML_MCP_ACTION_INTEGRATION=1` plus the exact disposable fixture UUIDs named
-by `ZENML_MCP_ACTION_FIXTURE`. A gated skip is not evidence that those live
-features passed. Restricted-access evidence also requires
-`ZENML_MCP_RESTRICTED_INTEGRATION=1` and
-`ZENML_MCP_RESTRICTED_API_KEY`; the suite runs that read through a separate MCP
-process. Release CI sets `ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1`, which turns
-any missing live gate into a failure. Cloud infrastructure provisioning is
-never part of the default test run.
+Credential-free CI covers every adapter through the MCP protocol. PR and
+release CI also start a fresh ZenML 0.96.4 OSS server on a loopback address and
+run persisted CRUD and same-name project-isolation receipts. The server uses a
+temporary configuration and database that are removed when the job exits; no
+repository environment, self-hosted runner, or ZenML credential is required.
+
+ZenML's local OSS server disables authentication and its SQL store does not
+support pipeline replay or external deployment infrastructure. Restricted
+access and feature-enabled trigger, replay, deployment, wait-condition, and
+resource-request receipts therefore remain separate opt-in gates. They require
+`ZENML_MCP_RESTRICTED_INTEGRATION=1` with
+`ZENML_MCP_RESTRICTED_API_KEY`, or `ZENML_MCP_ACTION_INTEGRATION=1` with the
+exact disposable fixture UUIDs in `ZENML_MCP_ACTION_FIXTURE`, respectively. A
+gated skip is not evidence that those capabilities passed. An operator can set
+`ZENML_MCP_REQUIRE_COMPLETE_INTEGRATION=1` to turn a missing opt-in gate into a
+failure. Cloud infrastructure provisioning is never part of the default test
+run.
 
 ## Debugging with MCP Inspector
 
