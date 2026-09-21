@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import sys
@@ -11,6 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 SERVER_FILE = ROOT / "server" / "zenml_server.py"
 MANIFEST_JSON = ROOT / "manifest.json"
+sys.path.insert(0, str(ROOT / "server"))
+
+from zenml_tool_catalog import ALL_TOOL_NAMES, tool_names  # noqa: E402
 
 
 def _decorator_name(node: ast.AST) -> Optional[str]:
@@ -91,7 +95,42 @@ def _collect(server_src: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]
     return tools, prompts
 
 
+def _updated_manifest(
+    data: Dict[str, Any],
+    tools: List[Dict[str, Any]],
+    prompts: List[Dict[str, Any]],
+    profile: str,
+    write_policy: str,
+    *,
+    update_runtime_env: bool = True,
+) -> Dict[str, Any]:
+    """Return manifest fields aligned with one runtime registration mode."""
+    server = {**data["server"]}
+    mcp_config = {**server["mcp_config"]}
+    env = {**mcp_config["env"]}
+    if update_runtime_env:
+        env.update(
+            {
+                "ZENML_MCP_PROFILE": profile,
+                "ZENML_MCP_WRITE_POLICY": write_policy,
+            }
+        )
+    mcp_config["env"] = env
+    server["mcp_config"] = mcp_config
+    return {**data, "server": server, "tools": tools, "prompts": prompts}
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate profile-aware manifest fields"
+    )
+    parser.add_argument("--profile", choices=("compact", "legacy"))
+    parser.add_argument(
+        "--write-policy",
+        choices=("read_write", "read_only"),
+    )
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
     if not SERVER_FILE.exists():
         print(f"Error: server file not found: {SERVER_FILE}", file=sys.stderr)
         return 1
@@ -100,7 +139,27 @@ def main() -> int:
         return 1
 
     server_src = SERVER_FILE.read_text(encoding="utf-8")
-    tools, prompts = _collect(server_src)
+    candidates, prompts = _collect(server_src)
+    by_name = {tool["name"]: tool for tool in candidates}
+    if len(by_name) != len(candidates):
+        print(
+            "Error: duplicate decorated tool names in server entrypoint",
+            file=sys.stderr,
+        )
+        return 1
+    candidate_names = set(by_name)
+    catalog_names = set(ALL_TOOL_NAMES)
+    if candidate_names != catalog_names:
+        print(
+            "Error: tool catalog and decorated server tools differ: "
+            f"missing={sorted(catalog_names - candidate_names)}, "
+            f"unexpected={sorted(candidate_names - catalog_names)}",
+            file=sys.stderr,
+        )
+        return 1
+    profile = args.profile or "compact"
+    write_policy = args.write_policy or "read_write"
+    tools = [by_name[name] for name in tool_names(profile, write_policy)]
 
     data: Dict[str, Any] = json.loads(MANIFEST_JSON.read_text(encoding="utf-8"))
     # Validate schema before replacing arrays
@@ -111,11 +170,26 @@ def main() -> int:
         )
         return 1
 
-    data["tools"] = tools
-    data["prompts"] = prompts
+    updated = _updated_manifest(
+        data,
+        tools,
+        prompts,
+        profile,
+        write_policy,
+        update_runtime_env=args.profile is not None or args.write_policy is not None,
+    )
+
+    if args.check:
+        if data != updated:
+            print(
+                "Error: manifest.json profile fields are out of date", file=sys.stderr
+            )
+            return 1
+        print(f"manifest.json is current: {len(tools)} tools, {len(prompts)} prompts")
+        return 0
 
     MANIFEST_JSON.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(updated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     print(f"Updated manifest.json: {len(tools)} tools, {len(prompts)} prompts")
     return 0

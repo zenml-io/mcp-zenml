@@ -1,0 +1,461 @@
+{
+  "artifact.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_artifact"
+  },
+  "artifact.update": {
+    "kwargs": {
+      "has_custom_name": false,
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "update_artifact"
+  },
+  "artifact_version.delete": {
+    "kwargs": {
+      "delete_from_artifact_store": true,
+      "delete_metadata": false,
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111",
+      "server_side": true
+    },
+    "method": "delete_artifact_version"
+  },
+  "artifact_version.update": {
+    "kwargs": {
+      "add_tags": [
+        "reviewed"
+      ],
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "update_artifact_version"
+  },
+  "build.delete": {
+    "kwargs": {
+      "id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_build"
+  },
+  "code_repository.create": {
+    "kwargs": {
+      "config": {},
+      "name": "repo",
+      "source": {
+        "attribute": "base_code_repository:BaseCodeRepository",
+        "module": "zenml.code_repositories",
+        "type": "unknown"
+      }
+    },
+    "method": "create_code_repository"
+  },
+  "code_repository.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_code_repository"
+  },
+  "code_repository.update": {
+    "kwargs": {
+      "config": {
+        "old": null
+      },
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "update_code_repository"
+  },
+  "deployment.delete": {
+    "kwargs": {
+      "force": true,
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111",
+      "timeout": 30
+    },
+    "method": "delete_deployment"
+  },
+  "flavor.create": {
+    "kwargs": {
+      "component_type": "orchestrator",
+      "source": "zenml.orchestrators.base_orchestrator:BaseOrchestratorFlavor"
+    },
+    "method": "create_flavor"
+  },
+  "flavor.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_flavor"
+  },
+  "hook_invocation.delete": {
+    "kwargs": {
+      "hook_invocation_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_hook_invocation"
+  },
+  "model.create": {
+    "kwargs": {
+      "name": "model",
+      "save_models_to_registry": false
+    },
+    "method": "create_model"
+  },
+  "model.delete": {
+    "kwargs": {
+      "model_name_or_id": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_model"
+  },
+  "model.update": {
+    "kwargs": {
+      "description": "",
+      "model_name_or_id": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111",
+      "save_models_to_registry": false
+    },
+    "method": "update_model"
+  },
+  "model_version.create": {
+    "kwargs": {
+      "model_name_or_id": "33333333-3333-4333-8333-333333333333",
+      "name": "v1",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "create_model_version"
+  },
+  "model_version.delete": {
+    "kwargs": {
+      "model_version_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_model_version"
+  },
+  "model_version.update": {
+    "kwargs": {
+      "force": false,
+      "model_name_or_id": "33333333-3333-4333-8333-333333333333",
+      "project": "11111111-1111-4111-8111-111111111111",
+      "stage": "staging",
+      "version_name_or_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_model_version"
+  },
+  "pipeline.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_pipeline"
+  },
+  "pipeline_run.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_pipeline_run"
+  },
+  "platform_event_trigger.create": {
+    "kwargs": {
+      "concurrency": "skip",
+      "name": "event",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "source_id": "44444444-4444-4444-8444-444444444444",
+      "source_type": "pipeline_snapshot",
+      "target_events": [
+        "created"
+      ]
+    },
+    "method": "create_platform_event_trigger"
+  },
+  "platform_event_trigger.delete": {
+    "kwargs": {
+      "soft": true,
+      "trigger_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_trigger"
+  },
+  "platform_event_trigger.update": {
+    "kwargs": {
+      "target_events": [
+        "updated"
+      ],
+      "trigger_name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_platform_event_trigger"
+  },
+  "project.create": {
+    "kwargs": {
+      "description": "description",
+      "name": "project"
+    },
+    "method": "create_project"
+  },
+  "project.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_project"
+  },
+  "project.update": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "new_description": null,
+      "new_display_name": null,
+      "new_name": "renamed"
+    },
+    "method": "update_project"
+  },
+  "run_template.create": {
+    "kwargs": {
+      "name": "template",
+      "snapshot_id": "44444444-4444-4444-8444-444444444444"
+    },
+    "method": "create_run_template"
+  },
+  "run_template.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_run_template"
+  },
+  "run_template.update": {
+    "kwargs": {
+      "hidden": false,
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "update_run_template"
+  },
+  "schedule_trigger.create": {
+    "kwargs": {
+      "concurrency": "skip",
+      "interval": 60,
+      "name": "schedule",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "start_time": "2026-09-12T12:00:00+00:00"
+    },
+    "method": "create_schedule_trigger"
+  },
+  "schedule_trigger.delete": {
+    "kwargs": {
+      "soft": true,
+      "trigger_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_trigger"
+  },
+  "schedule_trigger.update": {
+    "kwargs": {
+      "active": false,
+      "trigger_name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_schedule_trigger"
+  },
+  "service.create": {
+    "kwargs": {
+      "config": {
+        "description": "",
+        "model_name": "",
+        "model_version": "",
+        "name": "service",
+        "pipeline_name": "",
+        "pipeline_step_name": "",
+        "service_name": "zenml-service",
+        "type": "zenml.services.service.ServiceConfig"
+      },
+      "model_version_id": null,
+      "service_type": {
+        "description": "",
+        "flavor": "custom",
+        "logo_url": "",
+        "name": "",
+        "type": "model-serving"
+      }
+    },
+    "method": "create_service"
+  },
+  "service.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_service"
+  },
+  "service.update": {
+    "kwargs": {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "name": "renamed"
+    },
+    "method": "update_service"
+  },
+  "service_connector.create": {
+    "kwargs": {
+      "auto_configure": false,
+      "configuration": {
+        "password": "credential-marker"
+      },
+      "connector_type": "docker",
+      "list_resources": false,
+      "name": "connector",
+      "register": true,
+      "verify": false
+    },
+    "method": "create_service_connector"
+  },
+  "service_connector.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_service_connector"
+  },
+  "service_connector.update": {
+    "kwargs": {
+      "expiration_seconds": 0,
+      "labels": {
+        "old": null
+      },
+      "list_resources": false,
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "update": true,
+      "verify": false
+    },
+    "method": "update_service_connector"
+  },
+  "snapshot.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_snapshot"
+  },
+  "snapshot.update": {
+    "kwargs": {
+      "description": "",
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111",
+      "replace": false
+    },
+    "method": "update_snapshot"
+  },
+  "stack.create": {
+    "kwargs": {
+      "components": {
+        "artifact_store": "22222222-2222-4222-8222-222222222222",
+        "orchestrator": "44444444-4444-4444-8444-444444444444"
+      },
+      "name": "stack"
+    },
+    "method": "create_stack"
+  },
+  "stack.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "recursive": false
+    },
+    "method": "delete_stack"
+  },
+  "stack.update": {
+    "kwargs": {
+      "description": "updated",
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_stack"
+  },
+  "stack_component.create": {
+    "kwargs": {
+      "component_type": "orchestrator",
+      "configuration": {},
+      "flavor": "default",
+      "name": "component"
+    },
+    "method": "create_stack_component"
+  },
+  "stack_component.delete": {
+    "kwargs": {
+      "component_type": "orchestrator",
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_stack_component"
+  },
+  "stack_component.update": {
+    "kwargs": {
+      "component_type": "orchestrator",
+      "configuration": {
+        "key": null
+      },
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_stack_component"
+  },
+  "tag.create": {
+    "kwargs": {
+      "exclusive": false,
+      "name": "tag"
+    },
+    "method": "create_tag"
+  },
+  "tag.delete": {
+    "kwargs": {
+      "tag_name_or_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_tag"
+  },
+  "tag.update": {
+    "kwargs": {
+      "exclusive": false,
+      "tag_name_or_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_tag"
+  },
+  "webhook.create": {
+    "kwargs": {
+      "name": "webhook",
+      "webhook_type": "generic"
+    },
+    "method": "create_webhook"
+  },
+  "webhook.delete": {
+    "kwargs": {
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "delete_webhook"
+  },
+  "webhook.update": {
+    "kwargs": {
+      "active": false,
+      "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+      "project": "11111111-1111-4111-8111-111111111111"
+    },
+    "method": "update_webhook"
+  },
+  "webhook_trigger.create": {
+    "kwargs": {
+      "concurrency": "skip",
+      "configuration": {},
+      "name": "hook",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "webhook": "44444444-4444-4444-8444-444444444444"
+    },
+    "method": "create_webhook_trigger"
+  },
+  "webhook_trigger.delete": {
+    "kwargs": {
+      "soft": true,
+      "trigger_id": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "delete_trigger"
+  },
+  "webhook_trigger.update": {
+    "kwargs": {
+      "configuration": {},
+      "trigger_name_id_or_prefix": "22222222-2222-4222-8222-222222222222"
+    },
+    "method": "update_webhook_trigger"
+  }
+}

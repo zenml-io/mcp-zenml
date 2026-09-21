@@ -1,0 +1,1745 @@
+{
+  "format_version": 1,
+  "observed_tool_count": 50,
+  "tool_names": [
+    "diagnose_zenml_setup",
+    "get_step_logs",
+    "list_users",
+    "get_user",
+    "get_active_user",
+    "get_active_project",
+    "get_project",
+    "list_projects",
+    "get_stack",
+    "easter_egg",
+    "list_stacks",
+    "list_pipelines",
+    "get_pipeline_details",
+    "get_service",
+    "list_services",
+    "get_stack_component",
+    "list_stack_components",
+    "get_flavor",
+    "list_flavors",
+    "trigger_pipeline",
+    "get_run_template",
+    "list_run_templates",
+    "get_snapshot",
+    "list_snapshots",
+    "get_deployment",
+    "list_deployments",
+    "get_deployment_logs",
+    "get_schedule",
+    "list_schedules",
+    "get_pipeline_run",
+    "list_pipeline_runs",
+    "get_run_step",
+    "list_run_steps",
+    "list_artifacts",
+    "get_artifact_version",
+    "list_artifact_versions",
+    "list_secrets",
+    "get_service_connector",
+    "list_service_connectors",
+    "get_model",
+    "list_models",
+    "get_model_version",
+    "list_model_versions",
+    "get_step_code",
+    "get_tag",
+    "list_tags",
+    "get_build",
+    "list_builds",
+    "open_pipeline_run_dashboard",
+    "open_run_activity_chart"
+  ],
+  "input_schemas": {
+    "diagnose_zenml_setup": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "get_step_logs": {
+      "additionalProperties": false,
+      "properties": {
+        "step_run_id": {
+          "type": "string"
+        },
+        "source": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logs_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "step_run_id"
+      ],
+      "type": "object"
+    },
+    "list_users": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 50,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "active": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_user": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "get_active_user": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "get_active_project": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "get_project": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        },
+        "hydrate": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_projects": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 50,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_stack": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "easter_egg": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "list_stacks": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "list_pipelines": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_pipeline_details": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        },
+        "num_runs": {
+          "default": 5,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "get_service": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_services": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "running": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "service_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_run_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_step_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_version_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_stack_component": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_stack_components": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flavor": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stack_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_flavor": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_flavors": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "integration": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "trigger_pipeline": {
+      "additionalProperties": false,
+      "properties": {
+        "pipeline_name_or_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot_name_or_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stack_name_or_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "template_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_run_template": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_run_templates": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        },
+        "pipeline_name_or_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_config_schema": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "hydrate": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_snapshots": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runnable": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "deployable": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "deployed": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "named_only": {
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_deployment": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hydrate": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_deployments": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_deployment_logs": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tail": {
+          "default": 100,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "get_schedule": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_schedules": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "orchestrator_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "active": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_pipeline_run": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_pipeline_runs": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 10,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stack_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_time": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "end_time": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stack": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stack_component": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_run_step": {
+      "additionalProperties": false,
+      "properties": {
+        "step_run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_run_id"
+      ],
+      "type": "object"
+    },
+    "list_run_steps": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 10,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_time": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "end_time": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_run_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "list_artifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 10,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_artifact_version": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        },
+        "version": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_artifact_versions": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_name_or_id": {
+          "type": "string"
+        },
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 10,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact_name_or_id"
+      ],
+      "type": "object"
+    },
+    "list_secrets": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 50,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_service_connector": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_service_connectors": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "connector_type": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_model": {
+      "additionalProperties": false,
+      "properties": {
+        "name_id_or_prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name_id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_models": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_model_version": {
+      "additionalProperties": false,
+      "properties": {
+        "model_name_or_id": {
+          "type": "string"
+        },
+        "model_version_name_or_number_or_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_name_or_id",
+        "model_version_name_or_number_or_id"
+      ],
+      "type": "object"
+    },
+    "list_model_versions": {
+      "additionalProperties": false,
+      "properties": {
+        "model_name_or_id": {
+          "type": "string"
+        },
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "number": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model_name_or_id"
+      ],
+      "type": "object"
+    },
+    "get_step_code": {
+      "additionalProperties": false,
+      "properties": {
+        "step_run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_run_id"
+      ],
+      "type": "object"
+    },
+    "get_tag": {
+      "additionalProperties": false,
+      "properties": {
+        "tag_name_or_id": {
+          "type": "string"
+        },
+        "hydrate": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tag_name_or_id"
+      ],
+      "type": "object"
+    },
+    "list_tags": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 50,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exclusive": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "resource_type": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "get_build": {
+      "additionalProperties": false,
+      "properties": {
+        "id_or_prefix": {
+          "type": "string"
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hydrate": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id_or_prefix"
+      ],
+      "type": "object"
+    },
+    "list_builds": {
+      "additionalProperties": false,
+      "properties": {
+        "sort_by": {
+          "default": "desc:created",
+          "type": "string"
+        },
+        "page": {
+          "default": 1,
+          "type": "integer"
+        },
+        "size": {
+          "default": 20,
+          "type": "integer"
+        },
+        "logical_operator": {
+          "default": "and",
+          "type": "string"
+        },
+        "created": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pipeline_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stack_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_local": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "contains_code": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "project": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "open_pipeline_run_dashboard": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "open_run_activity_chart": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    }
+  }
+}

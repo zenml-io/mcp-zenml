@@ -2,11 +2,14 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "httpx",
-#     "mcp[cli]",
-#     "zenml~=0.93.0",
+#     "mcp[cli]==2.2.0",
+#     "zenml==0.96.4",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
@@ -19,21 +22,72 @@ try:
 except ImportError:
     pass
 
+import argparse
+import asyncio
 import functools
+import inspect
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import sys
 import warnings
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, ParamSpec, TypeVar, cast, get_type_hints
+from typing import Any, Dict, ParamSpec, TypeVar, cast
 from urllib.parse import urlparse
 
 import requests
 import zenml_mcp_analytics as analytics
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import CallToolResult, TextContent
+from pydantic import ConfigDict
+from urllib3.util.retry import Retry
+from zenml_resource_dispatch import (
+    ResourceDispatchError,
+    ResourceFeatureUnavailable,
+    ResourceNotFound,
+    ResourcePermissionDenied,
+    _is_pre_dispatch_connection_failure,
+    ensure_writes_enabled,
+    safe_project,
+)
+from zenml_resource_dispatch import (
+    action_resource as dispatch_action_resource,
+)
+from zenml_resource_dispatch import (
+    create_resource as dispatch_create_resource,
+)
+from zenml_resource_dispatch import (
+    delete_resource as dispatch_delete_resource,
+)
+from zenml_resource_dispatch import (
+    get_resource as dispatch_get_resource,
+)
+from zenml_resource_dispatch import (
+    list_resources as dispatch_list_resources,
+)
+from zenml_resource_dispatch import (
+    update_resource as dispatch_update_resource,
+)
+from zenml_resource_registry import (
+    ACTION_REGISTRY,
+    RESOURCE_REGISTRY,
+    ResourceRegistryError,
+    describe_resources,
+)
+from zenml_tool_catalog import (
+    ALL_TOOL_NAMES,
+    configured_profile,
+    configured_write_policy,
+    tool_names,
+)
 
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
@@ -73,7 +127,7 @@ logging.getLogger("zenml.client").setLevel(logging.ERROR)
 # Suppress MCP/FastMCP logging to prevent stdout pollution (breaks JSON-RPC protocol)
 logging.getLogger("mcp").setLevel(logging.WARNING)
 logging.getLogger("mcp.server").setLevel(logging.WARNING)
-logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.mcpserver").setLevel(logging.WARNING)
 
 # Suppress urllib3/requests retry warnings that leak to stdout
 # E.g., "Retrying (Retry(total=9...)) after connection broken by 'RemoteDisconnected'"
@@ -87,15 +141,6 @@ T = TypeVar("T")  # Captures return type
 # Type alias for functions (callables with __name__ attribute)
 # Using ParamSpec preserves the original function's parameter types
 from collections.abc import Callable
-
-
-def _is_text_tool(func: Callable[..., Any]) -> bool:
-    """Check if a tool function returns str (text-only) vs structured output."""
-    try:
-        hints = get_type_hints(func)
-        return hints.get("return") is str
-    except Exception:
-        return False  # Default to structured — only 2 tools (easter_egg, get_step_code) are text
 
 
 def _is_structured_error_envelope(payload: Any) -> bool:
@@ -175,6 +220,27 @@ _KNOWN_OPS = frozenset(
     }
 )
 _UPPER_BOUND_OPS = frozenset({"lte", "lt"})
+
+
+class FilterSyntaxError(ValueError):
+    """Raised when a list filter uses obsolete ambiguous syntax."""
+
+
+def _validate_filter_syntax(value: str) -> None:
+    """Reject ambiguous comma-separated values for list-valued filter operators."""
+    operator, separator, operand = value.partition(":")
+    if not separator or operator not in {"oneof", "notoneof"}:
+        return
+    try:
+        parsed = json.loads(operand)
+    except json.JSONDecodeError as error:
+        raise FilterSyntaxError(
+            'List filters require a JSON array, for example oneof:["running","error"].'
+        ) from error
+    if not isinstance(parsed, list):
+        raise FilterSyntaxError(
+            'List filters require a JSON array, for example oneof:["running","error"].'
+        )
 
 
 def _parse_iso_to_zenml(s: str) -> str | None:
@@ -265,6 +331,33 @@ def _normalize_datetime_filter(value: str) -> str:
 _ERROR_MISSING_ENV_RE = re.compile(
     r"^(?P<var>[A-Z0-9_]+) environment variable not set$"
 )
+_SENSITIVE_ERROR_TEXT_RE = re.compile(
+    r"(?i)(?:api[_ -]?key|authorization|bearer|credential|password|secret|token)"
+)
+
+
+def _list_input_help(tool_name: str) -> str:
+    """Return compact filter and sort guidance for list-tool input failures."""
+    if not (tool_name.startswith("list_") or tool_name == "zenml_list_resources"):
+        return ""
+    return (
+        "\n\nLIST INPUT REFERENCE:\n"
+        "- Sort fields use direction:field, for example desc:created.\n"
+        "- Filter operators include gte:, lte:, contains:, startswith:, oneof:, "
+        "notoneof:, and in:.\n"
+        '- Multi-value filters use a JSON array, for example oneof:["running","error"].\n'
+        "- Datetimes use YYYY-MM-DD HH:MM:SS; date-only and ISO-8601 inputs are normalized."
+    )
+
+
+def _bounded_input_error_message(exc: Exception) -> str | None:
+    """Return a short SDK input error unless it looks capable of leaking a secret."""
+    message = str(exc).strip().strip("'")
+    if not message or len(message) > 500 or _SENSITIVE_ERROR_TEXT_RE.search(message):
+        return None
+    if any(ord(character) < 32 and character not in "\n\t" for character in message):
+        return None
+    return message
 
 
 def _redact_url(url: str | None) -> str | None:
@@ -294,6 +387,29 @@ def _classify_exception(
     raw_type = type(exc).__name__
     details: dict[str, Any] = {"raw_type": raw_type}
 
+    if isinstance(exc, ResourcePermissionDenied):
+        return ("PermissionDenied", "Permission denied for this resource.", details)
+    if isinstance(exc, ResourceFeatureUnavailable):
+        return (
+            "FeatureUnavailable",
+            str(exc) or "This ZenML server feature is disabled or unavailable.",
+            details,
+        )
+    if isinstance(exc, ResourceNotFound):
+        return ("NotFound", str(exc), details)
+    if isinstance(exc, (ResourceDispatchError, ResourceRegistryError)):
+        return ("ValidationError", str(exc), details)
+
+    if isinstance(exc, FilterSyntaxError):
+        return ("ValidationError", str(exc), details)
+
+    if isinstance(exc, (json.JSONDecodeError, requests.exceptions.JSONDecodeError)):
+        return (
+            "UpstreamError",
+            "ZenML server returned an invalid JSON response.",
+            details,
+        )
+
     # ---- HTTP errors (requests) ----
     if isinstance(exc, requests.HTTPError):
         status = http_status_code
@@ -307,6 +423,12 @@ def _classify_exception(
                 details,
             )
         if status == 403:
+            if tool_name.startswith("zenml_"):
+                return (
+                    "PermissionDenied",
+                    "Permission denied for this resource.",
+                    details,
+                )
             return (
                 "AuthenticationError",
                 "Authorization failed. Your API key may not have access.",
@@ -354,19 +476,8 @@ def _classify_exception(
         "pydantic" in exc_mod and "Validation" in raw_type
     )
     if is_validation:
-        error_snippet = str(exc)[:300]
-        details["validation_error"] = error_snippet
-        # Generic message suitable for any validation error
-        msg = "Validation failed. Please check your inputs.\n\n" + error_snippet
-        # Add filter-syntax help only for tools that accept filters
-        if tool_name.startswith("list_"):
-            msg += (
-                "\n\nFILTER SYNTAX REFERENCE:\n"
-                "- Operators: gte:, lte:, gt:, lt:, contains:, startswith:, oneof:, in:\n"
-                "- Datetime format: YYYY-MM-DD HH:MM:SS (e.g. gte:2026-02-01 00:00:00)\n"
-                "- Date-only and ISO-8601 inputs are auto-normalized\n"
-                "- Date range: in:2026-02-01 00:00:00,2026-02-07 23:59:59"
-            )
+        msg = "Validation failed. Please check your inputs."
+        msg += _list_input_help(tool_name)
         return ("ValidationError", msg, details)
 
     # ---- Common configuration errors (missing env vars) ----
@@ -381,13 +492,18 @@ def _classify_exception(
                 f"Missing required environment variable: {var}.",
                 details,
             )
+        return (
+            "ValidationError",
+            "Invalid input. Please check the supplied values."
+            + _list_input_help(tool_name),
+            details,
+        )
 
     # ---- Missing Python deps / integrations ----
     if isinstance(exc, (ImportError, ModuleNotFoundError)):
-        details["import_error"] = str(exc)
         return (
             "DependencyMissing",
-            f"Missing dependency or integration: {exc}",
+            "A required dependency or integration is unavailable.",
             details,
         )
 
@@ -419,31 +535,50 @@ def _classify_exception(
 
     # ---- Version mismatch (heuristics) ----
     if "ZenML" in msg and ("version" in msg.lower() or "incompatible" in msg.lower()):
-        details["version_message"] = msg[:200]
         return (
             "VersionMismatch",
             "Version mismatch between this MCP server and your ZenML installation/server.",
             details,
         )
 
+    # A few ZenML SDK paths still use RuntimeError for ordinary lookup and
+    # argument failures. Recognize their shape but keep their text redacted;
+    # arbitrary RuntimeErrors stay on the fully redacted default path.
+    if isinstance(exc, RuntimeError):
+        bounded_message = _bounded_input_error_message(exc)
+        lowered = bounded_message.lower() if bounded_message else ""
+        if any(
+            marker in lowered
+            for marker in ("not found", "does not exist", "could not find")
+        ):
+            return (
+                "NotFound",
+                "The requested ZenML resource was not found.",
+                details,
+            )
+        if any(
+            marker in lowered
+            for marker in (
+                "already exists",
+                "invalid value",
+                "must be",
+                "expected one of",
+            )
+        ):
+            return (
+                "ValidationError",
+                "Invalid input. Please check the supplied values."
+                + _list_input_help(tool_name),
+                details,
+            )
+
     # ---- Default ----
-    # Always show details for ImportError/RuntimeError since they indicate setup/config issues
-    if isinstance(exc, (ImportError, RuntimeError)):
-        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
-
-    if analytics.DEV_MODE:
-        return ("UnexpectedError", f"Error in {tool_name}: {msg}", details)
-
     return ("UnexpectedError", f"Error in {tool_name}: {raw_type}", details)
 
 
 # =============================================================================
 # MCP client detection (best-effort, request-scoped)
 # =============================================================================
-
-# Track whether we've already captured client info this session
-_mcp_client_info_captured = False
-_mcp_client_info_lock = Lock()
 
 
 def _getattr_multi(obj: Any, *names: str) -> Any:
@@ -457,14 +592,23 @@ def _getattr_multi(obj: Any, *names: str) -> Any:
     return None
 
 
-def _get_mcp_client_info_safe() -> dict[str, Any] | None:
+_current_mcp_context: ContextVar[Context[Any, Any] | None] = ContextVar(
+    "current_mcp_context", default=None
+)
+
+
+def _get_mcp_client_info_safe(
+    ctx: Context[Any, Any] | None = None,
+) -> dict[str, Any] | None:
     """Best-effort MCP client detection (only valid during a request).
 
     Checks both camelCase and snake_case field names to handle different
     MCP SDK versions.
     """
     try:
-        ctx = mcp.get_context()
+        ctx = ctx or _current_mcp_context.get()
+        if ctx is None:
+            return None
         session = getattr(ctx, "session", None)
         if session is None:
             return None
@@ -494,59 +638,100 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     Use this decorator for @mcp.tool() functions. It:
     - Catches exceptions and returns friendly error messages
     - Tracks tool usage via analytics (timing, success/failure, size param)
-    - Returns structured error dicts for structured tools, strings for text tools
+    - Returns structured MCP error results
     """
-    # Capture function name and return type at decoration time.
     # getattr-with-default keeps the type checker honest: a generic Callable
     # isn't guaranteed to have __name__, even though our decorated tools always do.
     func_name = getattr(func, "__name__", "unknown_tool")
-    text_tool = _is_text_tool(func)
 
     @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> T:
+    def wrapper(*args: Any, ctx: Context[Any, Any] | None = None, **kwargs: Any) -> T:
         import time
-
-        global _mcp_client_info_captured
 
         start_time = time.perf_counter()
         success = True
+        reported_outcome = "success"
         error_type: str | None = None
         http_status_code: int | None = None
+        generic_operation = {
+            "zenml_describe_resources": "describe",
+            "zenml_list_resources": "list",
+            "zenml_get_resource": "get",
+            "zenml_create_resource": "create",
+            "zenml_update_resource": "update",
+            "zenml_delete_resource": "delete",
+            "zenml_action_resource": "action",
+        }.get(func_name)
+        generic_resource_type: str | None = None
+        generic_action: str | None = None
+        if generic_operation:
+            try:
+                bound = inspect.signature(func).bind_partial(*args, **kwargs)
+                candidate_resource_type = bound.arguments.get("resource_type")
+                generic_resource_type = (
+                    candidate_resource_type
+                    if candidate_resource_type in RESOURCE_REGISTRY
+                    else "unknown"
+                )
+                if generic_operation == "action":
+                    candidate_action = bound.arguments.get("action")
+                    generic_action = (
+                        candidate_action
+                        if (generic_resource_type, candidate_action) in ACTION_REGISTRY
+                        else "unknown"
+                    )
+            except Exception:
+                pass
 
-        # Capture MCP client info once per session (best-effort)
-        client: dict[str, Any] | None = None
+        client = _get_mcp_client_info_safe(ctx)
         try:
-            if not _mcp_client_info_captured:
-                client = _get_mcp_client_info_safe()
-                if client:
-                    with _mcp_client_info_lock:
-                        if not _mcp_client_info_captured:
-                            _mcp_client_info_captured = True
-                            analytics.set_client_info_once(
-                                client_name=client.get("name"),
-                                client_version=client.get("version"),
-                            )
+            if client:
+                analytics.set_client_info_once(
+                    client_name=client.get("name"),
+                    client_version=client.get("version"),
+                )
         except Exception:
-            client = None
+            pass
 
+        context_token = _current_mcp_context.set(ctx)
         try:
             # Normalize datetime filter kwargs before calling the tool.
             # Uses a copy so analytics.extract_size_from_call sees original kwargs.
             call_kwargs = dict(kwargs) if kwargs else kwargs
+            if call_kwargs and func_name.startswith("list_"):
+                for value in call_kwargs.values():
+                    if isinstance(value, str):
+                        _validate_filter_syntax(value)
             if call_kwargs:
                 for key in _DATETIME_FILTER_KEYS:
                     if key in call_kwargs and isinstance(call_kwargs[key], str):
                         call_kwargs[key] = _normalize_datetime_filter(call_kwargs[key])
 
-            result = func(*args, **call_kwargs)
+            with _zenml_client_call_lock:
+                result = func(*args, **call_kwargs)
             # Detect structured error envelopes (full shape validation to avoid
             # false positives from legitimate "error" fields in successful results)
             if _is_structured_error_envelope(result):
                 success = False
                 error_type = cast(dict[str, Any], result)["error"]["type"]
+                error = cast(dict[str, Any], result)["error"]
+                reported_outcome = cast(dict[str, Any], result).get("outcome", "error")
+                return cast(
+                    T,
+                    CallToolResult(
+                        content=[TextContent(type="text", text=error["message"])],
+                        structured_content=cast(dict[str, Any], result),
+                        is_error=True,
+                    ),
+                )
+            if generic_operation and isinstance(result, dict):
+                outcome = result.get("outcome")
+                if outcome in {"accepted", "completed", "success"}:
+                    reported_outcome = outcome
             return result
         except requests.HTTPError as e:
             success = False
+            reported_outcome = "error"
             http_status_code = (
                 e.response.status_code
                 if getattr(e, "response", None) is not None
@@ -563,38 +748,45 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
             err_log = f"Error in {func_name}: {category}"
             if http_status_code is not None:
                 err_log = f"{err_log} (HTTP {http_status_code})"
-            if analytics.DEV_MODE:
-                err_log = f"{err_log} - {e}"
             print(err_log, file=sys.stderr)
 
-            if text_tool:
-                return cast(T, message)
             return cast(
                 T,
-                _make_error_result(
-                    func_name,
-                    message,
-                    category,
-                    http_status_code,
-                    details=details,
+                CallToolResult(
+                    content=[TextContent(type="text", text=message)],
+                    structured_content=_make_error_result(
+                        func_name,
+                        message,
+                        category,
+                        http_status_code,
+                        details=details,
+                    ),
+                    is_error=True,
                 ),
             )
         except Exception as e:
             success = False
+            reported_outcome = "error"
             category, message, details = _classify_exception(
                 tool_name=func_name,
                 exc=e,
             )
             error_type = category
 
-            print(message, file=sys.stderr)
+            print(f"Error in {func_name}: {category}", file=sys.stderr)
 
-            if text_tool:
-                return cast(T, message)
             return cast(
-                T, _make_error_result(func_name, message, category, details=details)
+                T,
+                CallToolResult(
+                    content=[TextContent(type="text", text=message)],
+                    structured_content=_make_error_result(
+                        func_name, message, category, details=details
+                    ),
+                    is_error=True,
+                ),
             )
         finally:
+            _current_mcp_context.reset(context_token)
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             try:
                 size = analytics.extract_size_from_call(func_name, args, kwargs)
@@ -607,10 +799,35 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
                     http_status_code=http_status_code,
                     mcp_client_name=(client or {}).get("name"),
                     mcp_client_version=(client or {}).get("version"),
+                    resource_type=generic_resource_type,
+                    operation=generic_operation,
+                    action=generic_action,
+                    profile=ACTIVE_TOOL_PROFILE,
+                    outcome=reported_outcome,
                 )
             except Exception:
                 pass
 
+    signature = inspect.signature(func)
+    parameters = list(signature.parameters.values())
+    context_parameter = inspect.Parameter(
+        "ctx",
+        kind=inspect.Parameter.KEYWORD_ONLY,
+        annotation=Context,
+        default=None,
+    )
+    var_keyword_index = next(
+        (
+            index
+            for index, parameter in enumerate(parameters)
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD
+        ),
+        len(parameters),
+    )
+    parameters.insert(var_keyword_index, context_parameter)
+    cast(Any, wrapper).__signature__ = signature.replace(parameters=parameters)
+    wrapper.__annotations__ = dict(getattr(func, "__annotations__", {}))
+    wrapper.__annotations__["ctx"] = Context
     return wrapper
 
 
@@ -629,11 +846,11 @@ def handle_exceptions(func: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
         try:
-            return func(*args, **kwargs)
+            with _zenml_client_call_lock:
+                return func(*args, **kwargs)
         except Exception as e:
             error_type = type(e).__name__
-            error_detail = str(e) if analytics.DEV_MODE else error_type
-            message = f"Error in {func_name}: {error_detail}"
+            message = f"Error in {func_name}: {error_type}"
             print(message, file=sys.stderr)
             return cast(T, message)
 
@@ -652,208 +869,63 @@ through the pages and so on.)
 Most tools return structured JSON data. You should present this data to the
 user in a more readable format (e.g. a table or summary) rather than showing
 raw JSON.
+
+Prefer zenml_describe_resources and the advertised generic resource tools.
+The create, update, delete, and action tools are advertised only when the write
+policy is read_write. Entity-specific list and get tools may be advertised by
+the legacy compatibility profile for existing clients. Use the generic
+resource tools for new calls and migrations.
 """
 
-try:
-    logger.debug("Importing MCP dependencies...")
-    from mcp.server.fastmcp import FastMCP
-    from mcp.types import Tool as MCPTool
+logger.debug("Initializing MCP server...")
+mcp = MCPServer(
+    name="zenml",
+    instructions=INSTRUCTIONS,
+    log_level=cast(Any, logging.getLevelName(log_level)),
+)
+logger.debug("MCP server initialized successfully")
 
-    class ZenMLFastMCP(FastMCP):
-        """FastMCP subclass that supports _meta on tools and resources.
+ACTIVE_TOOL_PROFILE = configured_profile()
+ACTIVE_WRITE_POLICY = configured_write_policy()
+ACTIVE_TOOL_NAMES = frozenset(tool_names(ACTIVE_TOOL_PROFILE, ACTIVE_WRITE_POLICY))
 
-        The upstream FastMCP may not support the ``meta`` kwarg on
-        ``tool()`` / ``resource()`` depending on the installed version.
-        This subclass stores per-tool and per-resource meta at registration
-        time and injects it into list_tools() / list_resources().
-        """
-
-        def __init__(self, *a: Any, **kw: Any) -> None:
-            import inspect as _inspect
-
-            super().__init__(*a, **kw)
-            self._tool_meta: dict[str, dict[str, Any]] = {}
-            self._resource_meta: dict[str, dict[str, Any]] = {}
-            # Cache upstream resource() signature to avoid re-inspecting on every call
-            self._upstream_resource_params: set[str] = set(
-                _inspect.signature(FastMCP.resource).parameters.keys()
-            )
-            # Only trust proxy headers when explicitly behind a reverse proxy
-            self._forwarded_allow_ips: str = "127.0.0.1"
-
-        def add_tool(
-            self,
-            fn: Any,
-            name: str | None = None,
-            title: str | None = None,
-            description: str | None = None,
-            annotations: Any = None,
-            structured_output: bool | None = None,
-            *,
-            meta: dict[str, Any] | None = None,
-        ) -> None:
-            tool_name = name or fn.__name__
-            if meta is not None:
-                self._tool_meta[tool_name] = meta
-            super().add_tool(
-                fn,
-                name=name,
-                title=title,
-                description=description,
-                annotations=annotations,
-                structured_output=structured_output,
-            )
-
-        def tool(
-            self,
-            name: str | None = None,
-            title: str | None = None,
-            description: str | None = None,
-            annotations: Any = None,
-            structured_output: bool | None = None,
-            *,
-            meta: dict[str, Any] | None = None,
-        ) -> Callable[..., Any]:
-            if callable(name):
-                raise TypeError(
-                    "The @tool decorator was used incorrectly. "
-                    "Did you forget to call it? Use @tool() instead of @tool"
-                )
-
-            def decorator(fn: Any) -> Any:
-                self.add_tool(
-                    fn,
-                    name=name,
-                    title=title,
-                    description=description,
-                    annotations=annotations,
-                    structured_output=structured_output,
-                    meta=meta,
-                )
-                return fn
-
-            return decorator
-
-        def resource(
-            self,
-            uri: str,
-            *,
-            name: str | None = None,
-            title: str | None = None,
-            description: str | None = None,
-            mime_type: str | None = None,
-            meta: dict[str, Any] | None = None,
-            **extra: Any,
-        ) -> Callable[..., Any]:
-            """Override to intercept ``meta`` for older SDK versions.
-
-            If the upstream FastMCP.resource() already supports ``meta``,
-            we pass it through. Otherwise, we strip it and store it
-            ourselves, injecting it in list_resources().
-            """
-            upstream_params = self._upstream_resource_params
-
-            # Build kwargs for the upstream call, only passing what it accepts
-            kwargs: dict[str, Any] = {}
-            if name is not None:
-                kwargs["name"] = name
-            if description is not None:
-                kwargs["description"] = description
-            if mime_type is not None:
-                kwargs["mime_type"] = mime_type
-            # These may not exist in older SDK versions
-            if "title" in upstream_params and title is not None:
-                kwargs["title"] = title
-            if "meta" in upstream_params and meta is not None:
-                kwargs["meta"] = meta
-            kwargs.update(extra)
-
-            parent_decorator = super().resource(uri, **kwargs)
-
-            # If upstream didn't accept meta, store it ourselves
-            if "meta" not in upstream_params and meta is not None:
-                self._resource_meta[uri] = meta
-
-            return parent_decorator
-
-        async def list_resources(self) -> list[Any]:
-            """Override to inject stored resource meta for older SDK versions."""
-            resources = await super().list_resources()
-            if not self._resource_meta:
-                return resources
-            # Inject _meta for resources where we stored meta
-            patched = []
-            for r in resources:
-                uri_str = str(r.uri)
-                meta = self._resource_meta.get(uri_str)
-                if meta is not None and getattr(r, "meta", None) is None:
-                    try:
-                        data = r.model_dump(by_alias=True)
-                        data["_meta"] = meta
-                        patched.append(type(r)(**data))
-                    except Exception:
-                        patched.append(r)  # graceful fallback
-                else:
-                    patched.append(r)
-            return patched
-
-        async def list_tools(self) -> list[MCPTool]:
-            tools = await super().list_tools()
-            if not self._tool_meta:
-                return tools
-            # Inject _meta for tools where we stored meta
-            patched = []
-            for tool in tools:
-                meta = self._tool_meta.get(tool.name)
-                if meta is not None and getattr(tool, "meta", None) is None:
-                    try:
-                        data = tool.model_dump(by_alias=True)
-                        data["_meta"] = meta
-                        patched.append(MCPTool(**data))
-                    except Exception:
-                        patched.append(tool)  # graceful fallback
-                else:
-                    patched.append(tool)
-            return patched
-
-        async def run_streamable_http_async(self) -> None:
-            """Run StreamableHTTP with proxy-aware uvicorn config.
-
-            The upstream FastMCP creates uvicorn.Config without proxy_headers
-            or forwarded_allow_ips, so requests through reverse proxies
-            (e.g. cloudflared tunnels) are rejected with 421 Misdirected
-            Request due to Host header mismatch. This override fixes that.
-            """
-            import uvicorn
-
-            starlette_app = self.streamable_http_app()
-            config = uvicorn.Config(
-                starlette_app,
-                host=self.settings.host,
-                port=self.settings.port,
-                log_level=self.settings.log_level.lower(),
-                proxy_headers=True,
-                forwarded_allow_ips=self._forwarded_allow_ips,
-            )
-            server = uvicorn.Server(config)
-            await server.serve()
-
-    # Initialize FastMCP server
-    logger.debug("Initializing FastMCP server...")
-    mcp = ZenMLFastMCP(name="zenml", instructions=INSTRUCTIONS)
-    logger.debug("FastMCP server initialized successfully")
-
-    # ZenML client will be initialized lazily
-    zenml_client = None
-
-except Exception as e:
-    logger.error(f"Error during initialization: {str(e)}")
-    raise
+# ZenML's Client and REST session are singletons. Tool and resource handlers
+# execute in MCP worker threads, so serialize access until the SDK guarantees
+# thread-safe concurrent use.
+zenml_client = None
+_zenml_client_call_lock = Lock()
 
 
 # Track if we've already reported client init failure (avoid spam)
 _client_init_failure_reported = False
 _zenml_client_init_lock = Lock()
+
+
+def _configure_zero_retry_rest_session(client: Any) -> None:
+    """Disable automatic REST retries once while preserving pool sizing.
+
+    ZenML 0.96 retries every HTTP method by default, including mutations. The
+    MCP server cannot safely repeat a mutation after a response is lost, so the
+    shared public REST session uses zero-retry adapters for both schemes.
+    ZenML's explicit re-authentication after a rejected token remains intact.
+    """
+    store = client.zen_store
+    session = getattr(store, "session", None)
+    if not isinstance(session, requests.Session):
+        return
+
+    retries = Retry(
+        total=0,
+        connect=0,
+        read=0,
+        redirect=0,
+        status=0,
+        other=0,
+    )
+    for scheme in ("http://", "https://"):
+        adapter = session.adapters.get(scheme)
+        if adapter is not None:
+            adapter.max_retries = retries
 
 
 def get_zenml_client():
@@ -871,10 +943,12 @@ def get_zenml_client():
 
         logger.debug("Initializing ZenML client...")
         try:
-            zenml_client = Client()
+            initialized_client = Client()
+            _configure_zero_retry_rest_session(initialized_client)
+            zenml_client = initialized_client
             logger.debug("ZenML client initialized successfully")
         except Exception as e:
-            logger.error(f"ZenML client initialization failed: {e}")
+            logger.error("ZenML client initialization failed: %s", type(e).__name__)
             # Track client init failure (only report once per session)
             if not _client_init_failure_reported:
                 _client_init_failure_reported = True
@@ -889,7 +963,12 @@ def get_zenml_client():
     return zenml_client
 
 
-def get_access_token(server_url: str, api_key: str) -> str:
+def get_access_token(
+    server_url: str,
+    api_key: str,
+    *,
+    timeout: tuple[float, float] = (3.05, 30),
+) -> str:
     """
     Generate a short-lived access token using the ZenML API key.
 
@@ -902,7 +981,7 @@ def get_access_token(server_url: str, api_key: str) -> str:
 
     Raises:
         requests.HTTPError: If the request fails
-        ValueError: If the response doesn't contain an access token
+        RuntimeError: If the response doesn't contain a usable access token
     """
     # Ensure the server URL doesn't end with a slash
     server_url = server_url.rstrip("/")
@@ -917,22 +996,30 @@ def get_access_token(server_url: str, api_key: str) -> str:
         url,
         data={"password": api_key},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=(3.05, 30),
+        timeout=timeout,
     )
     response.raise_for_status()
 
-    # Parse the response
-    token_data = response.json()
-
-    # Check if the access token is in the response
-    if "access_token" not in token_data:
-        raise ValueError("No access token in response")
-
-    return token_data["access_token"]
+    try:
+        token_data = response.json()
+    except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
+        raise
+    try:
+        access_token = token_data["access_token"]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError("Invalid ZenML authentication response") from error
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise RuntimeError("Invalid ZenML authentication response")
+    return access_token
 
 
 def make_step_logs_request(
-    server_url: str, step_id: str, access_token: str
+    server_url: str,
+    step_id: str,
+    access_token: str,
+    *,
+    source: str | None = None,
+    logs_id: str | None = None,
 ) -> Dict[str, Any]:
     """Get logs for a specific step from the ZenML API.
 
@@ -958,8 +1045,16 @@ def make_step_logs_request(
 
     logger.debug(f"Fetching logs for step {step_id}")
 
+    if source is not None:
+        source = source.strip()
+    if logs_id is not None:
+        logs_id = logs_id.strip()
+    if (not source and not logs_id) or (source is not None and logs_id is not None):
+        raise ValueError("Exactly one of source or logs_id must be provided.")
+    params = {"source": source} if source is not None else {"logs_id": logs_id}
+
     # Make the request
-    response = requests.get(url, headers=headers, timeout=(3.05, 30))
+    response = requests.get(url, headers=headers, params=params, timeout=(3.05, 30))
     response.raise_for_status()  # Raise an exception for HTTP errors
 
     data = response.json()
@@ -983,7 +1078,8 @@ def collect_zenml_setup_diagnostics(
     or the server URL is unreachable.
     """
     store_url = os.environ.get("ZENML_STORE_URL")
-    api_key_present = bool(os.environ.get("ZENML_STORE_API_KEY"))
+    api_key = os.environ.get("ZENML_STORE_API_KEY")
+    api_key_present = bool(api_key)
     active_project_id_present = bool(os.environ.get("ZENML_ACTIVE_PROJECT_ID"))
 
     checks: dict[str, Any] = {
@@ -1043,6 +1139,46 @@ def collect_zenml_setup_diagnostics(
 
     checks["connectivity"] = connectivity
 
+    authentication: dict[str, Any] = {"attempted": False}
+    if store_url and api_key:
+        authentication["attempted"] = True
+        try:
+            get_access_token(store_url, api_key, timeout=(1.0, 2.5))
+            authentication["ok"] = True
+        except requests.HTTPError as error:
+            status_code = (
+                error.response.status_code
+                if getattr(error, "response", None) is not None
+                else None
+            )
+            authentication.update(
+                {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "status_code": status_code,
+                    "failure_kind": (
+                        "rejected" if status_code in {401, 403} else "server_error"
+                    ),
+                }
+            )
+        except (requests.Timeout, requests.ConnectionError) as error:
+            authentication.update(
+                {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "failure_kind": "unreachable",
+                }
+            )
+        except Exception as error:
+            authentication.update(
+                {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "failure_kind": "invalid_response",
+                }
+            )
+    checks["authentication"] = authentication
+
     if include_client_info:
         checks["mcp_client"] = _get_mcp_client_info_safe()
 
@@ -1062,6 +1198,38 @@ def collect_zenml_setup_diagnostics(
                 "severity": "error",
                 "code": "missing_api_key",
                 "message": "ZENML_STORE_API_KEY is not set.",
+            }
+        )
+    if authentication.get("failure_kind") == "rejected":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_failed",
+                "message": "ZenML authentication failed. Check ZENML_STORE_API_KEY.",
+            }
+        )
+    elif authentication.get("failure_kind") == "server_error":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_server_error",
+                "message": "The ZenML authentication endpoint returned a server error.",
+            }
+        )
+    elif authentication.get("failure_kind") == "unreachable":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_unreachable",
+                "message": "Could not validate ZenML credentials because the authentication endpoint was unavailable.",
+            }
+        )
+    elif authentication.get("failure_kind") == "invalid_response":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "authentication_invalid_response",
+                "message": "The ZenML authentication endpoint returned an invalid response.",
             }
         )
     if store_url and connectivity.get("attempted") and connectivity.get("ok") is False:
@@ -1099,11 +1267,17 @@ def diagnose_zenml_setup() -> dict[str, Any]:
 
 @mcp.tool()
 @handle_tool_exceptions
-def get_step_logs(step_run_id: str) -> dict[str, Any]:
+def get_step_logs(
+    step_run_id: str,
+    source: str | None = None,
+    logs_id: str | None = None,
+) -> dict[str, Any]:
     """Get the logs for a specific step run.
 
     Args:
-        step_run_id: The ID of the step run to get logs for
+        step_run_id: The ID of the step run to get logs for.
+        source: Optional log source. Defaults to ZenML's ordinary ``step`` source.
+        logs_id: Optional exact log record ID. Cannot be combined with ``source``.
     """
     # Get server URL and API key from environment variables
     server_url = os.environ.get("ZENML_STORE_URL")
@@ -1115,11 +1289,250 @@ def get_step_logs(step_run_id: str) -> dict[str, Any]:
     if not api_key:
         raise ValueError("ZENML_STORE_API_KEY environment variable not set")
 
+    if source is not None:
+        source = source.strip()
+        if not source:
+            raise ResourceDispatchError("source must be a non-empty string.")
+    if logs_id is not None:
+        logs_id = logs_id.strip()
+        if not logs_id:
+            raise ResourceDispatchError("logs_id must be a non-empty string.")
+    if source is not None and logs_id is not None:
+        raise ResourceDispatchError("Only one of source or logs_id may be provided.")
+    if source is None and logs_id is None:
+        source = "step"
+
     # Generate a short-lived access token
     access_token = get_access_token(server_url, api_key)
 
     # Get the logs using the access token
-    return make_step_logs_request(server_url, step_run_id, access_token)
+    return make_step_logs_request(
+        server_url,
+        step_run_id,
+        access_token,
+        source=source,
+        logs_id=logs_id,
+    )
+
+
+# =============================================================================
+# Generic resource discovery, reads, and ordinary mutations
+# =============================================================================
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def zenml_describe_resources(
+    resource_type: str | None = None,
+    operation: str | None = None,
+) -> dict[str, Any]:
+    """Discover supported generic ZenML resources or one operation schema.
+
+    With no arguments this returns a short catalog. Pass a canonical singular
+    resource type to inspect its operations, and add an operation name for its
+    bounded input schema and a small example.
+    """
+    return describe_resources(resource_type=resource_type, operation=operation)
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def zenml_list_resources(
+    resource_type: str,
+    filters: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    page: int = 1,
+    size: int | None = None,
+) -> dict[str, Any]:
+    """List one allowlisted ZenML resource type with validated filters.
+
+    Use ``zenml_describe_resources(resource_type, "list")`` to discover the
+    accepted filters. Page sizes are capped at 200. Project-scoped reads use
+    ``project_id`` when supplied and otherwise report the active project used.
+    """
+    return dispatch_list_resources(
+        get_zenml_client(),
+        resource_type,
+        filters=filters,
+        project_id=project_id,
+        page=page,
+        size=size,
+    )
+
+
+@mcp.tool()
+@handle_tool_exceptions
+def zenml_get_resource(
+    resource_type: str,
+    resource_id: str,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    pipeline_run_id: str | None = None,
+    component_type: str | None = None,
+    hydrate: bool | None = None,
+) -> dict[str, Any]:
+    """Get one allowlisted ZenML resource by its identifier.
+
+    Artifact versions, model versions, and run steps require their parent
+    identifier. Stack components require their fixed component type.
+    """
+    return dispatch_get_resource(
+        get_zenml_client(),
+        resource_type,
+        resource_id,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        pipeline_run_id=pipeline_run_id,
+        component_type=component_type,
+        hydrate=hydrate,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_create_resource(
+    resource_type: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    model_id: str | None = None,
+) -> dict[str, Any]:
+    """Create one allowlisted ZenML resource with a strict typed payload.
+
+    Inspect ``zenml_describe_resources(resource_type, "create")`` first.
+    Project-scoped creates require an exact project UUID and never change the
+    client's active project.
+    """
+    ensure_writes_enabled()
+    return dispatch_create_resource(
+        get_zenml_client(),
+        resource_type,
+        payload=payload,
+        project_id=project_id,
+        model_id=model_id,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_update_resource(
+    resource_type: str,
+    resource_id: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    """Update one exact UUID through an allowlisted operation-specific payload."""
+    ensure_writes_enabled()
+    return dispatch_update_resource(
+        get_zenml_client(),
+        resource_type,
+        resource_id,
+        payload=payload,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        component_type=component_type,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_delete_resource(
+    resource_type: str,
+    resource_id: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    artifact_id: str | None = None,
+    model_id: str | None = None,
+    component_type: str | None = None,
+) -> dict[str, Any]:
+    """Delete or archive one exact UUID using bounded destructive options."""
+    ensure_writes_enabled()
+    return dispatch_delete_resource(
+        get_zenml_client(),
+        resource_type,
+        resource_id,
+        payload=payload,
+        project_id=project_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        component_type=component_type,
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
+@handle_tool_exceptions
+def zenml_action_resource(
+    resource_type: str,
+    action: str,
+    resource_id: str,
+    payload: dict[str, Any] | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Run one finite ZenML lifecycle or relation action.
+
+    Inspect ``zenml_describe_resources(resource_type, "action")`` for the exact
+    action names and payload schema. Every identifier must be an exact UUID.
+    Actions may have effects outside the ZenML server and are never retried.
+    """
+    ensure_writes_enabled()
+    return dispatch_action_resource(
+        get_zenml_client(),
+        resource_type,
+        action,
+        resource_id,
+        payload=payload,
+        project_id=project_id,
+    )
+
+
+@mcp.resource(uri="resource://zenml_server/resources", mime_type="application/json")
+@handle_exceptions
+def zenml_resource_catalog() -> str:
+    """Return the bounded generic-resource catalog without detailed schemas."""
+    return json.dumps(describe_resources())
+
+
+@mcp.resource(
+    uri="resource://zenml_server/resource-schemas/{resource_type}/{operation}",
+    mime_type="application/json",
+)
+@handle_exceptions
+def zenml_resource_operation_schema(resource_type: str, operation: str) -> str:
+    """Return one bounded generic-resource operation schema."""
+    return json.dumps(describe_resources(resource_type, operation))
 
 
 # Page-size defaults for list tools:
@@ -1164,7 +1577,7 @@ def list_users(
         updated=updated,
         active=active,
     )
-    return users.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(users, resource_type="user"))
 
 
 @mcp.tool()
@@ -1176,7 +1589,7 @@ def get_user(name_id_or_prefix: str) -> dict[str, Any]:
         name_id_or_prefix: The name, ID or prefix of the user to retrieve
     """
     user = get_zenml_client().get_user(name_id_or_prefix)
-    return user.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(user, resource_type="user"))
 
 
 @mcp.tool()
@@ -1184,7 +1597,7 @@ def get_user(name_id_or_prefix: str) -> dict[str, Any]:
 def get_active_user() -> dict[str, Any]:
     """Get the currently active user."""
     user = get_zenml_client().active_user
-    return user.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(user, resource_type="user"))
 
 
 # =============================================================================
@@ -1410,7 +1823,7 @@ def get_service(name_id_or_prefix: str) -> dict[str, Any]:
         name_id_or_prefix: The name, ID or prefix of the service to retrieve
     """
     service = get_zenml_client().get_service(name_id_or_prefix)
-    return service.model_dump(mode="json")
+    return cast(dict[str, Any], safe_project(service, resource_type="service"))
 
 
 @mcp.tool()
@@ -1479,8 +1892,62 @@ def get_stack_component(name_id_or_prefix: str) -> dict[str, Any]:
     Args:
         name_id_or_prefix: The name, ID or prefix of the stack component to retrieve
     """
-    stack_component = get_zenml_client().get_stack_component(name_id_or_prefix)
-    return stack_component.model_dump(mode="json")
+    from zenml.utils.uuid_utils import parse_name_or_uuid
+
+    client = get_zenml_client()
+    parsed_identifier = parse_name_or_uuid(name_id_or_prefix)
+    if isinstance(parsed_identifier, str):
+        exact_matches = client.list_stack_components(
+            name=f"equals:{name_id_or_prefix}", size=2, hydrate=False
+        )
+        if exact_matches.total > 1:
+            return _make_error_result(
+                "get_stack_component",
+                "The identifier matches multiple stack components. Use a full UUID.",
+                "AmbiguousIdentifier",
+            )
+        candidates = list(exact_matches.items)
+        known_total = exact_matches.total
+        if not candidates:
+            prefix_matches = client.list_stack_components(
+                logical_operator="or",
+                id=f"startswith:{name_id_or_prefix}",
+                name=f"startswith:{name_id_or_prefix}",
+                size=2,
+                hydrate=False,
+            )
+            candidates = list(prefix_matches.items)
+            known_total = prefix_matches.total
+    else:
+        matches = client.list_stack_components(
+            id=name_id_or_prefix, size=2, hydrate=False
+        )
+        candidates = list(matches.items)
+        known_total = matches.total
+
+    if known_total == 0 or not candidates:
+        return _make_error_result(
+            "get_stack_component",
+            "No stack component matches the supplied identifier.",
+            "NotFound",
+        )
+    if known_total > 1 or len(candidates) > 1:
+        return _make_error_result(
+            "get_stack_component",
+            "The identifier matches multiple stack components. Use a full UUID.",
+            "AmbiguousIdentifier",
+        )
+
+    resolved = candidates[0]
+    stack_component = client.get_stack_component(
+        component_type=resolved.type,
+        name_id_or_prefix=str(resolved.id),
+        allow_name_prefix_match=False,
+    )
+    return cast(
+        dict[str, Any],
+        safe_project(stack_component, resource_type="stack_component"),
+    )
 
 
 @mcp.tool()
@@ -1587,7 +2054,7 @@ def list_flavors(
 @mcp.tool()
 @handle_tool_exceptions
 def trigger_pipeline(
-    pipeline_name_or_id: str,
+    pipeline_name_or_id: str | None = None,
     snapshot_name_or_id: str | None = None,
     stack_name_or_id: str | None = None,
     template_id: str | None = None,
@@ -1595,12 +2062,13 @@ def trigger_pipeline(
     """Trigger a pipeline to run from the server.
 
     Args:
-        pipeline_name_or_id: The name or ID of the pipeline to trigger
+        pipeline_name_or_id: Optional name or ID of the pipeline to trigger. A
+            snapshot or template can be triggered without it.
         snapshot_name_or_id: The name or ID of a specific snapshot to run (preferred)
         stack_name_or_id: Optional stack override for the run
-        template_id: ⚠️ DEPRECATED - Use `snapshot_name_or_id` instead.
-            The ID of a run template to use. Run Templates are deprecated
-            and will be removed in a future version.
+        template_id: Deprecated template-based trigger parameter. Use
+            `snapshot_name_or_id` for new integrations. ZenML 0.96.4 still
+            retains run-template CRUD APIs.
 
     Usage examples:
         * Run the latest runnable snapshot for a pipeline:
@@ -1617,20 +2085,33 @@ def trigger_pipeline(
         * Run a specific snapshot (RECOMMENDED):
         ```python
         trigger_pipeline(
-            pipeline_name_or_id=<NAME>,
             snapshot_name_or_id=<SNAPSHOT_NAME_OR_ID>
         )
         ```
         * Run a specific template (DEPRECATED - use snapshot_name_or_id instead):
         ```python
-        trigger_pipeline(pipeline_name_or_id=<NAME>, template_id=<ID>)
+        trigger_pipeline(template_id=<ID>)
         ```
     """
-    # Build kwargs for SDK call, preferring snapshot_name_or_id over deprecated template_id
-    trigger_kwargs: Dict[str, Any] = {
-        "pipeline_name_or_id": pipeline_name_or_id,
-        "stack_name_or_id": stack_name_or_id,
-    }
+    ensure_writes_enabled()
+    if snapshot_name_or_id is not None and template_id is not None:
+        raise ResourceDispatchError(
+            "snapshot_name_or_id and template_id are mutually exclusive; provide only one."
+        )
+    if (
+        pipeline_name_or_id is None
+        and snapshot_name_or_id is None
+        and template_id is None
+    ):
+        raise ResourceDispatchError(
+            "Provide at least one of pipeline_name_or_id, snapshot_name_or_id, or template_id."
+        )
+
+    trigger_kwargs: Dict[str, Any] = {}
+    if pipeline_name_or_id is not None:
+        trigger_kwargs["pipeline_name_or_id"] = pipeline_name_or_id
+    if stack_name_or_id is not None:
+        trigger_kwargs["stack_name_or_id"] = stack_name_or_id
 
     deprecation_warning: str | None = None
     used_deprecated_template = False
@@ -1642,19 +2123,80 @@ def trigger_pipeline(
         used_deprecated_template = True
         deprecation_warning = (
             "The `template_id` parameter is deprecated. "
-            "Please use `snapshot_name_or_id` instead. Run Templates are being "
-            "phased out in favor of Snapshots."
+            "Please use `snapshot_name_or_id` instead. ZenML 0.96.4 retains "
+            "run-template CRUD APIs, while snapshots are preferred for new workflows."
         )
 
-    pipeline_run = get_zenml_client().trigger_pipeline(**trigger_kwargs)
+    client = get_zenml_client()
+    project_id = str(client.active_project.id)
+    event_properties = {
+        "has_snapshot_id": snapshot_name_or_id is not None,
+        "has_template_id": template_id is not None,
+        "has_stack_override": stack_name_or_id is not None,
+        "used_deprecated_template": used_deprecated_template,
+    }
+    try:
+        pipeline_run = client.trigger_pipeline(**trigger_kwargs)
+    except (
+        json.JSONDecodeError,
+        requests.ReadTimeout,
+        requests.ConnectionError,
+        requests.exceptions.JSONDecodeError,
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ContentDecodingError,
+    ) as error:
+        if _is_pre_dispatch_connection_failure(error):
+            raise
+        reconciliation = {
+            "operation": None,
+            "resource_type": "pipeline_run",
+            "pipeline_name_or_id": pipeline_name_or_id,
+            "project_id": project_id,
+            "new_run_id": None,
+            "reconcilable": False,
+            "note": (
+                "The source pipeline cannot prove whether a new run was created because "
+                "the new run ID is unavailable; do not retry automatically."
+            ),
+        }
+        unknown = {
+            "resource_type": "pipeline_run",
+            "operation": "trigger",
+            "outcome": "unknown",
+            "pipeline_name_or_id": pipeline_name_or_id,
+            "project_id": project_id,
+            "new_run_id": None,
+            "reconciliation": reconciliation,
+        }
+        analytics.track_event(
+            "Pipeline Triggered",
+            {
+                **event_properties,
+                "success": False,
+                "outcome": "unknown",
+                "error_type": "UnknownOutcome",
+            },
+        )
+        return {
+            **unknown,
+            "error": {
+                "tool": "trigger_pipeline",
+                "message": (
+                    "The response was lost or could not be decoded after the pipeline "
+                    "trigger may have been dispatched, so the outcome is unknown. The new "
+                    "run ID is unavailable, and the source pipeline cannot prove success; "
+                    "do not retry automatically."
+                ),
+                "type": "UnknownOutcome",
+                "details": unknown,
+            },
+        }
     analytics.track_event(
         "Pipeline Triggered",
         {
-            "has_snapshot_id": snapshot_name_or_id is not None,
-            "has_template_id": template_id is not None,
-            "has_stack_override": stack_name_or_id is not None,
-            "used_deprecated_template": used_deprecated_template,
+            **event_properties,
             "success": True,
+            "outcome": "completed",
         },
     )
     result: dict[str, Any] = {
@@ -1670,9 +2212,9 @@ def trigger_pipeline(
 def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a run template for a pipeline.
 
-    ⚠️ DEPRECATED: Run Templates are deprecated in ZenML. Use `get_snapshot` instead.
-    Snapshots are the modern replacement for run templates and provide the same
-    functionality with better integration into the ZenML ecosystem.
+    ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for new
+    workflows; pipeline convenience creation and template-based triggering are
+    deprecated.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the run template to retrieve
@@ -1680,9 +2222,9 @@ def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     run_template = get_zenml_client().get_run_template(name_id_or_prefix)
     return {
         "deprecation_notice": (
-            "Run Templates are deprecated in ZenML. "
-            "Please use `get_snapshot` instead. Run Templates internally reference "
-            "Snapshots via `source_snapshot_id` and will be removed in a future version."
+            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
+            "new workflows; pipeline convenience creation and template-based "
+            "triggering are deprecated."
         ),
         "run_template": run_template.model_dump(mode="json"),
     }
@@ -1701,8 +2243,8 @@ def list_run_templates(
 ) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
-    DEPRECATED: Use `list_snapshots` instead. For runnable configs, use
-    `list_snapshots(runnable=True)`.
+    ZenML 0.96.4 retains run-template CRUD. For new runnable configurations,
+    prefer `list_snapshots(runnable=True)`.
 
     Returns paginated results with 'items', 'total', 'page', 'size' fields.
 
@@ -1717,8 +2259,16 @@ def list_run_templates(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by template name (e.g. contains:train)
-        tag: Filter by tag name
+        tag: Legacy tag filter. ZenML 0.96.4 has no equivalent server-side
+            run-template filter, so non-null values are rejected.
     """
+    if tag is not None:
+        return _make_error_result(
+            "list_run_templates",
+            "ZenML 0.96.4 does not support tag filtering for run templates. "
+            "Use `list_snapshots` with `tag`, or omit this filter.",
+            "UnsupportedFilter",
+        )
     run_templates = get_zenml_client().list_run_templates(
         sort_by=sort_by,
         page=page,
@@ -1726,13 +2276,12 @@ def list_run_templates(
         created=created,
         updated=updated,
         name=name,
-        tag=tag,
     )
     return {
         "deprecation_notice": (
-            "Run Templates are deprecated in ZenML. "
-            "Please use `list_snapshots` instead. For runnable configurations, "
-            "use `list_snapshots(runnable=True)`. Run Templates will be removed in a future version."
+            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
+            "new workflows; use `list_snapshots(runnable=True)` for runnable "
+            "configurations."
         ),
         "run_templates": run_templates.model_dump(mode="json"),
     }
@@ -1833,7 +2382,7 @@ def list_snapshots(
         runnable=runnable,
         deployable=deployable,
         deployed=deployed,
-        tag=tag,
+        tags=tag,
         project=project,
         named_only=named_only,
     )
@@ -1905,7 +2454,7 @@ def list_deployments(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by deployment name (e.g. contains:prod)
-        status: Filter by status (e.g. oneof:running,error)
+        status: Filter by status (e.g. oneof:["running","error"])
         url: Filter by deployment URL
         pipeline: Filter by pipeline name or UUID
         snapshot_id: Filter by source snapshot UUID
@@ -1924,7 +2473,7 @@ def list_deployments(
         url=url,
         pipeline=pipeline,
         snapshot_id=snapshot_id,
-        tag=tag,
+        tags=tag,
         project=project,
     )
     return deployments.model_dump(mode="json")
@@ -2000,14 +2549,14 @@ def get_deployment_logs(
 
         return result
 
-    except ImportError as e:
+    except ImportError:
         # Handle missing deployer plugin (direct import failure)
         return {
             "error": {
                 "tool": "get_deployment_logs",
                 "type": "deployer_plugin_not_installed",
                 "message": (
-                    f"The deployer plugin required to fetch logs is not installed: {e}. "
+                    "The deployer plugin required to fetch logs is not installed. "
                     "Please install the appropriate ZenML integration for your stack "
                     "(e.g., `zenml integration install gcp` for GCP deployments), "
                     "then restart the MCP server."
@@ -2027,7 +2576,7 @@ def get_deployment_logs(
                     "tool": "get_deployment_logs",
                     "type": "deployer_dependencies_missing",
                     "message": (
-                        f"The deployer's dependencies are not installed: {error_str}\n\n"
+                        "The deployer's dependencies are not installed.\n\n"
                         "To fix this:\n"
                         "1. Check which stack/deployer was used for this deployment\n"
                         "2. Install the required ZenML integration for that deployer:\n"
@@ -2155,7 +2704,7 @@ def list_pipeline_runs(
         pipeline_id: Filter by pipeline UUID
         pipeline_name: Filter by pipeline name (e.g. contains:my_pipeline)
         stack_id: Filter by stack UUID
-        status: Filter by run status (e.g. oneof:completed,failed).
+        status: Filter by run status (e.g. oneof:["completed","failed"]).
             Values: initializing, failed, completed, running, cached
         start_time: Filter by run start time (e.g. gte:2026-02-01 00:00:00)
         end_time: Filter by run end time (e.g. lte:2026-02-07 23:59:59)
@@ -2226,7 +2775,7 @@ def list_run_steps(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by step name (e.g. contains:train)
-        status: Filter by step status (e.g. oneof:completed,failed).
+        status: Filter by step status (e.g. oneof:["completed","failed"]).
             Values: initializing, failed, completed, running, cached
         start_time: Filter by step start time (e.g. gte:2026-02-01 00:00:00)
         end_time: Filter by step end time (e.g. lte:2026-02-07 23:59:59)
@@ -2285,7 +2834,7 @@ def list_artifacts(
         created=created,
         updated=updated,
         name=name,
-        tag=tag,
+        tags=tag,
     )
     return artifacts.model_dump(mode="json")
 
@@ -2347,7 +2896,7 @@ def list_artifact_versions(
         logical_operator=logical_operator,
         created=created,
         updated=updated,
-        tag=tag,
+        tags=tag,
     )
     return versions.model_dump(mode="json")
 
@@ -2497,7 +3046,7 @@ def list_models(
         created=created,
         updated=updated,
         name=name,
-        tag=tag,
+        tags=tag,
     )
     return models.model_dump(mode="json")
 
@@ -2554,11 +3103,13 @@ def list_model_versions(
         updated: Filter by update time (same syntax as created)
         name: Filter by version name
         number: Filter by version number
-        stage: Filter by stage (e.g. oneof:production,staging)
+        stage: Filter by stage (e.g. oneof:["production","staging"])
         tag: Filter by tag name
     """
-    model_versions = get_zenml_client().list_model_versions(
-        model_name_or_id,
+    client = get_zenml_client()
+    model = client.get_model(model_name_or_id)
+    model_versions = client.list_model_versions(
+        model=model.id,
         sort_by=sort_by,
         page=page,
         size=size,
@@ -2568,7 +3119,7 @@ def list_model_versions(
         name=name,
         number=number,
         stage=stage,
-        tag=tag,
+        tags=tag,
     )
     return model_versions.model_dump(mode="json")
 
@@ -2583,8 +3134,17 @@ def get_step_code(
     Args:
         step_run_id: The ID of the step to retrieve
     """
-    step_code = get_zenml_client().get_run_step(step_run_id).source_code
-    return f"""{step_code}"""
+    from zenml.exceptions import DoesNotExistException
+
+    try:
+        step_code = get_zenml_client().get_run_step(step_run_id).source_code
+    except (KeyError, DoesNotExistException) as error:
+        raise ResourceNotFound("Step run not found.") from error
+    if step_code is None:
+        raise ResourceFeatureUnavailable(
+            "Source code is unavailable for this step run."
+        )
+    return str(step_code)
 
 
 # =============================================================================
@@ -2835,14 +3395,11 @@ def open_pipeline_run_dashboard() -> str:
     The dashboard fetches its own data dynamically.
     """
 
-    # Return a short message only — no data payload.
-    # The iframe fetches its own data via callServerTool("list_pipeline_runs").
-    # This prevents Claude from re-rendering the runs as a table below the app.
     return (
-        "Opened interactive pipeline runs dashboard. "
-        "The dashboard loads data automatically — "
-        "do not summarize or re-present pipeline run data below, "
-        "the interactive UI above handles all display."
+        "Requested the ZenML pipeline runs dashboard. An MCP Apps-capable host "
+        "can render it and load current data. If no interactive view appears, "
+        "use zenml_list_resources for pipeline_run and run_step resources, then "
+        "use get_step_logs for a selected step."
     )
 
 
@@ -2862,11 +3419,36 @@ def open_run_activity_chart() -> str:
     """
 
     return (
-        "Opened pipeline run activity chart. "
-        "The chart loads data automatically — "
-        "do not summarize or re-present pipeline run data below, "
-        "the interactive chart above handles all display."
+        "Requested the ZenML pipeline run activity chart. An MCP Apps-capable "
+        "host can render it and load current data. If no interactive view appears, "
+        "use zenml_list_resources for pipeline_run resources with a descending "
+        "created-time sort."
     )
+
+
+for _tool_name in ALL_TOOL_NAMES:
+    if _tool_name not in ACTIVE_TOOL_NAMES:
+        mcp.remove_tool(_tool_name)
+
+
+def _enforce_strict_tool_arguments(server: MCPServer) -> None:
+    """Harden MCP 2.2's generated argument models against unknown input."""
+    if distribution_version("mcp") != "2.2.0":
+        raise RuntimeError("Strict tool argument setup requires mcp==2.2.0")
+    for tool in server._tool_manager.list_tools():
+        argument_model = tool.fn_metadata.arg_model
+        argument_model.model_config = ConfigDict(
+            **{
+                **dict(argument_model.model_config),
+                "extra": "forbid",
+                "hide_input_in_errors": True,
+            }
+        )
+        argument_model.model_rebuild(force=True)
+        tool.parameters = argument_model.model_json_schema(by_alias=True)
+
+
+_enforce_strict_tool_arguments(mcp)
 
 
 @mcp.resource(uri="resource://zenml_server/most_recent_runs?run_count={run_count}")
@@ -2888,9 +3470,185 @@ def most_recent_runs(run_count: int = 10) -> str:
     )
 
 
-if __name__ == "__main__":
-    import argparse
+@dataclass(frozen=True)
+class HTTPTransportConfig:
+    """Runtime settings for the Streamable HTTP transport."""
 
+    host: str = "127.0.0.1"
+    port: int = 8000
+    disable_dns_rebinding_protection: bool = False
+    forwarded_allow_ips: str = "127.0.0.1"
+
+
+def _origin_matches_strict_allowlist(origin: str, allowed_origins: list[str]) -> bool:
+    """Match an Origin without MCP 2.2's wildcard-prefix ambiguity."""
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    base = f"{parsed.scheme}://{host}"
+    candidate = base if port is None else f"{base}:{port}"
+    return any(
+        candidate == allowed
+        or (allowed.endswith(":*") and port is not None and base == allowed[:-2])
+        for allowed in allowed_origins
+    )
+
+
+class _StrictOriginMiddleware:
+    """Reject malformed wildcard-port Origins before MCP's middleware sees them."""
+
+    def __init__(self, app: Any, *, allowed_origins: list[str]) -> None:
+        self.app = app
+        self.allowed_origins = allowed_origins
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            headers = {
+                key.decode("latin-1").lower(): value.decode("latin-1")
+                for key, value in scope.get("headers", ())
+            }
+            origin = headers.get("origin")
+            if origin and not _origin_matches_strict_allowlist(
+                origin, self.allowed_origins
+            ):
+                from starlette.responses import PlainTextResponse
+
+                response = PlainTextResponse("Invalid Origin header", status_code=403)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def create_transport_security_settings(config: HTTPTransportConfig) -> Any:
+    """Build Host/Origin policy independently from proxy-header trust."""
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    if config.disable_dns_rebinding_protection:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    host = config.host.strip()
+    unbracketed_host = (
+        host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    )
+    parsed_host: ipaddress.IPv4Address | ipaddress.IPv6Address | None
+    try:
+        parsed_host = ipaddress.ip_address(unbracketed_host)
+        is_unspecified = parsed_host.is_unspecified
+    except ValueError:
+        parsed_host = None
+        is_unspecified = False
+    try:
+        is_unspecified = is_unspecified or socket.inet_aton(unbracketed_host) == bytes(
+            4
+        )
+    except OSError:
+        pass
+    if not host or is_unspecified:
+        raise ValueError(
+            f"DNS rebinding protection cannot derive an allowlist from wildcard "
+            f"host {config.host!r}. Bind to a concrete host or explicitly pass "
+            "--disable-dns-rebinding-protection."
+        )
+
+    if unbracketed_host == "localhost" or (
+        parsed_host is not None and parsed_host.is_loopback
+    ):
+        allowed_hosts = [
+            f"127.0.0.1:{config.port}",
+            f"localhost:{config.port}",
+            f"[::1]:{config.port}",
+        ]
+        allowed_origins = [
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://[::1]:*",
+        ]
+        if parsed_host is not None:
+            configured_loopback = (
+                f"[{parsed_host.compressed}]"
+                if isinstance(parsed_host, ipaddress.IPv6Address)
+                else parsed_host.compressed
+            )
+            configured_host = f"{configured_loopback}:{config.port}"
+            configured_origin = f"http://{configured_loopback}:*"
+            if configured_host not in allowed_hosts:
+                allowed_hosts.append(configured_host)
+            if configured_origin not in allowed_origins:
+                allowed_origins.append(configured_origin)
+    else:
+        bracketed_host = (
+            f"[{unbracketed_host}]" if ":" in unbracketed_host else unbracketed_host
+        )
+        allowed_hosts = [f"{bracketed_host}:{config.port}"]
+        allowed_origins = [
+            f"http://{bracketed_host}:*",
+            f"https://{bracketed_host}:*",
+        ]
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
+
+
+def create_streamable_http_app(config: HTTPTransportConfig) -> Any:
+    """Create the v2 ASGI app with its required session-manager lifespan."""
+    security = create_transport_security_settings(config)
+    app = mcp.streamable_http_app(
+        host=config.host,
+        transport_security=security,
+    )
+    if security.enable_dns_rebinding_protection:
+        app.add_middleware(
+            _StrictOriginMiddleware,
+            allowed_origins=security.allowed_origins,
+        )
+    return app
+
+
+async def run_streamable_http(config: HTTPTransportConfig) -> None:
+    """Serve Streamable HTTP with explicit proxy and lifespan configuration."""
+    import uvicorn
+
+    app = create_streamable_http_app(config)
+    uvicorn_config = uvicorn.Config(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level=logging.getLevelName(log_level).lower(),
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+        lifespan="on",
+    )
+    await uvicorn.Server(uvicorn_config).serve()
+
+
+def _valid_port(value: str) -> int:
+    """Parse a TCP port accepted by the HTTP server CLI."""
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("port must be an integer") from error
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ZenML MCP Server")
     parser.add_argument(
         "--transport",
@@ -2900,7 +3658,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--port",
-        type=int,
+        type=_valid_port,
         default=8000,
         help="Port for HTTP transport (default: 8000)",
     )
@@ -2916,6 +3674,12 @@ if __name__ == "__main__":
         help="Disable DNS rebinding protection for HTTP transport. "
         "Required when running behind reverse proxies (cloudflared, ngrok). "
         "WARNING: Only use this in trusted network environments.",
+    )
+    parser.add_argument(
+        "--forwarded-allow-ips",
+        default=os.getenv("ZENML_MCP_FORWARDED_ALLOW_IPS", "127.0.0.1"),
+        help="Comma-separated proxy IPs whose forwarded headers are trusted "
+        "(default: 127.0.0.1; env: ZENML_MCP_FORWARDED_ALLOW_IPS).",
     )
     _startup_env = (os.getenv("ZENML_MCP_STARTUP_VALIDATION") or "off").lower().strip()
     if _startup_env not in {"off", "warn", "strict"}:
@@ -2934,6 +3698,18 @@ if __name__ == "__main__":
         "required setup is missing. (default: off, env: ZENML_MCP_STARTUP_VALIDATION)",
     )
     args = parser.parse_args()
+
+    if args.transport == "streamable-http":
+        try:
+            create_transport_security_settings(
+                HTTPTransportConfig(
+                    host=args.host,
+                    port=args.port,
+                    disable_dns_rebinding_protection=args.disable_dns_rebinding_protection,
+                )
+            )
+        except ValueError as error:
+            parser.error(str(error))
 
     try:
         analytics.init_analytics()
@@ -2989,33 +3765,28 @@ if __name__ == "__main__":
         analytics.track_server_started(extra_properties=startup_extra)
 
         if args.transport == "streamable-http":
-            from mcp.server.transport_security import TransportSecuritySettings
-
-            # Configure HTTP settings before running
-            mcp.settings.host = args.host
-            mcp.settings.port = args.port
-
             if args.disable_dns_rebinding_protection:
-                # Disable DNS rebinding protection — required behind reverse
-                # proxies (cloudflared, ngrok) where Host header ≠ localhost.
                 print(
                     "WARNING: DNS rebinding protection is disabled. "
                     "Only use this behind a trusted reverse proxy.",
                     file=sys.stderr,
                 )
-                mcp.settings.transport_security = TransportSecuritySettings(
-                    enable_dns_rebinding_protection=False,
-                )
-                # Trust proxy headers from any IP (needed behind reverse proxies)
-                mcp._forwarded_allow_ips = "*"
-                # Ensure no stale session manager exists so the new security
-                # settings take effect when streamable_http_app() is called.
-                mcp._session_manager = None
 
             logger.info(
                 f"Starting ZenML MCP server on http://{args.host}:{args.port}/mcp"
             )
-
-        mcp.run(transport=args.transport)
+            asyncio.run(
+                run_streamable_http(
+                    HTTPTransportConfig(
+                        host=args.host,
+                        port=args.port,
+                        disable_dns_rebinding_protection=args.disable_dns_rebinding_protection,
+                        forwarded_allow_ips=args.forwarded_allow_ips,
+                    )
+                )
+            )
+        else:
+            mcp.run(transport="stdio")
     except Exception as e:
-        logger.error(f"Error running MCP server: {e}")
+        logger.error("Error running MCP server: %s", type(e).__name__)
+        raise SystemExit(1)

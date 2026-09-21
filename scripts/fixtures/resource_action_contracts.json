@@ -1,0 +1,1253 @@
+{
+  "deployment.deprovision": {
+    "call": {
+      "kwargs": {
+        "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+        "project": "11111111-1111-4111-8111-111111111111",
+        "timeout": 300
+      },
+      "method": "deprovision_deployment"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "deprovision",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "timeout": {
+              "maximum": 300,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "deployment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "deployment.provision": {
+    "call": {
+      "kwargs": {
+        "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+        "project": "11111111-1111-4111-8111-111111111111",
+        "snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "timeout": 30
+      },
+      "method": "provision_deployment"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "provision",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "timeout": {
+              "maximum": 300,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "deployment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "deployment.refresh": {
+    "call": {
+      "kwargs": {
+        "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+        "project": "11111111-1111-4111-8111-111111111111"
+      },
+      "method": "refresh_deployment"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "refresh",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "deployment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "pipeline_run.replay": {
+    "call": {
+      "kwargs": {
+        "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+        "project": "11111111-1111-4111-8111-111111111111",
+        "run_configuration": {
+          "build": null,
+          "cache_policy": null,
+          "cleanup_hook_source": null,
+          "enable_artifact_metadata": null,
+          "enable_artifact_visualization": null,
+          "enable_cache": null,
+          "enable_heartbeat": null,
+          "enable_pipeline_logs": null,
+          "enable_step_logs": null,
+          "end_hook_source": null,
+          "environment": null,
+          "execution_mode": null,
+          "extra": null,
+          "failure_hook_source": null,
+          "init_hook_kwargs": null,
+          "init_hook_source": null,
+          "model": null,
+          "parameters": null,
+          "pause_hook_source": null,
+          "resume_hook_source": null,
+          "retry": null,
+          "run_name": null,
+          "schedule": null,
+          "secrets": null,
+          "settings": null,
+          "skip_successful_steps": true,
+          "start_hook_source": null,
+          "step_default_input_overrides": null,
+          "step_input_overrides": null,
+          "steps": null,
+          "steps_to_skip": null,
+          "substitutions": null,
+          "success_hook_source": null,
+          "tags": null
+        },
+        "synchronous": false
+      },
+      "method": "replay_pipeline_run"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "replay",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "run_configuration": {
+              "additionalProperties": false,
+              "properties": {
+                "skip_successful_steps": {
+                  "type": "boolean"
+                },
+                "step_default_input_overrides": {
+                  "additionalProperties": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "object"
+                },
+                "step_input_overrides": {
+                  "additionalProperties": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "object"
+                },
+                "steps_to_skip": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "pipeline_run",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "platform_event_trigger.attach": {
+    "call": {
+      "kwargs": {
+        "allow_replace": true,
+        "pipeline_snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "run_configuration": null,
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "attach_trigger_to_snapshot"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "attach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_replace": {
+              "type": "boolean"
+            },
+            "run_configuration": {
+              "additionalProperties": false,
+              "properties": {
+                "enable_artifact_metadata": {
+                  "type": "boolean"
+                },
+                "enable_artifact_visualization": {
+                  "type": "boolean"
+                },
+                "enable_cache": {
+                  "type": "boolean"
+                },
+                "enable_heartbeat": {
+                  "type": "boolean"
+                },
+                "enable_pipeline_logs": {
+                  "type": "boolean"
+                },
+                "enable_step_logs": {
+                  "type": "boolean"
+                },
+                "execution_mode": {
+                  "enum": [
+                    "fail_fast",
+                    "stop_on_failure",
+                    "continue_on_failure"
+                  ],
+                  "type": "string"
+                },
+                "run_name": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "substitutions": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "platform_event_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "platform_event_trigger.clear_dispatch_error": {
+    "call": {
+      "kwargs": {
+        "pipeline_snapshot_id": null,
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "clear_trigger_dispatch_error"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "clear_dispatch_error",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "platform_event_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "platform_event_trigger.detach": {
+    "call": {
+      "kwargs": {
+        "pipeline_snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "detach_trigger_from_snapshot"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "detach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "platform_event_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "run_wait_condition.resolve": {
+    "call": {
+      "kwargs": {
+        "resolution": "continue",
+        "result": {
+          "approved": true
+        },
+        "run_wait_condition_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "resolve_run_wait_condition"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "resolve",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "resolution": {
+              "enum": [
+                "CONTINUE",
+                "ABORT"
+              ],
+              "type": "string"
+            },
+            "result": {}
+          },
+          "required": [
+            "resolution"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "run_wait_condition",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "schedule_trigger.attach": {
+    "call": {
+      "kwargs": {
+        "allow_replace": true,
+        "pipeline_snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "run_configuration": null,
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "attach_trigger_to_snapshot"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "attach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_replace": {
+              "type": "boolean"
+            },
+            "run_configuration": {
+              "additionalProperties": false,
+              "properties": {
+                "enable_artifact_metadata": {
+                  "type": "boolean"
+                },
+                "enable_artifact_visualization": {
+                  "type": "boolean"
+                },
+                "enable_cache": {
+                  "type": "boolean"
+                },
+                "enable_heartbeat": {
+                  "type": "boolean"
+                },
+                "enable_pipeline_logs": {
+                  "type": "boolean"
+                },
+                "enable_step_logs": {
+                  "type": "boolean"
+                },
+                "execution_mode": {
+                  "enum": [
+                    "fail_fast",
+                    "stop_on_failure",
+                    "continue_on_failure"
+                  ],
+                  "type": "string"
+                },
+                "run_name": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "substitutions": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "schedule_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "schedule_trigger.clear_dispatch_error": {
+    "call": {
+      "kwargs": {
+        "pipeline_snapshot_id": null,
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "clear_trigger_dispatch_error"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "clear_dispatch_error",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "schedule_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "schedule_trigger.detach": {
+    "call": {
+      "kwargs": {
+        "pipeline_snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "detach_trigger_from_snapshot"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "detach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "schedule_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "tag.attach": {
+    "call": {
+      "kwargs": {
+        "tag_resources": [
+          {
+            "resource_id": "33333333-3333-4333-8333-333333333333",
+            "resource_type": "pipeline_run",
+            "tag_id": "22222222-2222-4222-8222-222222222222"
+          }
+        ]
+      },
+      "method": "batch_create_tag_resource"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "attach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "not": {
+                "required": [
+                  "model_id"
+                ]
+              },
+              "properties": {
+                "target_type": {
+                  "const": "artifact_version"
+                }
+              },
+              "required": [
+                "target_type",
+                "artifact_id"
+              ]
+            },
+            {
+              "not": {
+                "required": [
+                  "artifact_id"
+                ]
+              },
+              "properties": {
+                "target_type": {
+                  "const": "model_version"
+                }
+              },
+              "required": [
+                "target_type",
+                "model_id"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "artifact_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "model_id"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "target_type": {
+                  "enum": [
+                    "artifact",
+                    "model",
+                    "pipeline",
+                    "pipeline_run",
+                    "run_template",
+                    "pipeline_snapshot",
+                    "deployment"
+                  ]
+                }
+              },
+              "required": [
+                "target_type"
+              ]
+            }
+          ],
+          "properties": {
+            "allow_exclusive_replace": {
+              "type": "boolean"
+            },
+            "artifact_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "model_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "target_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "target_type": {
+              "enum": [
+                "artifact",
+                "artifact_version",
+                "model",
+                "model_version",
+                "pipeline",
+                "pipeline_run",
+                "run_template",
+                "pipeline_snapshot",
+                "deployment"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_id",
+            "target_type"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "tag",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "tag.detach": {
+    "call": {
+      "kwargs": {
+        "tag_resources": [
+          {
+            "resource_id": "33333333-3333-4333-8333-333333333333",
+            "resource_type": "pipeline_run",
+            "tag_id": "22222222-2222-4222-8222-222222222222"
+          }
+        ]
+      },
+      "method": "batch_delete_tag_resource"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "detach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "not": {
+                "required": [
+                  "model_id"
+                ]
+              },
+              "properties": {
+                "target_type": {
+                  "const": "artifact_version"
+                }
+              },
+              "required": [
+                "target_type",
+                "artifact_id"
+              ]
+            },
+            {
+              "not": {
+                "required": [
+                  "artifact_id"
+                ]
+              },
+              "properties": {
+                "target_type": {
+                  "const": "model_version"
+                }
+              },
+              "required": [
+                "target_type",
+                "model_id"
+              ]
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "artifact_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "model_id"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "target_type": {
+                  "enum": [
+                    "artifact",
+                    "model",
+                    "pipeline",
+                    "pipeline_run",
+                    "run_template",
+                    "pipeline_snapshot",
+                    "deployment"
+                  ]
+                }
+              },
+              "required": [
+                "target_type"
+              ]
+            }
+          ],
+          "properties": {
+            "artifact_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "model_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "target_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "target_type": {
+              "enum": [
+                "artifact",
+                "artifact_version",
+                "model",
+                "model_version",
+                "pipeline",
+                "pipeline_run",
+                "run_template",
+                "pipeline_snapshot",
+                "deployment"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_id",
+            "target_type"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "tag",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "webhook.rotate_secret": {
+    "call": {
+      "kwargs": {
+        "name_id_or_prefix": "22222222-2222-4222-8222-222222222222",
+        "project": "11111111-1111-4111-8111-111111111111",
+        "secret": "replacement-marker"
+      },
+      "method": "rotate_webhook_secret"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "rotate_secret",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "secret": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "webhook",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "webhook_trigger.attach": {
+    "call": {
+      "kwargs": {
+        "allow_replace": true,
+        "pipeline_snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "run_configuration": null,
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "attach_trigger_to_snapshot"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "attach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_replace": {
+              "type": "boolean"
+            },
+            "run_configuration": {
+              "additionalProperties": false,
+              "properties": {
+                "enable_artifact_metadata": {
+                  "type": "boolean"
+                },
+                "enable_artifact_visualization": {
+                  "type": "boolean"
+                },
+                "enable_cache": {
+                  "type": "boolean"
+                },
+                "enable_heartbeat": {
+                  "type": "boolean"
+                },
+                "enable_pipeline_logs": {
+                  "type": "boolean"
+                },
+                "enable_step_logs": {
+                  "type": "boolean"
+                },
+                "execution_mode": {
+                  "enum": [
+                    "fail_fast",
+                    "stop_on_failure",
+                    "continue_on_failure"
+                  ],
+                  "type": "string"
+                },
+                "run_name": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "substitutions": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "webhook_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "webhook_trigger.clear_dispatch_error": {
+    "call": {
+      "kwargs": {
+        "pipeline_snapshot_id": null,
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "clear_trigger_dispatch_error"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "clear_dispatch_error",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "webhook_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "webhook_trigger.detach": {
+    "call": {
+      "kwargs": {
+        "pipeline_snapshot_id": "33333333-3333-4333-8333-333333333333",
+        "trigger_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "method": "detach_trigger_from_snapshot"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "detach",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "snapshot_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snapshot_id"
+          ],
+          "type": "object"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource_type": {
+          "const": "webhook_trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_type",
+        "action",
+        "resource_id",
+        "payload",
+        "project_id"
+      ],
+      "type": "object"
+    }
+  }
+}
