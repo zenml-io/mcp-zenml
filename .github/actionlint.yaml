@@ -1,5 +1,0 @@
-self-hosted-runner:
-  labels:
-    - zenml-mcp-integration
-
-config-variables: null
