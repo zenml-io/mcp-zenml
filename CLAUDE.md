@@ -340,7 +340,7 @@ The project applies multiple layers of supply chain protection:
 
 - **Python package cooldown**: `exclude-newer = "7 days"` in `[tool.uv]` (`pyproject.toml`) prevents installing packages published within the last 7 days, giving time for compromised versions to be detected and yanked. Override for a single install: `uv add <pkg> --exclude-newer "0 days"`
 - **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds enforce these hashes with `uv pip install --require-hashes ...`. PR CI also verifies the file with `uv pip install --dry-run --require-hashes --exclude-newer-package "mcp=2026-09-08T00:00:00Z" --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" -r requirements.txt` inside a throwaway Python 3.12 venv.
-- **PEP 723 drift check**: Runtime `uv run` entry points mirror `requirements.in`, and `scripts/check_pep723_requirements.py` fails CI if those inline dependency blocks drift. It only checks the files listed in `RUNTIME_MIRROR_PEP723_FILES` (the server and five test scripts); the `test_resource_*` and `test_tool_profiles` scripts repeat the same dependencies but are not checked.
+- **PEP 723 drift check**: Runtime `uv run` entry points mirror `requirements.in`, and `scripts/check_pep723_requirements.py` fails CI if those inline dependency blocks drift. It checks the files listed in `RUNTIME_MIRROR_PEP723_FILES`; when you add a script whose PEP 723 dependencies repeat `requirements.in`, add it to that list.
 - **Pinned MCPB build**: `scripts/build_mcpb.sh` uses exact uv (0.11.28) and MCPB tool (`@anthropic-ai/mcpb@2.1.2`) versions, copies `mcpb-uv.lock`, updates only the local package version offline, and packages source instead of host-native vendored dependencies. Set `MCPB_REFRESH_LOCK=1` only for an intentional lock refresh.
 - **Docker image digests**: Base images in the `Dockerfile` are pinned to `@sha256:` digests (not just tags) to prevent tag mutation attacks
 - **GitHub Actions SHA pinning**: All third-party actions pinned to full commit SHAs with version comments; `persist-credentials: false` on all checkout steps. Every `astral-sh/setup-uv` step pins an explicit `uv` version; bundle and release validation use `0.11.28`.
@@ -350,9 +350,9 @@ The project applies multiple layers of supply chain protection:
 
 **Recompiling requirements.txt** (after updating `requirements.in`):
 ```bash
-uv pip compile --generate-hashes --exclude-newer "7 days" \\
-  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \\
-  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \\
+uv pip compile --generate-hashes --exclude-newer "7 days" \
+  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
+  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
   --python-version 3.12 requirements.in -o requirements.txt
 ```
 

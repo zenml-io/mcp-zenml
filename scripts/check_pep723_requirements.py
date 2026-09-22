@@ -20,6 +20,11 @@ RUNTIME_MIRROR_PEP723_FILES = (
     "scripts/test_sdk_contracts.py",
     "scripts/test_tool_contracts.py",
     "scripts/test_mcp_transport.py",
+    "scripts/test_resource_operations.py",
+    "scripts/test_resource_mutations.py",
+    "scripts/test_resource_actions.py",
+    "scripts/test_resource_integration.py",
+    "scripts/test_tool_profiles.py",
 )
 
 

@@ -112,7 +112,7 @@ jobs:
             
             1. Check the [workflow logs](${context.payload.repository.html_url}/actions/runs/${context.runId}) for detailed error information
             2. Verify ZenML server connectivity and authentication
-            3. Test the MCP server locally using: \`uv run scripts/test_mcp_server.py zenml_server.py\`
+            3. Test the MCP server locally using: \`uv run scripts/test_mcp_server.py server/zenml_server.py\`
             4. Check for any recent changes that might have affected the MCP server
             
             ### Environment
