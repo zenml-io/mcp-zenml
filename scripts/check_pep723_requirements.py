@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Check that runtime PEP 723 dependencies match requirements.in."""
+"""Check that PEP 723 script dependencies agree with requirements.in.
+
+Every PEP 723 file under server/ and scripts/ is discovered automatically:
+- a file that depends on zenml is a runtime mirror and must list exactly the
+  dependencies in requirements.in;
+- any other file must pin a requirements.in package exactly as requirements.in
+  does;
+- a file that depends on mcp must carry the same [tool.uv]
+  exclude-newer-package exemption as the server.
+"""
 
 from __future__ import annotations
 
@@ -11,21 +20,9 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS_FILE = REPO_ROOT / "requirements.in"
-# Runtime mirrors must match requirements.in exactly. scripts/test_analytics.py is
-# intentionally excluded because it is a narrow analytics diagnostic, not a server runtime mirror.
-RUNTIME_MIRROR_PEP723_FILES = (
-    "server/zenml_server.py",
-    "scripts/test_mcp_server.py",
-    "scripts/test_datetime_normalization.py",
-    "scripts/test_sdk_contracts.py",
-    "scripts/test_tool_contracts.py",
-    "scripts/test_mcp_transport.py",
-    "scripts/test_resource_operations.py",
-    "scripts/test_resource_mutations.py",
-    "scripts/test_resource_actions.py",
-    "scripts/test_resource_integration.py",
-    "scripts/test_tool_profiles.py",
-)
+SCAN_GLOBS = ("server/*.py", "scripts/*.py")
+REFERENCE_FILE = REPO_ROOT / "server" / "zenml_server.py"
+MIRROR_MARKER = "zenml"
 
 
 class CheckError(Exception):
@@ -67,8 +64,19 @@ def strip_pep723_comment(line: str, path: Path) -> str:
     raise CheckError(msg)
 
 
-def read_pep723_dependencies(path: Path) -> list[str]:
-    """Extract the dependencies array from a PEP 723 script block."""
+def has_pep723_block(path: Path) -> bool:
+    """Return whether a file contains a PEP 723 script block."""
+    return "# /// script" in path.read_text(encoding="utf-8").splitlines()
+
+
+def discover_pep723_files() -> list[Path]:
+    """Return every PEP 723 file under the scanned directories."""
+    candidates = {path for pattern in SCAN_GLOBS for path in REPO_ROOT.glob(pattern)}
+    return sorted(path for path in candidates if has_pep723_block(path))
+
+
+def read_pep723_metadata(path: Path) -> dict[str, Any]:
+    """Parse a PEP 723 block and validate its dependencies array."""
     metadata_lines: list[str] = []
     in_block = False
 
@@ -101,7 +109,12 @@ def read_pep723_dependencies(path: Path) -> list[str]:
     ):
         msg = f"{path}: PEP 723 'dependencies' must be a list of strings"
         raise CheckError(msg)
-    return dependencies
+    return metadata
+
+
+def exclude_newer_packages(metadata: dict[str, Any]) -> Any:
+    """Return the [tool.uv] exclude-newer-package table, if any."""
+    return metadata.get("tool", {}).get("uv", {}).get("exclude-newer-package")
 
 
 def format_dependency_list(title: str, dependencies: list[str]) -> list[str]:
@@ -146,36 +159,57 @@ def mismatch_details(expected: list[str], actual: list[str]) -> list[str]:
     return details
 
 
-def check_file(path: Path, expected: list[str]) -> list[str]:
-    """Return diagnostics for one file, or an empty list if it matches."""
+def check_file(path: Path, expected: list[str], reference_exemption: Any) -> list[str]:
+    """Return diagnostics for one file, or an empty list if it agrees."""
     try:
-        actual = read_pep723_dependencies(path)
+        metadata = read_pep723_metadata(path)
     except CheckError as error:
         return [str(error)]
 
-    if set(actual) == set(expected):
-        return []
-
+    actual: list[str] = metadata["dependencies"]
+    actual_by_name = dependency_map(actual)
     relative_path = path.relative_to(REPO_ROOT)
-    diagnostics = [
-        f"PEP 723 dependency drift detected in {relative_path}",
-        "",
-        *format_dependency_list("Expected from requirements.in:", expected),
-        "",
-        *format_dependency_list("Actual PEP 723 dependencies:", actual),
-        "",
-        *mismatch_details(expected, actual),
-    ]
+    diagnostics: list[str] = []
+
+    if MIRROR_MARKER in actual_by_name:
+        if set(actual) != set(expected):
+            diagnostics += [
+                f"PEP 723 dependency drift detected in {relative_path}",
+                "",
+                *format_dependency_list("Expected from requirements.in:", expected),
+                "",
+                *format_dependency_list("Actual PEP 723 dependencies:", actual),
+                "",
+                *mismatch_details(expected, actual),
+            ]
+    else:
+        expected_by_name = dependency_map(expected)
+        diagnostics += [
+            f"{relative_path}: {name} must be pinned as "
+            f"{expected_by_name[name]!r}, found {requirement!r}"
+            for name, requirement in actual_by_name.items()
+            if name in expected_by_name and requirement != expected_by_name[name]
+        ]
+
+    if "mcp" in actual_by_name and (
+        exclude_newer_packages(metadata) != reference_exemption
+    ):
+        diagnostics.append(
+            f"{relative_path}: [tool.uv] exclude-newer-package must match "
+            f"{REFERENCE_FILE.relative_to(REPO_ROOT)}: {reference_exemption!r}"
+        )
     return diagnostics
 
 
 def main() -> int:
     """Run the drift check."""
     expected = read_requirements(REQUIREMENTS_FILE)
+    reference_exemption = exclude_newer_packages(read_pep723_metadata(REFERENCE_FILE))
+    paths = discover_pep723_files()
     failures: list[str] = []
 
-    for relative_file in RUNTIME_MIRROR_PEP723_FILES:
-        failures.extend(check_file(REPO_ROOT / relative_file, expected))
+    for path in paths:
+        failures.extend(check_file(path, expected, reference_exemption))
         if failures and failures[-1] != "":
             failures.append("")
 
@@ -183,8 +217,8 @@ def main() -> int:
         print("\n".join(failures).rstrip(), file=sys.stderr)
         return 1
 
-    checked_files = ", ".join(RUNTIME_MIRROR_PEP723_FILES)
-    print(f"PEP 723 dependencies match requirements.in: {checked_files}")
+    checked_files = ", ".join(str(path.relative_to(REPO_ROOT)) for path in paths)
+    print(f"PEP 723 dependencies agree with requirements.in: {checked_files}")
     return 0
 
 

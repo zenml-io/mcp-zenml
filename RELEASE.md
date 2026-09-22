@@ -105,6 +105,26 @@ publisher fails after a tag exists, rerun the matching workflow for that tag.
 Attach a rebuilt bundle manually only after its version and discovery receipt
 match the tagged commit.
 
+Try the least destructive option first:
+
+- Rerunning `release.yml` is safe when `vX.Y.Z` already exists, points at the
+  current main commit, and the candidate changes no release file. It reuses
+  the tag and re-uploads the bundle with `gh release upload --clobber`. It
+  fails if the tag points at a different commit.
+- If the Docker job failed after tagging, rerun that workflow run with
+  `gh run rerun <run-id>`.
+- If only the MCP Registry publish failed, for example on a schema or
+  description error, fix `server.json` on main while `VERSION` still equals
+  `X.Y.Z`, then run the registry-only recovery job:
+  `gh workflow run release-docker.yml --repo zenml-io/mcp-zenml -f release_tag=vX.Y.Z`.
+  It reads `server.json` from main rather than the tag, checks that the tag
+  exists, and does not rebuild or push Docker images.
+- If the code at the tag itself is wrong, delete the release and the tag
+  (`gh release delete vX.Y.Z --repo zenml-io/mcp-zenml --yes` and
+  `git push origin --delete vX.Y.Z`), fix main, and run the orchestrator
+  again. The tag-triggered Docker job builds from the tag, so a fix on main
+  does not reach the image until the tag is recreated.
+
 Published artifacts are the `mcp-zenml.mcpb` GitHub release asset,
 `zenmldocker/mcp-zenml:latest`, `zenmldocker/mcp-zenml:X.Y.Z`, and the MCP
 registry entry derived from `manifest.json` and `server.json`.
