@@ -366,6 +366,88 @@ def test_unknown_source_uses_old_endpoint_error() -> None:
     assert not server._servers_without_log_entries
 
 
+def test_access_token_is_reused_until_near_expiry() -> None:
+    logins: list[str] = []
+
+    def login(*_: Any, **__: Any) -> tuple[str, int | None]:
+        logins.append("login")
+        return f"token-{len(logins)}", 600
+
+    reuse_for = 600 - server._ACCESS_TOKEN_EXPIRY_MARGIN_S
+    now = time.monotonic()
+    with (
+        patch.object(server, "_access_tokens", {}),
+        patch.object(server, "_request_access_token", side_effect=login),
+        patch.object(server.time, "monotonic", return_value=now),
+    ):
+        assert server._cached_access_token(SERVER_URL, "key") == ("token-1", False)
+        assert server._cached_access_token(SERVER_URL + "/", "key") == ("token-1", True)
+        # A different API key never gets another key's token.
+        assert server._cached_access_token(SERVER_URL, "other") == ("token-2", False)
+        with patch.object(server.time, "monotonic", return_value=now + reuse_for - 1):
+            assert server._cached_access_token(SERVER_URL, "key")[1] is True
+        with patch.object(server.time, "monotonic", return_value=now + reuse_for):
+            assert server._cached_access_token(SERVER_URL, "key") == ("token-3", False)
+        refreshed = server._cached_access_token(SERVER_URL, "key", refresh=True)
+        assert refreshed == ("token-4", False)
+
+
+def test_access_token_lifetime_fallbacks() -> None:
+    """No reported lifetime: reuse for the maximum. Too short: don't reuse."""
+    now = time.monotonic()
+    longest = server._ACCESS_TOKEN_MAX_REUSE_S - server._ACCESS_TOKEN_EXPIRY_MARGIN_S
+    for expires_in, deadline in ((None, now + longest), (30, None)):
+        with (
+            patch.object(server, "_access_tokens", {}),
+            patch.object(
+                server, "_request_access_token", return_value=("t", expires_in)
+            ),
+            patch.object(server.time, "monotonic", return_value=now),
+        ):
+            server._cached_access_token(SERVER_URL, "key")
+            cached = server._access_tokens.get((SERVER_URL, "key"))
+            assert (cached[1] if cached else None) == deadline
+
+
+def test_rejected_cached_token_is_replaced_once() -> None:
+    """A 401 with a cached token logs in again and retries; a fresh 401 raises."""
+    step_logs = server.get_step_logs.__wrapped__
+    env = {"ZENML_STORE_URL": SERVER_URL, "ZENML_STORE_API_KEY": "key"}
+    unauthorized = requests.HTTPError(response=_response(401, {"detail": "no"}))
+    used_tokens: list[str] = []
+
+    def fetch(_url: str, _step: str, token: str, **_: Any) -> dict[str, Any]:
+        used_tokens.append(token)
+        if token == "stale":
+            raise unauthorized
+        return {"logs": [], "possibly_truncated": False}
+
+    with (
+        patch.dict(os.environ, env),
+        patch.object(server, "_access_tokens", {(SERVER_URL, "key"): ("stale", 1e18)}),
+        patch.object(server, "_request_access_token", return_value=("fresh", 3600)),
+        patch.object(server, "make_step_logs_request", side_effect=fetch),
+    ):
+        assert step_logs("step-1") == {"logs": [], "possibly_truncated": False}
+        assert used_tokens == ["stale", "fresh"]
+        assert server._access_tokens[(SERVER_URL, "key")][0] == "fresh"
+
+    used_tokens.clear()
+    with (
+        patch.dict(os.environ, env),
+        patch.object(server, "_access_tokens", {}),
+        patch.object(server, "_request_access_token", return_value=("stale", 3600)),
+        patch.object(server, "make_step_logs_request", side_effect=fetch),
+    ):
+        try:
+            step_logs("step-1")
+        except requests.HTTPError as error:
+            assert error is unauthorized
+        else:
+            raise AssertionError("a freshly issued token's 401 was retried")
+    assert used_tokens == ["stale"]
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_")]
     for test in tests:

@@ -42,6 +42,9 @@ export ZENML_CONFIG_PATH="${integration_root}/config"
 export ZENML_LOCAL_STORES_PATH="${integration_root}/stores"
 export ZENML_ANALYTICS_OPT_IN="false"
 export ZENML_AUTO_OPEN_DASHBOARD="false"
+# On macOS the local ZenML server refuses to start without this; other
+# platforms ignore it.
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY="YES"
 
 uv run --with "zenml[server]==${ZENML_VERSION}" \
   zenml login --local --blocking --ip-address "${ZENML_HOST}" --port "${ZENML_PORT}" \

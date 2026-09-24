@@ -590,7 +590,10 @@ async def test_step_logs_send_source_or_logs_id() -> None:
     }
     with (
         patch.dict(os.environ, env),
-        patch.object(server, "get_access_token", return_value="access-token"),
+        patch.object(server, "_access_tokens", {}),
+        patch.object(
+            server, "_request_access_token", return_value=("access-token", 3600)
+        ),
         patch.object(server, "make_step_logs_request", side_effect=record_logs),
     ):
         async with Client(server.mcp, mode="legacy") as session:
@@ -803,9 +806,10 @@ async def test_diagnostics_fail_when_authentication_fails() -> None:
                 "ZENML_STORE_API_KEY": "unknown-secret-value",
             },
         ),
+        patch.object(server, "_access_tokens", {}),
         patch.object(
             server,
-            "get_access_token",
+            "_request_access_token",
             side_effect=json.JSONDecodeError("FAKE-LOGIN-SECRET", "not-json", 0),
         ),
     ):
