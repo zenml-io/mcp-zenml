@@ -83,7 +83,10 @@ def _update_server_versions(version: str) -> None:
         sys.exit(1)
     description = server.get("description")
     if not isinstance(description, str) or not description.strip():
-        print("Error: server.json missing a non-empty 'description' field", file=sys.stderr)
+        print(
+            "Error: server.json missing a non-empty 'description' field",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if len(description) > 100:
         print(
