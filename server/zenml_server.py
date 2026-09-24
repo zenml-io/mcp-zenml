@@ -24,8 +24,8 @@ except ImportError:
 
 import argparse
 import asyncio
+import atexit
 import functools
-import hashlib
 import inspect
 import ipaddress
 import json
@@ -1266,6 +1266,11 @@ def make_step_logs_request(
 # =============================================================================
 
 
+# Inline CA bundle contents from ZENML_STORE_VERIFY_SSL -> the private file
+# this process wrote them to.
+_inline_ca_bundles: dict[str, str] = {}
+
+
 def _store_verify_ssl() -> bool | str:
     """TLS verification for requests that bypass the ZenML client.
 
@@ -1289,12 +1294,17 @@ def _store_verify_ssl() -> bool | str:
         return verify
     if os.path.isfile(value):
         return value
-    digest = hashlib.sha256(value.encode()).hexdigest()[:16]
-    bundle = Path(tempfile.gettempdir(), f"mcp-zenml-ca-bundle-{digest}.pem")
-    if not bundle.exists():
-        with os.fdopen(os.open(bundle, os.O_WRONLY | os.O_CREAT, 0o600), "w") as file:
+    bundle = _inline_ca_bundles.get(value)
+    if bundle is None:
+        # mkstemp creates a new file atomically, with an unguessable name and
+        # owner-only permissions, so another local user can't plant a CA
+        # bundle for us to trust. The file is removed when the process exits.
+        fd, bundle = tempfile.mkstemp(prefix="mcp-zenml-ca-bundle-", suffix=".pem")
+        with os.fdopen(fd, "w") as file:
             file.write(value)
-    return str(bundle)
+        atexit.register(Path(bundle).unlink, missing_ok=True)
+        _inline_ca_bundles[value] = bundle
+    return bundle
 
 
 def collect_zenml_setup_diagnostics(

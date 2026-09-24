@@ -23,9 +23,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -890,9 +892,23 @@ async def test_diagnostics_use_store_verify_ssl() -> None:
         assert diagnostics["checks"]["tls_verification"] == mode
 
     # Inline bundle contents go to a private file that requests can read.
-    diagnostics, seen = diagnose(pem)
+    # A file planted in the temp directory beforehand is never used: the
+    # bundle file is created fresh, with a name nobody can predict. (An
+    # earlier version derived the name from the contents, so this path is
+    # where an attacker would have planted one.)
+    digest = hashlib.sha256(pem.encode()).hexdigest()[:16]
+    planted = Path(tempfile.gettempdir(), f"mcp-zenml-ca-bundle-{digest}.pem")
+    planted.write_text("ATTACKER CA")
+    try:
+        with patch.object(server, "_inline_ca_bundles", {}):
+            diagnostics, seen = diagnose(pem)
+            _, seen_again = diagnose(pem)
+    finally:
+        planted.unlink()
     bundle = Path(seen[0])
     assert seen == [str(bundle), str(bundle)]
+    assert seen_again == seen, "the bundle file is reused, not rewritten"
+    assert bundle != planted
     assert bundle.read_text() == pem
     assert bundle.stat().st_mode & 0o777 == 0o600
     assert pem not in repr(diagnostics)
