@@ -176,7 +176,7 @@ The server requires:
 ### Testing Infrastructure
 
 - **Scheduled testing**: `mcp-smoke-test.yml` runs the smoke test every 3 days against a real ZenML server; on failure it opens a GitHub issue and sends a Discord alert.
-- **CI/CD**: Uses `uv` with caching. The PR, release and release-docker workflows and `build_mcpb.sh` pin `uv` to `0.11.28`. The Docker runtime image, the scheduled smoke workflow and the zizmor workflow use `0.8.15`.
+- **CI/CD**: Uses `uv` with caching. The PR, release, release-docker and scheduled smoke workflows and `build_mcpb.sh` pin `uv` to `0.11.28`. The Docker runtime image and the zizmor workflow use `0.8.15`; neither runs a PEP 723 script.
 - **Important**: When adding new test scripts, always wire them into `.github/workflows/pr-test.yml` so they run in CI. Tests that don't need ZenML credentials should run unconditionally (no `if: env.HAS_ZENML_CREDENTIALS == 'true'` guard).
 
 ### Debugging with MCP Inspector
@@ -296,7 +296,7 @@ bash scripts/format.sh          # Runs ruff + ty together
 
 **CI Integration**: Type checking runs as a separate job in PR tests (`.github/workflows/pr-test.yml`).
 
-**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked. Runtime scripts that install `mcp` or `zenml` also carry the same `[tool.uv] exclude-newer-package` table as `pyproject.toml`, which exempts the pinned MCP SDK from the 7-day cooldown (the drift check enforces this, and `--fix` writes it). When adding a new PEP 723 script, copy the `[tool.ty]` blocks into its header, then run `uv run scripts/check_pep723_requirements.py --fix` to fill in the dependencies and `[tool.uv]` table. ty is pinned once in `requirements-dev.txt`, which CI and `scripts/format.sh` pass to `uvx --constraints`; Dependabot opens a PR when a new ty release is available.
+**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked. Runtime scripts that install `mcp` or `zenml` also carry the same `[tool.uv] exclude-newer-package` table as `pyproject.toml`, which exempts the pinned MCP SDK and `zenml` from the 7-day cooldown (the drift check enforces this, and `--fix` writes it). uv 0.8.x cannot parse `zenml = false` in a header and refuses to run the script, so anything that runs these scripts must use uv 0.11.28. When adding a new PEP 723 script, copy the `[tool.ty]` blocks into its header, then run `uv run scripts/check_pep723_requirements.py --fix` to fill in the dependencies and `[tool.uv]` table. ty is pinned once in `requirements-dev.txt`, which CI and `scripts/format.sh` pass to `uvx --constraints`; Dependabot opens a PR when a new ty release is available.
 
 ### Supply Chain Security
 
@@ -318,6 +318,7 @@ The project applies multiple layers of supply chain protection:
 uv pip compile --generate-hashes --exclude-newer "7 days" \
   --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
   --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+  --exclude-newer-package "zenml=false" \
   --python-version 3.12 pyproject.toml -o requirements.txt
 ```
 
@@ -335,6 +336,7 @@ source "${REQUIREMENTS_HASH_CHECK_ENV}/bin/activate"
 uv pip install --dry-run --require-hashes \
   --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
   --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+  --exclude-newer-package "zenml=false" \
   -r requirements.txt
 ```
 

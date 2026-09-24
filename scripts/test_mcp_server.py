@@ -9,7 +9,7 @@
 # ]
 #
 # [tool.uv]
-# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z", zenml = false }
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".

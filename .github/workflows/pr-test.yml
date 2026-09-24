@@ -90,6 +90,7 @@ jobs:
           uv pip install --dry-run --require-hashes \
             --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
             --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
+            --exclude-newer-package "zenml=false" \
             -r requirements.txt
 
       - name: Run MCP smoke test
