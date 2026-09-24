@@ -78,6 +78,13 @@
             "string",
             "null"
           ]
+        },
+        "tail": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
