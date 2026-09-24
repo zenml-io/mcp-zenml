@@ -10,7 +10,8 @@ discovered automatically:
 - a file that depends on mcp or zenml must carry the same [tool.uv]
   exclude-newer-package table as pyproject.toml.
 
-Run with --fix to rewrite the headers to match instead of only reporting.
+Run with --fix to rewrite the headers to match instead of only reporting, or
+with --print-pin NAME to print the exact version pyproject.toml pins NAME to.
 """
 
 from __future__ import annotations
@@ -27,25 +28,44 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 SCAN_GLOBS = ("server/*.py", "scripts/*.py")
 MIRROR_MARKER = "zenml"
-EXEMPTION_TRIGGERS = frozenset({"mcp", "zenml"})
 
 
 class CheckError(Exception):
     """Raised when a dependency declaration cannot be checked."""
 
 
-def read_pyproject(path: Path) -> tuple[list[str], dict[str, Any]]:
+def exclude_newer_packages(metadata: dict[str, Any]) -> Any:
+    """Return the [tool.uv] exclude-newer-package table, if any."""
+    return metadata.get("tool", {}).get("uv", {}).get("exclude-newer-package")
+
+
+def read_pyproject(
+    path: Path = PYPROJECT_FILE,
+) -> tuple[list[str], dict[str, Any]]:
     """Return pyproject.toml's dependencies and [tool.uv] exclude-newer-package."""
     pyproject = tomllib.loads(path.read_text(encoding="utf-8"))
     dependencies = pyproject.get("project", {}).get("dependencies")
     if not isinstance(dependencies, list) or not dependencies:
         msg = f"{path}: [project].dependencies must be a non-empty list"
         raise CheckError(msg)
-    exemptions = pyproject.get("tool", {}).get("uv", {}).get("exclude-newer-package")
+    exemptions = exclude_newer_packages(pyproject)
     if not isinstance(exemptions, dict):
         msg = f"{path}: [tool.uv] exclude-newer-package must be a table"
         raise CheckError(msg)
     return dependencies, exemptions
+
+
+def pinned_version(name: str, path: Path = PYPROJECT_FILE) -> str:
+    """Return the exact version pyproject.toml pins `name` to (`name==X`)."""
+    dependencies, _ = read_pyproject(path)
+    requirement = dependency_map(dependencies).get(name, "")
+    match = re.fullmatch(
+        r"\s*[A-Za-z0-9_.-]+\s*(?:\[[^\]]*\])?\s*==\s*([^\s,;]+)\s*", requirement
+    )
+    if match is None:
+        msg = f"{path}: no exact {name}==... pin in [project].dependencies"
+        raise CheckError(msg)
+    return match.group(1)
 
 
 def dependency_name(requirement: str) -> str:
@@ -73,6 +93,21 @@ def strip_pep723_comment(line: str, path: Path) -> str:
     raise CheckError(msg)
 
 
+def pep723_block_bounds(lines: list[str], path: Path) -> tuple[int, int]:
+    """Return the line indexes of a PEP 723 block's opening and closing markers."""
+    stripped = [line.rstrip() for line in lines]
+    if "# /// script" not in stripped:
+        msg = f"{path}: no PEP 723 script block found"
+        raise CheckError(msg)
+    start = stripped.index("# /// script")
+    try:
+        end = stripped.index("# ///", start + 1)
+    except ValueError:
+        msg = f"{path}: PEP 723 script block is missing its closing '# ///'"
+        raise CheckError(msg) from None
+    return start, end
+
+
 def has_pep723_block(path: Path) -> bool:
     """Return whether a file contains a PEP 723 script block."""
     return "# /// script" in path.read_text(encoding="utf-8").splitlines()
@@ -84,28 +119,12 @@ def discover_pep723_files() -> list[Path]:
     return sorted(path for path in candidates if has_pep723_block(path))
 
 
-def read_pep723_metadata(path: Path) -> dict[str, Any]:
-    """Parse a PEP 723 block and validate its dependencies array."""
-    metadata_lines: list[str] = []
-    in_block = False
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.rstrip()
-        if not in_block:
-            if line == "# /// script":
-                in_block = True
-            continue
-
-        if line == "# ///":
-            break
-        metadata_lines.append(strip_pep723_comment(line, path))
-    else:
-        if in_block:
-            msg = f"{path}: PEP 723 script block is missing its closing '# ///'"
-        else:
-            msg = f"{path}: no PEP 723 script block found"
-        raise CheckError(msg)
-
+def read_pep723_metadata(lines: list[str], path: Path) -> dict[str, Any]:
+    """Parse a file's PEP 723 block and validate its dependencies array."""
+    start, end = pep723_block_bounds(lines, path)
+    metadata_lines = [
+        strip_pep723_comment(line.rstrip(), path) for line in lines[start + 1 : end]
+    ]
     try:
         metadata: dict[str, Any] = tomllib.loads("\n".join(metadata_lines))
     except tomllib.TOMLDecodeError as error:
@@ -121,9 +140,26 @@ def read_pep723_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
-def exclude_newer_packages(metadata: dict[str, Any]) -> Any:
-    """Return the [tool.uv] exclude-newer-package table, if any."""
-    return metadata.get("tool", {}).get("uv", {}).get("exclude-newer-package")
+def desired_dependencies(actual: list[str], expected: list[str]) -> list[str]:
+    """Return what a file's PEP 723 dependencies should be.
+
+    A file that depends on zenml mirrors pyproject.toml exactly. Any other file
+    keeps its own list, with each package pyproject.toml also lists pinned the
+    same way.
+    """
+    if MIRROR_MARKER in dependency_map(actual):
+        return expected
+    expected_by_name = dependency_map(expected)
+    return [expected_by_name.get(dependency_name(item), item) for item in actual]
+
+
+def needs_exemptions(
+    dependencies: list[str], expected: list[str], exemptions: dict[str, Any]
+) -> bool:
+    """Return whether a file installs a pyproject.toml dependency that is exempt
+    from the cooldown, and so must carry the exclude-newer-package table."""
+    triggers = exemptions.keys() & dependency_map(expected).keys()
+    return bool(triggers & dependency_map(dependencies).keys())
 
 
 def format_dependency_list(title: str, dependencies: list[str]) -> list[str]:
@@ -173,36 +209,35 @@ def check_file(
 ) -> list[str]:
     """Return diagnostics for one file, or an empty list if it agrees."""
     try:
-        metadata = read_pep723_metadata(path)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        metadata = read_pep723_metadata(lines, path)
     except CheckError as error:
         return [str(error)]
 
     actual: list[str] = metadata["dependencies"]
-    actual_by_name = dependency_map(actual)
+    desired = desired_dependencies(actual, expected)
     relative_path = path.relative_to(REPO_ROOT)
     diagnostics: list[str] = []
 
-    if MIRROR_MARKER in actual_by_name:
-        if actual != expected:
-            diagnostics += [
-                f"PEP 723 dependency drift detected in {relative_path}",
-                "",
-                *format_dependency_list("Expected from pyproject.toml:", expected),
-                "",
-                *format_dependency_list("Actual PEP 723 dependencies:", actual),
-                "",
-                *mismatch_details(expected, actual),
-            ]
-    else:
-        expected_by_name = dependency_map(expected)
+    if actual != desired and MIRROR_MARKER in dependency_map(actual):
         diagnostics += [
-            f"{relative_path}: {name} must be pinned as "
-            f"{expected_by_name[name]!r}, found {requirement!r}"
-            for name, requirement in actual_by_name.items()
-            if name in expected_by_name and requirement != expected_by_name[name]
+            f"PEP 723 dependency drift detected in {relative_path}",
+            "",
+            *format_dependency_list("Expected from pyproject.toml:", expected),
+            "",
+            *format_dependency_list("Actual PEP 723 dependencies:", actual),
+            "",
+            *mismatch_details(expected, actual),
+        ]
+    elif actual != desired:
+        diagnostics += [
+            f"{relative_path}: {dependency_name(found)} must be pinned as "
+            f"{wanted!r}, found {found!r}"
+            for found, wanted in zip(actual, desired, strict=True)
+            if found != wanted
         ]
 
-    if EXEMPTION_TRIGGERS & actual_by_name.keys() and (
+    if needs_exemptions(actual, expected, expected_exemptions) and (
         exclude_newer_packages(metadata) != expected_exemptions
     ):
         diagnostics.append(
@@ -213,55 +248,51 @@ def check_file(
 
 
 def toml_inline_table(table: dict[str, Any]) -> str:
-    """Render a flat table of strings and booleans as a TOML inline table."""
+    """Render a flat table of strings and booleans as a TOML inline table.
+
+    JSON strings and booleans are also valid TOML values.
+    """
 
     def key(name: str) -> str:
         return name if re.fullmatch(r"[A-Za-z0-9_]+", name) else json.dumps(name)
 
-    def value(item: Any) -> str:
-        if isinstance(item, bool):
-            return "true" if item else "false"
-        if isinstance(item, str):
-            return json.dumps(item)
-        msg = f"cannot render {item!r} in an exclude-newer-package table"
-        raise CheckError(msg)
-
-    return "{ " + ", ".join(f"{key(k)} = {value(v)}" for k, v in table.items()) + " }"
+    return (
+        "{ " + ", ".join(f"{key(k)} = {json.dumps(v)}" for k, v in table.items()) + " }"
+    )
 
 
 def fixed_header(
-    lines: list[str], path: Path, expected: list[str], exemptions: dict[str, Any]
+    lines: list[str],
+    dependencies: list[str],
+    exemptions: dict[str, Any],
+    *,
+    add_exemptions: bool,
+    path: Path,
 ) -> list[str]:
-    """Return the PEP 723 block lines rewritten to match pyproject.toml."""
-    metadata = read_pep723_metadata(path)
-    actual: list[str] = metadata["dependencies"]
-    if MIRROR_MARKER in dependency_map(actual):
-        dependencies = expected
-    else:
-        expected_by_name = dependency_map(expected)
-        dependencies = [
-            expected_by_name.get(dependency_name(item), item) for item in actual
-        ]
-    needs_exemptions = bool(EXEMPTION_TRIGGERS & dependency_map(dependencies).keys())
+    """Return the file's lines with its PEP 723 block rewritten.
 
-    start = lines.index("# /// script")
-    end = lines.index("# ///", start + 1)
+    The dependency list becomes `dependencies`, an existing exclude-newer-package
+    line becomes `exemptions`, and if there is none and `add_exemptions` is set,
+    a [tool.uv] table holding it is added after the dependency list.
+    """
+    start, end = pep723_block_bounds(lines, path)
     block = lines[start + 1 : end]
     dep_start = block.index("# dependencies = [")
     dep_end = block.index("# ]", dep_start)
-    block[dep_start : dep_end + 1] = [
+    new_dependency_lines = [
         "# dependencies = [",
         *(f"#     {json.dumps(item)}," for item in dependencies),
         "# ]",
     ]
+    block[dep_start : dep_end + 1] = new_dependency_lines
+    dep_end = dep_start + len(new_dependency_lines) - 1
     exemption_line = f"# exclude-newer-package = {toml_inline_table(exemptions)}"
     existing = [
         i for i, line in enumerate(block) if line.startswith("# exclude-newer-package")
     ]
     if existing:
         block[existing[0]] = exemption_line
-    elif needs_exemptions:
-        dep_end = block.index("# ]", dep_start)
+    elif add_exemptions:
         block[dep_end + 1 : dep_end + 1] = ["#", "# [tool.uv]", exemption_line]
     return [*lines[: start + 1], *block, *lines[end:]]
 
@@ -270,7 +301,16 @@ def fix_file(path: Path, expected: list[str], exemptions: dict[str, Any]) -> boo
     """Rewrite one file's PEP 723 header in place; return whether it changed."""
     text = path.read_text(encoding="utf-8")
     lines = text.split("\n")
-    new_text = "\n".join(fixed_header(lines, path, expected, exemptions))
+    metadata = read_pep723_metadata(lines, path)
+    dependencies = desired_dependencies(metadata["dependencies"], expected)
+    new_lines = fixed_header(
+        lines,
+        dependencies,
+        exemptions,
+        add_exemptions=needs_exemptions(dependencies, expected, exemptions),
+        path=path,
+    )
+    new_text = "\n".join(new_lines)
     if new_text == text:
         return False
     path.write_text(new_text, encoding="utf-8")
@@ -285,9 +325,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="rewrite PEP 723 dependency lists and [tool.uv] tables to match",
     )
+    parser.add_argument(
+        "--print-pin",
+        metavar="NAME",
+        help="print the exact version pyproject.toml pins NAME to, then exit",
+    )
     args = parser.parse_args(argv)
     try:
-        expected, exemptions = read_pyproject(PYPROJECT_FILE)
+        if args.print_pin:
+            print(pinned_version(args.print_pin))
+            return 0
+        expected, exemptions = read_pyproject()
     except CheckError as error:
         print(error, file=sys.stderr)
         return 1

@@ -29,10 +29,12 @@ python3 - "${ROOT}" "${STAGE_DIR}" <<'PY'
 import json
 import pathlib
 import sys
-import tomllib
 
 root = pathlib.Path(sys.argv[1])
 stage = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(root / "scripts"))
+from check_pep723_requirements import read_pyproject, toml_inline_table  # noqa: E402
+
 manifest_path = stage / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["icon"] = "assets/icon.png"
@@ -40,20 +42,12 @@ manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
 
 # The bundle uses the same dependency list as the repo's pyproject.toml. The
 # exact versions come from mcpb-uv.lock, which the bundle runs with --locked.
-pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-dependencies = pyproject["project"]["dependencies"]
+dependencies, all_exemptions = read_pyproject(root / "pyproject.toml")
 # Only the dated exemptions are copied. The bundle lock has no general
 # exclude-newer cutoff, so a `false` exemption would change nothing, and older
 # uv versions on users' machines cannot parse it.
-exemptions = {
-    name: value
-    for name, value in pyproject["tool"]["uv"].get("exclude-newer-package", {}).items()
-    if isinstance(value, str)
-}
+exemptions = {k: v for k, v in all_exemptions.items() if isinstance(v, str)}
 dependency_lines = "".join(f"    {json.dumps(dep)},\n" for dep in dependencies)
-exemption_items = ", ".join(
-    f"{json.dumps(name)} = {json.dumps(value)}" for name, value in exemptions.items()
-)
 version = (stage / "VERSION").read_text(encoding="utf-8").strip()
 (stage / "pyproject.toml").write_text(
     f'''[project]
@@ -64,7 +58,7 @@ dependencies = [
 {dependency_lines}]
 
 [tool.uv]
-exclude-newer-package = {{ {exemption_items} }}
+exclude-newer-package = {toml_inline_table(exemptions)}
 ''',
     encoding="utf-8",
 )

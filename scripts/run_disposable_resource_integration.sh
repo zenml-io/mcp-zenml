@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd -P)"
 # Start the same ZenML version the server pins in pyproject.toml.
-ZENML_VERSION="$(sed -n 's/^[[:space:]]*"zenml==\([^"]*\)",[[:space:]]*$/\1/p' "${ROOT}/pyproject.toml")"
+ZENML_VERSION="$(python3 "${ROOT}/scripts/check_pep723_requirements.py" --print-pin zenml)"
 if [[ -z "${ZENML_VERSION}" ]]; then
   echo "Could not find an exact \"zenml==...\" pin in ${ROOT}/pyproject.toml" >&2
   exit 1

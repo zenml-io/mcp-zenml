@@ -10,6 +10,9 @@
 #
 # [tool.ty.rules]
 # unresolved-import = "ignore"
+#
+# [tool.ty.environment]
+# extra-paths = ["."]
 # ///
 """Verify MCPB and Docker distributions through the MCP stdio protocol."""
 
@@ -29,6 +32,7 @@ import zipfile
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
+from check_pep723_requirements import pinned_version, read_pyproject
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -54,20 +58,9 @@ EXPECTED_COMPACT_READ_WRITE_TOOLS = (
 )
 # The bundle must declare exactly the repo's runtime dependency list, and the
 # installed mcp and zenml versions must match its exact pins.
-EXPECTED_BUNDLE_DEPENDENCIES = tuple(
-    tomllib.loads(
-        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
-            encoding="utf-8"
-        )
-    )["project"]["dependencies"]
-)
+EXPECTED_BUNDLE_DEPENDENCIES = tuple(read_pyproject()[0])
 EXPECTED_PYTHON_REQUIREMENT = ">=3.12,<3.15"
-EXPECTED_INSTALLED_VERSIONS = {
-    name: dependency.split("==", 1)[1]
-    for name in ("mcp", "zenml")
-    for dependency in EXPECTED_BUNDLE_DEPENDENCIES
-    if dependency.startswith((f"{name}==", f"{name}["))
-}
+EXPECTED_INSTALLED_VERSIONS = {n: pinned_version(n) for n in ("mcp", "zenml")}
 # Calling the .py file directly would make uv honor its PEP 723 block instead of
 # this bundle's pyproject.toml and uv.lock. Keep Python as the command boundary.
 EXPECTED_MCPB_LAUNCH_ARGS = (

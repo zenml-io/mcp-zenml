@@ -14,6 +14,9 @@
 #
 # [tool.ty.rules]
 # unresolved-import = "ignore"
+#
+# [tool.ty.environment]
+# extra-paths = ["."]
 # ///
 """Verify server adapters bind to the pinned ZenML SDK contracts."""
 
@@ -22,11 +25,11 @@ from __future__ import annotations
 import ast
 import inspect
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
 
 import zenml
+from check_pep723_requirements import pinned_version
 from zenml.client import Client
 from zenml.zen_stores.base_zen_store import BaseZenStore
 from zenml.zen_stores.zen_store_interface import ZenStoreInterface
@@ -43,13 +46,7 @@ from zenml_resource_registry import (  # noqa: E402
 )
 
 # The zenml pin in pyproject.toml, which every PEP 723 header mirrors.
-EXPECTED_ZENML_VERSION: str = next(
-    dependency.removeprefix("zenml==")
-    for dependency in tomllib.loads(
-        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )["project"]["dependencies"]
-    if dependency.startswith("zenml==")
-)
+EXPECTED_ZENML_VERSION = pinned_version("zenml")
 
 
 def _direct_client_calls() -> list[tuple[str, int, list[str], bool, int]]:

@@ -16,7 +16,7 @@
 # unresolved-import = "ignore"
 #
 # [tool.ty.environment]
-# extra-paths = ["../server"]
+# extra-paths = [".", "../server"]
 # ///
 """Explicitly gated CRUD and action receipts against a disposable ZenML server.
 
@@ -31,7 +31,6 @@ import asyncio
 import json
 import os
 import sys
-import tomllib
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -42,21 +41,15 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
+from check_pep723_requirements import pinned_version  # noqa: E402
+
 
 class IntegrationIncomplete(RuntimeError):
     """The operator requested a live receipt without all of its prerequisites."""
 
 
 # The zenml pin in pyproject.toml, which every PEP 723 header mirrors.
-REQUIRED_ZENML_SERVER_VERSION: str = next(
-    dependency.removeprefix("zenml==")
-    for dependency in tomllib.loads(
-        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
-            encoding="utf-8"
-        )
-    )["project"]["dependencies"]
-    if dependency.startswith("zenml==")
-)
+REQUIRED_ZENML_SERVER_VERSION = pinned_version("zenml")
 
 
 def _require_complete_receipt() -> bool:

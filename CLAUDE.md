@@ -296,7 +296,7 @@ bash scripts/format.sh          # Runs ruff + ty together
 
 **CI Integration**: Type checking runs as a separate job in PR tests (`.github/workflows/pr-test.yml`).
 
-**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked. Runtime scripts that install `mcp` or `zenml` also carry the same `[tool.uv] exclude-newer-package` table as `pyproject.toml`, which exempts the pinned MCP SDK and `zenml` from the 7-day cooldown (the drift check enforces this, and `--fix` writes it). uv 0.8.x cannot parse `zenml = false` in a header and refuses to run the script, so anything that runs these scripts must use uv 0.11.28. When adding a new PEP 723 script, copy the `[tool.ty]` blocks into its header, then run `uv run scripts/check_pep723_requirements.py --fix` to fill in the dependencies and `[tool.uv]` table. ty is pinned once in `requirements-dev.txt`, which CI and `scripts/format.sh` pass to `uvx --constraints`; Dependabot opens a PR when a new ty release is available.
+**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked; scripts that import the shared pin reader (`pinned_version`, `read_pyproject`) from `check_pep723_requirements.py` add `"."` to `extra-paths` for the same reason. Runtime scripts that install `mcp` or `zenml` also carry the same `[tool.uv] exclude-newer-package` table as `pyproject.toml`, which exempts the pinned MCP SDK and `zenml` from the 7-day cooldown (the drift check enforces this, and `--fix` writes it). uv 0.8.x cannot parse `zenml = false` in a header and refuses to run the script, so anything that runs these scripts must use uv 0.11.28. When adding a new PEP 723 script, copy the `[tool.ty]` blocks into its header, then run `uv run scripts/check_pep723_requirements.py --fix` to fill in the dependencies and `[tool.uv]` table. ty is pinned once in `requirements-dev.txt`, which CI and `scripts/format.sh` pass to `uvx --constraints`; Dependabot opens a PR when a new ty release is available.
 
 ### Supply Chain Security
 
@@ -313,19 +313,18 @@ The project applies multiple layers of supply chain protection:
 - **MCP Registry publisher pinned**: `release-docker.yml` downloads the `mcp-publisher` release binary at a fixed version (`MCP_PUBLISHER_VERSION`, currently 1.8.1) and checks its SHA256 (`MCP_PUBLISHER_LINUX_AMD64_SHA256`) before running it. Bump both together. It logs in with GitHub OIDC (`mcp-publisher login github-oidc`), so no registry token is stored.
 - **zizmor audit**: Security linting of workflow files runs in the dedicated `.github/workflows/zizmor.yml` workflow with minimal permissions, path filters, weekly scheduled runs, and manual dispatch.
 
+Run the two `uv pip` commands below from the repo root: uv then reads the cooldown and its exemptions from `[tool.uv]` in `pyproject.toml`, so they need no `--exclude-newer` flags.
+
 **Recompiling requirements.txt** (after changing `[project].dependencies` in `pyproject.toml`):
 ```bash
-uv pip compile --generate-hashes --exclude-newer "7 days" \
-  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "zenml=false" \
-  --python-version 3.12 pyproject.toml -o requirements.txt
+uv pip compile --generate-hashes --python-version 3.12 pyproject.toml -o requirements.txt
 ```
 
 **Checking PEP 723 dependency drift locally**:
 ```bash
 python scripts/check_pep723_requirements.py
 uv run scripts/check_pep723_requirements.py --fix  # rewrite the headers to match pyproject.toml
+python3 scripts/check_pep723_requirements.py --print-pin zenml  # print the exact version pyproject.toml pins
 ```
 
 **Validating requirements.txt hashes locally** (skip the first three lines if a virtualenv is already active):
@@ -333,11 +332,7 @@ uv run scripts/check_pep723_requirements.py --fix  # rewrite the headers to matc
 REQUIREMENTS_HASH_CHECK_ENV=$(mktemp -d)
 uv venv --python 3.12 "${REQUIREMENTS_HASH_CHECK_ENV}"
 source "${REQUIREMENTS_HASH_CHECK_ENV}/bin/activate"
-uv pip install --dry-run --require-hashes \
-  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "zenml=false" \
-  -r requirements.txt
+uv pip install --dry-run --require-hashes -r requirements.txt
 ```
 
 **Running the workflow security scan locally**:
