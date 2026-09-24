@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `scripts/test_resource_integration.py` - skips its live part unless run through the disposable-server script below
   - `scripts/test_sdk_contracts.py` - checks the ZenML SDK method signatures the dispatcher calls still match
   - `scripts/test_tool_contracts.py`, `test_tool_profiles.py` - tool schemas, and which tools each profile/write policy advertises
+  - `scripts/test_step_logs.py` - `get_step_logs` against fake ZenML servers: cursor paging on the 0.97+ `/logs/{id}/entries` endpoint, the fallback to `/steps/{id}/logs` on 0.96, `tail`, and the `possibly_truncated` flag
   - `scripts/test_mcp_transport.py` - the MCP 2.2 runtime: protocol negotiation, HTTP host/origin security, timeouts and cancellation, error sanitising, analytics allowlist
   - `scripts/test_mcp_apps.py` - drives both MCP Apps in headless Chromium. Install the browser first with `uv run --with playwright==1.55.0 playwright install --with-deps chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at an existing Chromium
   - `scripts/test_distributions.py self-test`

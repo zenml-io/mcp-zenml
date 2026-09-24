@@ -963,11 +963,15 @@ def get_zenml_client():
     return zenml_client
 
 
+# Connect and read timeouts for direct REST calls to the ZenML server.
+_ZENML_REST_TIMEOUT = (3.05, 30)
+
+
 def get_access_token(
     server_url: str,
     api_key: str,
     *,
-    timeout: tuple[float, float] = (3.05, 30),
+    timeout: tuple[float, float] = _ZENML_REST_TIMEOUT,
 ) -> str:
     """
     Generate a short-lived access token using the ZenML API key.
@@ -1013,10 +1017,107 @@ def get_access_token(
     return access_token
 
 
-# Page sizes at which ZenML's step-logs endpoint silently stops: 50,000 for the
-# artifact log store (ZENML_LOGS_MAX_ENTRIES_PER_REQUEST) and, since ZenML
-# 0.97.0, 1,000 for the Datadog log store.
-STEP_LOG_PAGE_SIZES = frozenset({1_000, 50_000})
+# Most log entries one get_step_logs call returns. It matches ZenML's default
+# LOGS_MAX_ENTRIES_PER_REQUEST, which is what 0.96 servers already returned.
+STEP_LOGS_MAX_ENTRIES = 50_000
+
+# Server URLs that answered /logs/{id}/entries with FastAPI's "no such route"
+# 404, i.e. servers older than ZenML 0.97. Later calls skip straight to the
+# older /steps/{id}/logs endpoint.
+_servers_without_log_entries: set[str] = set()
+
+
+def _is_missing_route(response: requests.Response) -> bool:
+    """Tell FastAPI's unknown-route 404 apart from ZenML's own not-found errors.
+
+    An unknown route returns ``{"detail": "Not Found"}``. ZenML's KeyError
+    handler returns a list-shaped ``detail``, e.g. for an unknown logs ID.
+    """
+    if response.status_code != 404:
+        return False
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(detail, str)
+
+
+def _resolve_step_logs_id(
+    session: requests.Session, server_url: str, step_id: str, source: str
+) -> str | None:
+    """Find the ID of the step's log stream with the given source."""
+    response = session.get(
+        f"{server_url}/api/v1/steps/{step_id}",
+        params={"hydrate": "true"},
+        timeout=_ZENML_REST_TIMEOUT,
+    )
+    response.raise_for_status()
+    resources = response.json().get("resources") or {}
+    for logs in resources.get("log_collection") or []:
+        if (logs.get("body") or {}).get("source") == source:
+            return logs.get("id")
+    return None
+
+
+def _fetch_log_entries(
+    session: requests.Session, server_url: str, logs_id: str, *, wanted: int
+) -> tuple[list[Any], bool] | None:
+    """Read a log stream through the paginated ZenML 0.97+ entries endpoint.
+
+    The first request leaves ``start`` unset so each log store reads from its
+    own default end: the artifact store from the oldest entry (it rejects
+    ``start=newest``), Datadog from the newest. The code then follows whichever
+    cursor comes back. ``before`` pages hold older entries and ``after`` pages
+    newer ones; the pages are joined oldest first at the end.
+
+    Returns:
+        ``(entries, server_may_have_more)``, or None if the server has no
+        entries endpoint.
+    """
+    url = f"{server_url}/api/v1/logs/{logs_id}/entries"
+    response = session.get(
+        url, params={"limit": STEP_LOGS_MAX_ENTRIES}, timeout=_ZENML_REST_TIMEOUT
+    )
+    if _is_missing_route(response):
+        return None
+    response.raise_for_status()
+    page = response.json()
+    pages: list[list[Any]] = [page.get("items") or []]
+    direction = "before" if page.get("before") else "after"
+    cursor = page.get(direction)
+    if not cursor:
+        # A store without cursors (the artifact store) returns one page. A
+        # full page means the file may continue past the server's limit.
+        return pages[0], len(pages[0]) >= STEP_LOGS_MAX_ENTRIES
+
+    # Walking back from the newest entry: stop once there are enough. Walking
+    # forward from the oldest: the tail is at the end, so keep going until the
+    # stream ends or the total cap is reached. Any break that leaves `cursor`
+    # set means entries were left unread.
+    stop_at = wanted if direction == "before" else STEP_LOGS_MAX_ENTRIES
+    total = len(pages[0])
+    while cursor and total < stop_at:
+        try:
+            response = session.get(
+                url, params={direction: cursor}, timeout=_ZENML_REST_TIMEOUT
+            )
+            response.raise_for_status()
+            page = response.json()
+        except (requests.RequestException, ValueError) as error:
+            # Keep the pages already read rather than discarding them over a
+            # rate limit (429) or a log-backend outage (502/503) on a later page.
+            logger.warning("Stopped paging step logs early: %s", type(error).__name__)
+            break
+        items = page.get("items") or []
+        if not items:
+            cursor = None
+            break
+        pages.append(items)
+        total += len(items)
+        cursor = page.get(direction)
+    if direction == "before":
+        pages.reverse()
+    return [entry for items in pages for entry in items], bool(cursor)
 
 
 def make_step_logs_request(
@@ -1026,59 +1127,77 @@ def make_step_logs_request(
     *,
     source: str | None = None,
     logs_id: str | None = None,
+    tail: int | None = None,
 ) -> Dict[str, Any]:
     """Get logs for a specific step from the ZenML API.
+
+    On ZenML 0.97+ servers this reads the paginated ``/logs/{id}/entries``
+    endpoint and follows its cursors. Older servers only have
+    ``/steps/{id}/logs``, which returns a single list.
 
     Args:
         server_url: The base URL of the ZenML server
         step_id: The ID of the step to get logs for
         access_token: The access token for authentication
+        source: The log source to read. Exactly one of source/logs_id.
+        logs_id: The exact log stream ID to read.
+        tail: Return only the newest ``tail`` entries.
 
     Returns:
-        The logs data as a dictionary
+        ``{"logs": [...], "possibly_truncated": bool}``, entries oldest first.
+        ``possibly_truncated`` is True when the stream may hold entries that
+        were not returned (because of ``tail``, the entry cap, or a failed
+        later page).
 
     Raises:
         requests.HTTPError: If the request fails
     """
-    # Ensure the server URL doesn't end with a slash
     server_url = server_url.rstrip("/")
-
-    # Construct the full URL
-    url = f"{server_url}/api/v1/steps/{step_id}/logs"
-
-    # Prepare headers with the access token
-    headers = {"Authorization": f"Bearer {access_token}"}
-
-    logger.debug(f"Fetching logs for step {step_id}")
-
     if source is not None:
         source = source.strip()
     if logs_id is not None:
         logs_id = logs_id.strip()
     if (not source and not logs_id) or (source is not None and logs_id is not None):
         raise ValueError("Exactly one of source or logs_id must be provided.")
-    params = {"source": source} if source is not None else {"logs_id": logs_id}
+    wanted = tail or STEP_LOGS_MAX_ENTRIES
 
-    # Make the request
-    response = requests.get(url, headers=headers, params=params, timeout=(3.05, 30))
-    response.raise_for_status()  # Raise an exception for HTTP errors
+    logger.debug(f"Fetching logs for step {step_id}")
 
-    data = response.json()
-    # The ZenML API returns a list of log entries, but FastMCP expects a dict.
-    if not isinstance(data, list):
-        return data
-    result: Dict[str, Any] = {"logs": data}
-    # The endpoint returns only the log store's first page and gives no sign
-    # that it cut anything off, so flag results that are exactly a page long.
-    if len(data) in STEP_LOG_PAGE_SIZES:
-        result["possibly_truncated"] = True
-        result["note"] = (
-            f"Exactly {len(data)} entries came back, which is a ZenML log "
-            "store page limit, so later or earlier lines may be missing. "
-            "The artifact store keeps the oldest entries; on ZenML 0.97+ "
-            "the Datadog log store keeps only the newest."
-        )
-    return result
+    # One session so every page reuses the same connection.
+    with requests.Session() as session:
+        session.headers["Authorization"] = f"Bearer {access_token}"
+        fetched = None
+        if server_url not in _servers_without_log_entries:
+            stream_id = logs_id or _resolve_step_logs_id(
+                session, server_url, step_id, cast(str, source)
+            )
+            # No stream with that source: the older endpoint below returns
+            # ZenML's usual "no logs found" error.
+            if stream_id is not None:
+                fetched = _fetch_log_entries(
+                    session, server_url, stream_id, wanted=wanted
+                )
+                if fetched is None:
+                    _servers_without_log_entries.add(server_url)
+        if fetched is None:
+            params = {"source": source} if source is not None else {"logs_id": logs_id}
+            response = session.get(
+                f"{server_url}/api/v1/steps/{step_id}/logs",
+                params=params,
+                timeout=_ZENML_REST_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, list):
+                return data
+            # This endpoint returns at most one server page (50,000 entries by
+            # default) and gives no sign when it stopped early.
+            fetched = data, len(data) >= STEP_LOGS_MAX_ENTRIES
+    entries, more = fetched
+    return {
+        "logs": entries[-wanted:],
+        "possibly_truncated": more or len(entries) > wanted,
+    }
 
 
 # =============================================================================
@@ -1288,13 +1407,23 @@ def get_step_logs(
     step_run_id: str,
     source: str | None = None,
     logs_id: str | None = None,
+    tail: int | None = None,
 ) -> dict[str, Any]:
     """Get the logs for a specific step run.
+
+    Returns ``{"logs": [...], "possibly_truncated": bool}`` with entries oldest
+    first. At most 50,000 entries are returned. ``possibly_truncated`` is true
+    when the step may have more log entries than were returned. Pass ``tail``
+    (for example 200) to get only the newest entries; that is usually where a
+    failure shows up, and it keeps the response small. Log stores that can only
+    read a log from its start (the default artifact store) return the newest of
+    the first 50,000 entries for a longer log, with ``possibly_truncated`` set.
 
     Args:
         step_run_id: The ID of the step run to get logs for.
         source: Optional log source. Defaults to ZenML's ordinary ``step`` source.
         logs_id: Optional exact log record ID. Cannot be combined with ``source``.
+        tail: Optional number of newest entries to return, from 1 to 50000.
     """
     # Get server URL and API key from environment variables
     server_url = os.environ.get("ZENML_STORE_URL")
@@ -1318,6 +1447,10 @@ def get_step_logs(
         raise ResourceDispatchError("Only one of source or logs_id may be provided.")
     if source is None and logs_id is None:
         source = "step"
+    if tail is not None and not 1 <= tail <= STEP_LOGS_MAX_ENTRIES:
+        raise ResourceDispatchError(
+            f"tail must be between 1 and {STEP_LOGS_MAX_ENTRIES}."
+        )
 
     # Generate a short-lived access token
     access_token = get_access_token(server_url, api_key)
@@ -1329,6 +1462,7 @@ def get_step_logs(
         access_token,
         source=source,
         logs_id=logs_id,
+        tail=tail,
     )
 
 

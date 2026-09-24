@@ -623,49 +623,40 @@ async def test_step_logs_send_source_or_logs_id() -> None:
                     "get_step_logs", {"step_run_id": "step-1", "logs_id": ""}
                 )
             )
+            _structured_payload(
+                await session.call_tool(
+                    "get_step_logs", {"step_run_id": "step-1", "tail": 200}
+                )
+            )
+            bad_tails = [
+                _structured_error(
+                    await session.call_tool(
+                        "get_step_logs", {"step_run_id": "step-1", "tail": tail}
+                    )
+                )
+                for tail in (0, server.STEP_LOGS_MAX_ENTRIES + 1)
+            ]
 
     assert calls == [
-        {"source": "step", "logs_id": None},
-        {"source": None, "logs_id": "logs-1"},
+        {"source": "step", "logs_id": None, "tail": None},
+        {"source": None, "logs_id": "logs-1", "tail": None},
+        {"source": "step", "logs_id": None, "tail": 200},
     ]
     assert conflict["type"] == "ValidationError"
     assert "Only one" in conflict["message"]
     assert blank_source["type"] == "ValidationError"
     assert blank_logs_id["type"] == "ValidationError"
+    assert all(error["type"] == "ValidationError" for error in bad_tails)
 
-    response = type(
-        "LogsResponse",
-        (),
-        {"raise_for_status": lambda self: None, "json": lambda self: []},
-    )()
-    with patch.object(server.requests, "get", return_value=response) as request:
-        assert server.make_step_logs_request(
-            "https://zenml.example",
-            "step-1",
-            "access-token",
-            source="step",
-        ) == {"logs": []}
-    assert request.call_args.kwargs["params"] == {"source": "step"}
-    for count, flagged in ((999, False), (1_000, True), (50_000, True)):
-        entries = [{"message": "line"}] * count
-        full_page = type(
-            "LogsResponse",
-            (),
-            {"raise_for_status": lambda self: None, "json": lambda self: entries},
-        )()
-        with patch.object(server.requests, "get", return_value=full_page):
-            result = server.make_step_logs_request(
-                "https://zenml.example", "step-1", "access-token", source="step"
-            )
-        assert len(result["logs"]) == count
-        assert result.get("possibly_truncated", False) is flagged
-    for selectors in ({"source": " "}, {"logs_id": ""}):
+    # scripts/test_step_logs.py covers the HTTP requests themselves.
+    for source, logs_id in ((" ", None), (None, "")):
         try:
             server.make_step_logs_request(
                 "https://zenml.example",
                 "step-1",
                 "access-token",
-                **selectors,
+                source=source,
+                logs_id=logs_id,
             )
         except ValueError:
             pass

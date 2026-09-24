@@ -121,6 +121,7 @@ jobs:
           uv run scripts/test_resource_integration.py
           uv run scripts/test_sdk_contracts.py
           uv run scripts/test_tool_contracts.py
+          uv run scripts/test_step_logs.py
           uv run scripts/test_mcp_transport.py
           uv run scripts/test_tool_profiles.py
           uv run scripts/test_mcp_apps.py
