@@ -95,9 +95,9 @@ streamed logs or code, pipeline execution, or an interactive App:
 - `open_pipeline_run_dashboard` and `open_run_activity_chart`
 
 `get_step_logs` returns at most 50,000 entries, oldest first, with a
-`possibly_truncated` flag. Pass `tail` to get only the newest entries. On ZenML
-0.97+ servers it pages through the log store; on 0.96 it uses the older
-single-request endpoint.
+`possibly_truncated` flag, plus a `note` saying which entries are missing and
+why. Pass `tail` to get only the newest entries. On ZenML 0.97+ servers it
+pages through the log store; on 0.96 it uses the older single-request endpoint.
 
 Use `ZENML_MCP_PROFILE=legacy` when an existing client still depends on the old
 entity-specific names such as `list_pipeline_runs`. This retains the

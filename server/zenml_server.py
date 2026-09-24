@@ -1059,9 +1059,16 @@ def _resolve_step_logs_id(
     return None
 
 
+def _store_limit_note() -> str:
+    return (
+        f"The log store returns only the first {STEP_LOGS_MAX_ENTRIES:,} entries "
+        "of a log, counted from the start, so later entries are missing."
+    )
+
+
 def _fetch_log_entries(
     session: requests.Session, server_url: str, logs_id: str, *, wanted: int
-) -> tuple[list[Any], bool] | None:
+) -> tuple[list[Any], bool, str | None] | None:
     """Read a log stream through the paginated ZenML 0.97+ entries endpoint.
 
     The first request leaves ``start`` unset so each log store reads from its
@@ -1071,8 +1078,9 @@ def _fetch_log_entries(
     newer ones; the pages are joined oldest first at the end.
 
     Returns:
-        ``(entries, server_may_have_more)``, or None if the server has no
-        entries endpoint.
+        ``(entries, server_may_have_more, note)``, or None if the server has no
+        entries endpoint. ``note`` says why reading stopped early, except when
+        it stopped because it already had the ``tail`` entries it needed.
     """
     url = f"{server_url}/api/v1/logs/{logs_id}/entries"
     response = session.get(
@@ -1088,14 +1096,17 @@ def _fetch_log_entries(
     if not cursor:
         # A store without cursors (the artifact store) returns one page. A
         # full page means the file may continue past the server's limit.
-        return pages[0], len(pages[0]) >= STEP_LOGS_MAX_ENTRIES
+        full = len(pages[0]) >= STEP_LOGS_MAX_ENTRIES
+        return pages[0], full, _store_limit_note() if full else None
 
     # Walking back from the newest entry: stop once there are enough. Walking
     # forward from the oldest: the tail is at the end, so keep going until the
     # stream ends or the total cap is reached. Any break that leaves `cursor`
     # set means entries were left unread.
     stop_at = wanted if direction == "before" else STEP_LOGS_MAX_ENTRIES
+    unread = "older" if direction == "before" else "newer"
     total = len(pages[0])
+    note = None
     while cursor and total < stop_at:
         try:
             response = session.get(
@@ -1107,6 +1118,15 @@ def _fetch_log_entries(
             # Keep the pages already read rather than discarding them over a
             # rate limit (429) or a log-backend outage (502/503) on a later page.
             logger.warning("Stopped paging step logs early: %s", type(error).__name__)
+            failure = (
+                f"HTTP {error.response.status_code}"
+                if isinstance(error, requests.HTTPError) and error.response is not None
+                else type(error).__name__
+            )
+            note = (
+                f"A later page of logs failed to load ({failure}), so {unread} "
+                "entries are missing. Calling again may return them."
+            )
             break
         items = page.get("items") or []
         if not items:
@@ -1115,9 +1135,14 @@ def _fetch_log_entries(
         pages.append(items)
         total += len(items)
         cursor = page.get(direction)
+    if cursor and note is None and stop_at == STEP_LOGS_MAX_ENTRIES:
+        note = (
+            f"Reading stopped at the {STEP_LOGS_MAX_ENTRIES:,}-entry limit, so "
+            f"{unread} entries were not read."
+        )
     if direction == "before":
         pages.reverse()
-    return [entry for items in pages for entry in items], bool(cursor)
+    return [entry for items in pages for entry in items], bool(cursor), note
 
 
 def make_step_logs_request(
@@ -1147,7 +1172,7 @@ def make_step_logs_request(
         ``{"logs": [...], "possibly_truncated": bool}``, entries oldest first.
         ``possibly_truncated`` is True when the stream may hold entries that
         were not returned (because of ``tail``, the entry cap, or a failed
-        later page).
+        later page). A ``note`` then says which entries are missing and why.
 
     Raises:
         requests.HTTPError: If the request fails
@@ -1192,12 +1217,27 @@ def make_step_logs_request(
                 return data
             # This endpoint returns at most one server page (50,000 entries by
             # default) and gives no sign when it stopped early.
-            fetched = data, len(data) >= STEP_LOGS_MAX_ENTRIES
-    entries, more = fetched
-    return {
+            full = len(data) >= STEP_LOGS_MAX_ENTRIES
+            fetched = data, full, _store_limit_note() if full else None
+    entries, more, note = fetched
+    notes = [note] if note else []
+    if tail is not None and (more or len(entries) > wanted):
+        notes.append(
+            f"Only the newest {tail:,} of the entries read were returned, "
+            f"because tail={tail}."
+        )
+    elif len(entries) > wanted:
+        notes.append(
+            f"Only the newest {wanted:,} entries were returned, the most one "
+            "call returns."
+        )
+    result: Dict[str, Any] = {
         "logs": entries[-wanted:],
         "possibly_truncated": more or len(entries) > wanted,
     }
+    if notes:
+        result["note"] = " ".join(notes)
+    return result
 
 
 # =============================================================================
@@ -1413,7 +1453,8 @@ def get_step_logs(
 
     Returns ``{"logs": [...], "possibly_truncated": bool}`` with entries oldest
     first. At most 50,000 entries are returned. ``possibly_truncated`` is true
-    when the step may have more log entries than were returned. Pass ``tail``
+    when the step may have more log entries than were returned, and a ``note``
+    then says which entries are missing and why. Pass ``tail``
     (for example 200) to get only the newest entries; that is usually where a
     failure shows up, and it keeps the response small. Log stores that can only
     read a log from its start (the default artifact store) return the newest of

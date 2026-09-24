@@ -148,6 +148,7 @@ def test_artifact_store_single_page() -> None:
     result = _fetch(fake)
     assert _messages(result) == ["line 0", "line 1", "line 2"]
     assert result["possibly_truncated"] is False
+    assert "note" not in result
     # `start` stays unset: the artifact store rejects start=newest with a 400.
     assert fake.calls == [
         (STEP_URL, {"hydrate": "true"}),
@@ -157,6 +158,9 @@ def test_artifact_store_single_page() -> None:
     tail = _fetch(fake, tail=2)
     assert _messages(tail) == ["line 1", "line 2"]
     assert tail["possibly_truncated"] is True
+    assert tail["note"] == (
+        "Only the newest 2 of the entries read were returned, because tail=2."
+    )
 
 
 def test_full_page_without_cursor_is_flagged() -> None:
@@ -168,6 +172,8 @@ def test_full_page_without_cursor_is_flagged() -> None:
         result = _fetch(fake, source=None, logs_id="logs-1")
     assert len(result["logs"]) == 5
     assert result["possibly_truncated"] is True
+    assert "only the first 5 entries" in result["note"]
+    assert "later entries are missing" in result["note"]
 
 
 def test_before_cursors_prepend_older_pages() -> None:
@@ -202,6 +208,8 @@ def test_before_cursors_stop_at_tail_and_cap() -> None:
     tail = _fetch(fake, tail=4)
     assert _messages(tail) == ["line 5", "line 6", "line 7", "line 8"]
     assert tail["possibly_truncated"] is True
+    # Stopping early for `tail` is expected, so only the tail note appears.
+    assert tail["note"].startswith("Only the newest 4 ")
     # Two pages hold the newest four entries, so the third is never fetched.
     assert fake.urls().count(ENTRIES_URL) == 2
 
@@ -210,6 +218,7 @@ def test_before_cursors_stop_at_tail_and_cap() -> None:
         capped = _fetch(fake)
     assert _messages(capped) == [f"line {index}" for index in range(4, 9)]
     assert capped["possibly_truncated"] is True
+    assert "older entries were not read" in capped["note"]
 
 
 def test_after_cursors_append_newer_pages() -> None:
@@ -228,6 +237,20 @@ def test_after_cursors_append_newer_pages() -> None:
     tail = _fetch(fake, tail=2)
     assert _messages(tail) == ["line 7", "line 8"]
     assert tail["possibly_truncated"] is True
+    assert tail["note"].startswith("Only the newest 2 ")
+
+    # The last page can overshoot the cap even when the stream ends there.
+    two_pages = FakeServer(
+        {
+            STEP_URL: lambda _: STEP_WITH_LOGS,
+            ENTRIES_URL: _cursor_pages(oldest_first[:2], "after"),
+        }
+    )
+    with patch.object(server, "STEP_LOGS_MAX_ENTRIES", 5):
+        capped = _fetch(two_pages)
+    assert _messages(capped) == [f"line {index}" for index in range(1, 6)]
+    assert capped["possibly_truncated"] is True
+    assert "the most one call returns" in capped["note"]
 
 
 def test_empty_page_ends_paging() -> None:
@@ -258,6 +281,8 @@ def test_later_page_failure_keeps_earlier_pages() -> None:
     result = _fetch(fake, source=None, logs_id="logs-1")
     assert _messages(result) == ["line 3", "line 4", "line 5"]
     assert result["possibly_truncated"] is True
+    assert "failed to load (HTTP 429)" in result["note"]
+    assert "older entries are missing" in result["note"]
 
 
 def test_first_page_failure_raises() -> None:
@@ -302,6 +327,7 @@ def test_old_server_falls_back_and_is_remembered() -> None:
     ):
         capped = _fetch(fake)
     assert capped["possibly_truncated"] is True
+    assert "only the first 5 entries" in capped["note"]
 
 
 def test_unknown_source_uses_old_endpoint_error() -> None:
