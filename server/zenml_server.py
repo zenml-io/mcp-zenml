@@ -25,6 +25,7 @@ except ImportError:
 import argparse
 import asyncio
 import functools
+import hashlib
 import inspect
 import ipaddress
 import json
@@ -33,6 +34,7 @@ import os
 import re
 import socket
 import sys
+import tempfile
 import time
 import warnings
 from contextvars import ContextVar
@@ -45,10 +47,11 @@ from typing import Any, Dict, ParamSpec, TypeVar, cast
 from urllib.parse import urlparse
 
 import requests
+import urllib3
 import zenml_mcp_analytics as analytics
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent
-from pydantic import ConfigDict
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 from urllib3.util.retry import Retry
 from zenml_resource_dispatch import (
     ResourceDispatchError,
@@ -976,6 +979,7 @@ def get_access_token(
     api_key: str,
     *,
     timeout: tuple[float, float] = _ZENML_REST_TIMEOUT,
+    verify: bool | str = True,
 ) -> str:
     """
     Generate a short-lived access token using the ZenML API key.
@@ -986,6 +990,8 @@ def get_access_token(
     Args:
         server_url: The base URL of the ZenML server
         api_key: The ZenML API key
+        timeout: Connect and read timeouts in seconds
+        verify: TLS verification, as for ``requests`` (see ``_store_verify_ssl``)
 
     Returns:
         The access token as a string
@@ -1008,6 +1014,7 @@ def get_access_token(
         data={"password": api_key},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=timeout,
+        verify=verify,
     )
     response.raise_for_status()
 
@@ -1259,13 +1266,46 @@ def make_step_logs_request(
 # =============================================================================
 
 
+def _store_verify_ssl() -> bool | str:
+    """TLS verification for requests that bypass the ZenML client.
+
+    Reads ``ZENML_STORE_VERIFY_SSL`` the way the ZenML client does: a boolean
+    such as ``false`` or ``1``, a path to a CA bundle, or the bundle's contents.
+    ``requests`` needs a file for a custom bundle, so contents are written to a
+    private temporary file first, as the ZenML client also does.
+    """
+    value = os.environ.get("ZENML_STORE_VERIFY_SSL", "").strip()
+    if not value:
+        return True
+    try:
+        verify = TypeAdapter(bool).validate_python(value)
+    except ValidationError:
+        pass
+    else:
+        if not verify:
+            # The ZenML client silences these warnings too; without this each
+            # request prints one to stderr.
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return verify
+    if os.path.isfile(value):
+        return value
+    digest = hashlib.sha256(value.encode()).hexdigest()[:16]
+    bundle = Path(tempfile.gettempdir(), f"mcp-zenml-ca-bundle-{digest}.pem")
+    if not bundle.exists():
+        with os.fdopen(os.open(bundle, os.O_WRONLY | os.O_CREAT, 0o600), "w") as file:
+            file.write(value)
+    return str(bundle)
+
+
 def collect_zenml_setup_diagnostics(
     *, include_client_info: bool = False
 ) -> dict[str, Any]:
     """Collect setup diagnostics without requiring ZenML SDK initialization.
 
     This function is safe even if zenml cannot be imported, env vars are missing,
-    or the server URL is unreachable.
+    or the server URL is unreachable. It therefore sends its own requests rather
+    than using the ZenML client's session, but applies the client's
+    ``ZENML_STORE_VERIFY_SSL`` setting to them.
     """
     store_url = os.environ.get("ZENML_STORE_URL")
     api_key = os.environ.get("ZENML_STORE_API_KEY")
@@ -1278,6 +1318,9 @@ def collect_zenml_setup_diagnostics(
             "ZENML_STORE_API_KEY_present": api_key_present,
             "ZENML_ACTIVE_PROJECT_ID_present": active_project_id_present,
             "ZENML_STORE_URL_redacted": _redact_url(store_url),
+            "ZENML_STORE_VERIFY_SSL_present": bool(
+                os.environ.get("ZENML_STORE_VERIFY_SSL", "").strip()
+            ),
         },
         "python": {
             "version": sys.version.split()[0],
@@ -1301,13 +1344,17 @@ def collect_zenml_setup_diagnostics(
 
     # Connectivity probe (best-effort, short timeouts)
     connectivity: dict[str, Any] = {"attempted": False}
+    verify = _store_verify_ssl()
+    checks["tls_verification"] = (
+        "ca_bundle" if isinstance(verify, str) else "on" if verify else "off"
+    )
     if store_url:
         connectivity["attempted"] = True
         base = store_url.rstrip("/")
         probe_urls = [f"{base}/api/v1/info", f"{base}/health"]
         for url in probe_urls:
             try:
-                r = requests.get(url, timeout=(1.0, 2.5))
+                r = requests.get(url, timeout=(1.0, 2.5), verify=verify)
                 connectivity.update(
                     {
                         "url": _redact_url(url),
@@ -1333,7 +1380,7 @@ def collect_zenml_setup_diagnostics(
     if store_url and api_key:
         authentication["attempted"] = True
         try:
-            get_access_token(store_url, api_key, timeout=(1.0, 2.5))
+            get_access_token(store_url, api_key, timeout=(1.0, 2.5), verify=verify)
             authentication["ok"] = True
         except requests.HTTPError as error:
             status_code = (
@@ -1428,6 +1475,18 @@ def collect_zenml_setup_diagnostics(
                 "severity": "warning",
                 "code": "unreachable",
                 "message": "Could not reach ZenML server.",
+            }
+        )
+    if connectivity.get("last_error_type") == "SSLError":
+        issues.append(
+            {
+                "severity": "error",
+                "code": "tls_verification_failed",
+                "message": (
+                    "The ZenML server's TLS certificate could not be verified. "
+                    "For a private CA, set ZENML_STORE_VERIFY_SSL to the path of "
+                    "its CA bundle."
+                ),
             }
         )
     if checks.get("zenml", {}).get("importable") is False:

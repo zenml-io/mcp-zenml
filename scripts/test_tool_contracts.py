@@ -846,6 +846,68 @@ async def test_diagnostics_fail_when_authentication_fails() -> None:
     assert "FAKE-LOGIN-SECRET" not in repr(rejected_login)
 
 
+async def test_diagnostics_use_store_verify_ssl() -> None:
+    """Diagnostics apply ZENML_STORE_VERIFY_SSL the way the ZenML client does."""
+    healthy = type(
+        "HealthyResponse",
+        (),
+        {"status_code": 200, "json": lambda self: {"version": "0.97.0"}},
+    )()
+    pem = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----"
+
+    def diagnose(verify_ssl: str | None) -> tuple[dict[str, Any], list[Any]]:
+        env = {"ZENML_STORE_URL": "https://zenml.example", "ZENML_STORE_API_KEY": "k"}
+        if verify_ssl is not None:
+            env["ZENML_STORE_VERIFY_SSL"] = verify_ssl
+        seen: list[Any] = []
+        with (
+            patch.dict(os.environ, env),
+            patch.object(
+                server.requests,
+                "get",
+                side_effect=lambda *_, **kw: seen.append(kw["verify"]) or healthy,
+            ),
+            patch.object(
+                server,
+                "get_access_token",
+                side_effect=lambda *_, **kw: seen.append(kw["verify"]) or "t",
+            ),
+        ):
+            if verify_ssl is None:
+                os.environ.pop("ZENML_STORE_VERIFY_SSL", None)
+            return server.collect_zenml_setup_diagnostics(), seen
+
+    for value, verify, mode in (
+        (None, True, "on"),
+        ("false", False, "off"),
+        ("No", False, "off"),
+        ("1", True, "on"),
+        (str(SERVER_PATH), str(SERVER_PATH), "ca_bundle"),
+    ):
+        diagnostics, seen = diagnose(value)
+        # The connectivity probe and the login both use the setting.
+        assert seen == [verify, verify], (value, seen)
+        assert diagnostics["checks"]["tls_verification"] == mode
+
+    # Inline bundle contents go to a private file that requests can read.
+    diagnostics, seen = diagnose(pem)
+    bundle = Path(seen[0])
+    assert seen == [str(bundle), str(bundle)]
+    assert bundle.read_text() == pem
+    assert bundle.stat().st_mode & 0o777 == 0o600
+    assert pem not in repr(diagnostics)
+
+    with (
+        patch.dict(os.environ, {"ZENML_STORE_URL": "https://zenml.example"}),
+        patch.object(
+            server.requests, "get", side_effect=server.requests.exceptions.SSLError()
+        ),
+    ):
+        os.environ.pop("ZENML_STORE_API_KEY", None)
+        untrusted = server.collect_zenml_setup_diagnostics()
+    assert "tls_verification_failed" in {i["code"] for i in untrusted["issues"]}
+
+
 async def test_trigger_pipeline_selector_contract() -> None:
     """Snapshot-only triggering works and conflicting selectors fail closed."""
 
@@ -1347,6 +1409,10 @@ async def main() -> int:
         (
             "test_diagnostics_fail_when_authentication_fails",
             test_diagnostics_fail_when_authentication_fails,
+        ),
+        (
+            "test_diagnostics_use_store_verify_ssl",
+            test_diagnostics_use_store_verify_ssl,
         ),
         (
             "test_trigger_pipeline_selector_contract",
