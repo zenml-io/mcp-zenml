@@ -30,9 +30,9 @@ dependencies = [
 # Most compromised packages are detected and yanked within this window.
 # Override for a single install: uv add <pkg> --exclude-newer "0 days"
 exclude-newer = "7 days"
-# Exemptions from the cooldown above. The PEP 723 headers copy this table
-# (check_pep723_requirements.py checks it); scripts/build_mcpb.sh copies only
-# the dated entries into the MCPB lock.
+# Exemptions from the cooldown above. The PEP 723 headers and the MCPB bundle
+# copy only the dated entries (check_pep723_requirements.py checks the headers),
+# because uv 0.8.x on users' machines cannot parse `false` there.
 # `zenml = false` turns the cooldown off for zenml alone: it is ZenML's own
 # package, always pinned to an exact version, and the team would notice a rogue
 # release. zenml's own dependencies still get the 7-day cooldown.

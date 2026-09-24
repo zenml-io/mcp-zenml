@@ -33,7 +33,11 @@ import sys
 root = pathlib.Path(sys.argv[1])
 stage = pathlib.Path(sys.argv[2])
 sys.path.insert(0, str(root / "scripts"))
-from check_pep723_requirements import read_pyproject, toml_inline_table  # noqa: E402
+from check_pep723_requirements import (  # noqa: E402
+    dated_exemptions,
+    read_pyproject,
+    toml_inline_table,
+)
 
 manifest_path = stage / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -43,10 +47,7 @@ manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
 # The bundle uses the same dependency list as the repo's pyproject.toml. The
 # exact versions come from mcpb-uv.lock, which the bundle runs with --locked.
 dependencies, all_exemptions = read_pyproject(root / "pyproject.toml")
-# Only the dated exemptions are copied. The bundle lock has no general
-# exclude-newer cutoff, so a `false` exemption would change nothing, and older
-# uv versions on users' machines cannot parse it.
-exemptions = {k: v for k, v in all_exemptions.items() if isinstance(v, str)}
+exemptions = dated_exemptions(all_exemptions)
 dependency_lines = "".join(f"    {json.dumps(dep)},\n" for dep in dependencies)
 version = (stage / "VERSION").read_text(encoding="utf-8").strip()
 (stage / "pyproject.toml").write_text(

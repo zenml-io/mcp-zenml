@@ -55,6 +55,18 @@ def read_pyproject(
     return dependencies, exemptions
 
 
+def dated_exemptions(exemptions: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the date-string exemptions, dropping `name = false` entries.
+
+    Only these are copied into files that run on users' machines (PEP 723
+    headers, the MCPB bundle). There a `false` entry does nothing, because no
+    general exclude-newer cutoff applies, and uv 0.8.x refuses to parse it, so
+    the server would not start. Inside the repo, pyproject.toml's full table
+    still applies to every `uv run`.
+    """
+    return {name: value for name, value in exemptions.items() if isinstance(value, str)}
+
+
 def pinned_version(name: str, path: Path = PYPROJECT_FILE) -> str:
     """Return the exact version pyproject.toml pins `name` to (`name==X`)."""
     dependencies, _ = read_pyproject(path)
@@ -335,7 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_pin:
             print(pinned_version(args.print_pin))
             return 0
-        expected, exemptions = read_pyproject()
+        expected, all_exemptions = read_pyproject()
+        exemptions = dated_exemptions(all_exemptions)
     except CheckError as error:
         print(error, file=sys.stderr)
         return 1

@@ -10,7 +10,7 @@
 # ]
 #
 # [tool.uv]
-# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z", zenml = false }
+# exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
 # unresolved-import = "ignore"
