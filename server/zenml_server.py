@@ -1013,6 +1013,12 @@ def get_access_token(
     return access_token
 
 
+# Page sizes at which ZenML's step-logs endpoint silently stops: 50,000 for the
+# artifact log store (ZENML_LOGS_MAX_ENTRIES_PER_REQUEST) and, since ZenML
+# 0.97.0, 1,000 for the Datadog log store.
+STEP_LOG_PAGE_SIZES = frozenset({1_000, 50_000})
+
+
 def make_step_logs_request(
     server_url: str,
     step_id: str,
@@ -1059,9 +1065,20 @@ def make_step_logs_request(
 
     data = response.json()
     # The ZenML API returns a list of log entries, but FastMCP expects a dict.
-    if isinstance(data, list):
-        return {"logs": data}
-    return data
+    if not isinstance(data, list):
+        return data
+    result: Dict[str, Any] = {"logs": data}
+    # The endpoint returns only the log store's first page and gives no sign
+    # that it cut anything off, so flag results that are exactly a page long.
+    if len(data) in STEP_LOG_PAGE_SIZES:
+        result["possibly_truncated"] = True
+        result["note"] = (
+            f"Exactly {len(data)} entries came back, which is a ZenML log "
+            "store page limit, so later or earlier lines may be missing. "
+            "The artifact store keeps the oldest entries; on ZenML 0.97+ "
+            "the Datadog log store keeps only the newest."
+        )
+    return result
 
 
 # =============================================================================
