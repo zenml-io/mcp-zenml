@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `scripts/test_mcp_transport.py` - the MCP 2.2 runtime: protocol negotiation, HTTP host/origin security, timeouts and cancellation, error sanitising, analytics allowlist
   - `scripts/test_mcp_apps.py` - drives both MCP Apps in headless Chromium. Install the browser first with `uv run --with playwright==1.55.0 playwright install --with-deps chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at an existing Chromium
   - `scripts/test_distributions.py self-test`
-- **Live integration against a throwaway ZenML server**: `bash scripts/run_disposable_resource_integration.sh`. It starts a local ZenML 0.96.4 OSS server on a random loopback port with a temporary database, runs `test_resource_integration.py` against it (real create/update/delete calls, plus a check that two projects with same-named resources stay separate), then deletes everything. No credentials needed. Extra opt-in integration gates (`ZENML_MCP_ACTION_INTEGRATION`, `ZENML_MCP_RESTRICTED_INTEGRATION`) need an external server; see `RELEASE.md`.
+- **Live integration against a throwaway ZenML server**: `bash scripts/run_disposable_resource_integration.sh`. It starts a local ZenML OSS server (the version pinned in `pyproject.toml`) on a random loopback port with a temporary database, runs `test_resource_integration.py` against it (real create/update/delete calls, plus a check that two projects with same-named resources stay separate), then deletes everything. No credentials needed. Extra opt-in integration gates (`ZENML_MCP_ACTION_INTEGRATION`, `ZENML_MCP_RESTRICTED_INTEGRATION`) need an external server; see `RELEASE.md`.
 - **Manifest check**: `uv run scripts/generate_manifest_fields.py --check` (drop `--check` to regenerate the `tools`/`prompts` fields in `manifest.json`). CI fails if the manifest does not match the registered tools.
 - **MCPB bundle**: `bash scripts/build_mcpb.sh` builds `mcp-zenml.mcpb` (needs Node/npm; CI uses Node 20). `uv run scripts/test_distributions.py reproducible mcp-zenml.mcpb` rebuilds it and checks the bytes match and the unpacked bundle starts and lists the right tools.
 - **Docker**: `docker build -t mcp-zenml:test . && uv run scripts/test_distributions.py docker mcp-zenml:test` (the second command starts MCP inside the container and checks the tool list).
@@ -120,7 +120,7 @@ Analytics variables are listed under the analytics module above.
 
 - **2024-07-22**: Run Templates introduced, pointing to "pipeline deployments"
 - **2025-07-22**: Pipeline Deployments renamed to **Snapshots**; Run Templates now reference snapshots via `source_snapshot_id`
-- **Current (ZenML 0.96.4)**: run-template CRUD is still supported. Snapshots are preferred; pipeline convenience creation and template-based triggering are deprecated.
+- **Current (ZenML 0.97.0)**: run-template CRUD is still supported. Snapshots are preferred; pipeline convenience creation and template-based triggering are deprecated.
 
 **What this means:**
 - **Snapshots** = The core "frozen pipeline configuration" artifact (immutable, runnable, deployable)
@@ -170,7 +170,7 @@ Analytics variables are listed under the analytics module above.
 
 The server requires:
 - Python 3.12-3.14 (the Docker image and PR CI use 3.12; the release workflow tests the MCPB bundle on Linux, macOS and Windows with 3.12, 3.13 and 3.14)
-- Exactly `mcp[cli]==2.2.0` and `zenml==0.96.4`, installed via `uv` (preferred) or pip
+- Exactly `mcp[cli]==2.2.0` and `zenml==0.97.0` (pinned in `pyproject.toml`), installed via `uv` (preferred) or pip
 - ZenML server URL and API key configured as environment variables
 
 ### Testing Infrastructure

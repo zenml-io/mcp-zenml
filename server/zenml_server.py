@@ -3,7 +3,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]==2.2.0",
-#     "zenml==0.96.4",
+#     "zenml==0.97.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
@@ -2067,7 +2067,7 @@ def trigger_pipeline(
         snapshot_name_or_id: The name or ID of a specific snapshot to run (preferred)
         stack_name_or_id: Optional stack override for the run
         template_id: Deprecated template-based trigger parameter. Use
-            `snapshot_name_or_id` for new integrations. ZenML 0.96.4 still
+            `snapshot_name_or_id` for new integrations. ZenML 0.97.0 still
             retains run-template CRUD APIs.
 
     Usage examples:
@@ -2123,7 +2123,7 @@ def trigger_pipeline(
         used_deprecated_template = True
         deprecation_warning = (
             "The `template_id` parameter is deprecated. "
-            "Please use `snapshot_name_or_id` instead. ZenML 0.96.4 retains "
+            "Please use `snapshot_name_or_id` instead. ZenML 0.97.0 retains "
             "run-template CRUD APIs, while snapshots are preferred for new workflows."
         )
 
@@ -2212,7 +2212,7 @@ def trigger_pipeline(
 def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a run template for a pipeline.
 
-    ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for new
+    ZenML 0.97.0 retains run-template CRUD. Snapshots are preferred for new
     workflows; pipeline convenience creation and template-based triggering are
     deprecated.
 
@@ -2222,7 +2222,7 @@ def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     run_template = get_zenml_client().get_run_template(name_id_or_prefix)
     return {
         "deprecation_notice": (
-            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
+            "ZenML 0.97.0 retains run-template CRUD. Snapshots are preferred for "
             "new workflows; pipeline convenience creation and template-based "
             "triggering are deprecated."
         ),
@@ -2243,7 +2243,7 @@ def list_run_templates(
 ) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
-    ZenML 0.96.4 retains run-template CRUD. For new runnable configurations,
+    ZenML 0.97.0 retains run-template CRUD. For new runnable configurations,
     prefer `list_snapshots(runnable=True)`.
 
     Returns paginated results with 'items', 'total', 'page', 'size' fields.
@@ -2259,13 +2259,13 @@ def list_run_templates(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by template name (e.g. contains:train)
-        tag: Legacy tag filter. ZenML 0.96.4 has no equivalent server-side
+        tag: Legacy tag filter. ZenML 0.97.0 has no equivalent server-side
             run-template filter, so non-null values are rejected.
     """
     if tag is not None:
         return _make_error_result(
             "list_run_templates",
-            "ZenML 0.96.4 does not support tag filtering for run templates. "
+            "ZenML 0.97.0 does not support tag filtering for run templates. "
             "Use `list_snapshots` with `tag`, or omit this filter.",
             "UnsupportedFilter",
         )
@@ -2279,7 +2279,7 @@ def list_run_templates(
     )
     return {
         "deprecation_notice": (
-            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
+            "ZenML 0.97.0 retains run-template CRUD. Snapshots are preferred for "
             "new workflows; use `list_snapshots(runnable=True)` for runnable "
             "configurations."
         ),

@@ -265,7 +265,7 @@ def _get_resource_request(client: Any, resource_id: str, kwargs: dict[str, Any])
     )
 
 
-# Every callable below names a released ZenML 0.96.4 method in source.  The
+# Every callable below names a released ZenML 0.97.0 method in source.  The
 # resource string only indexes this fixed map; it is never used with getattr.
 LIST_ADAPTERS: Mapping[str, ListAdapter] = MappingProxyType(
     {

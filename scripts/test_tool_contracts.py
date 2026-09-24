@@ -4,7 +4,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]==2.2.0",
-#     "zenml==0.96.4",
+#     "zenml==0.97.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
@@ -665,7 +665,7 @@ async def test_diagnostics_fail_when_authentication_fails() -> None:
     healthy = type(
         "HealthyResponse",
         (),
-        {"status_code": 200, "json": lambda self: {"version": "0.96.4"}},
+        {"status_code": 200, "json": lambda self: {"version": "0.97.0"}},
     )()
     unauthorized = __import__("requests").Response()
     unauthorized.status_code = 401
