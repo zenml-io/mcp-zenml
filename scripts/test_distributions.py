@@ -52,15 +52,22 @@ EXPECTED_COMPACT_READ_WRITE_TOOLS = (
     "open_pipeline_run_dashboard",
     "open_run_activity_chart",
 )
-EXPECTED_BUNDLE_DEPENDENCIES = (
-    "httpx==0.28.1",
-    "mcp[cli]==2.2.0",
-    "zenml==0.96.4",
-    "setuptools==82.0.1",
-    "requests==2.32.5",
+# The bundle must declare exactly the repo's runtime dependency list, and the
+# installed mcp and zenml versions must match its exact pins.
+EXPECTED_BUNDLE_DEPENDENCIES = tuple(
+    tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )["project"]["dependencies"]
 )
 EXPECTED_PYTHON_REQUIREMENT = ">=3.12,<3.15"
-EXPECTED_INSTALLED_VERSIONS = {"mcp": "2.2.0", "zenml": "0.96.4"}
+EXPECTED_INSTALLED_VERSIONS = {
+    name: dependency.split("==", 1)[1]
+    for name in ("mcp", "zenml")
+    for dependency in EXPECTED_BUNDLE_DEPENDENCIES
+    if dependency.startswith((f"{name}==", f"{name}["))
+}
 # Calling the .py file directly would make uv honor its PEP 723 block instead of
 # this bundle's pyproject.toml and uv.lock. Keep Python as the command boundary.
 EXPECTED_MCPB_LAUNCH_ARGS = (
@@ -453,7 +460,7 @@ async def verify_reproducible_bundle(archive: Path, uv: str, timeout: float) -> 
 
 
 def _unpacked_import_command(bundle_dir: Path, uv: str) -> list[str]:
-    code = """
+    code = f"""
 import importlib
 import importlib.metadata
 import pathlib
@@ -468,14 +475,14 @@ for name in sys.argv[3:]:
     if name in local_names and (
         origin is None or not pathlib.Path(origin).resolve().is_relative_to(root)
     ):
-        raise RuntimeError(f"{name} resolved outside packaged contents: {origin}")
-expected_versions = {"mcp": "2.2.0", "zenml": "0.96.4"}
-actual_versions = {
+        raise RuntimeError(f"{{name}} resolved outside packaged contents: {{origin}}")
+expected_versions = {EXPECTED_INSTALLED_VERSIONS!r}
+actual_versions = {{
     name: importlib.metadata.version(name) for name in expected_versions
-}
+}}
 if actual_versions != expected_versions:
     raise RuntimeError(
-        f"packaged dependency versions differ: {actual_versions!r}"
+        f"packaged dependency versions differ: {{actual_versions!r}}"
     )
 """
     local_imports = ",".join(LOCAL_IMPORTS)

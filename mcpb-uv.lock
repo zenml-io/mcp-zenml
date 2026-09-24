@@ -548,10 +548,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = "==0.28.1" },
+    { name = "httpx" },
     { name = "mcp", extras = ["cli"], specifier = "==2.2.0" },
-    { name = "requests", specifier = "==2.32.5" },
-    { name = "setuptools", specifier = "==82.0.1" },
+    { name = "requests", specifier = ">=2.32.0" },
+    { name = "setuptools" },
     { name = "zenml", specifier = "==0.96.4" },
 ]
 

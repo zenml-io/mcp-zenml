@@ -25,17 +25,35 @@ cp "${ROOT}/manifest.json" "${STAGE_DIR}/manifest.json"
 cp "${ROOT}/VERSION" "${ROOT}/README.md" "${ROOT}/LICENSE" "${STAGE_DIR}/"
 cp "${ROOT}/mcpb-uv.lock" "${STAGE_DIR}/uv.lock"
 
-python3 - "${STAGE_DIR}" <<'PY'
+python3 - "${ROOT}" "${STAGE_DIR}" <<'PY'
 import json
 import pathlib
 import sys
+import tomllib
 
-stage = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1])
+stage = pathlib.Path(sys.argv[2])
 manifest_path = stage / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["icon"] = "assets/icon.png"
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
+# The bundle uses the same dependency list as the repo's pyproject.toml. The
+# exact versions come from mcpb-uv.lock, which the bundle runs with --locked.
+pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+dependencies = pyproject["project"]["dependencies"]
+# Only the dated exemptions are copied. The bundle lock has no general
+# exclude-newer cutoff, so a `false` exemption would change nothing, and older
+# uv versions on users' machines cannot parse it.
+exemptions = {
+    name: value
+    for name, value in pyproject["tool"]["uv"].get("exclude-newer-package", {}).items()
+    if isinstance(value, str)
+}
+dependency_lines = "".join(f"    {json.dumps(dep)},\n" for dep in dependencies)
+exemption_items = ", ".join(
+    f"{json.dumps(name)} = {json.dumps(value)}" for name, value in exemptions.items()
+)
 version = (stage / "VERSION").read_text(encoding="utf-8").strip()
 (stage / "pyproject.toml").write_text(
     f'''[project]
@@ -43,25 +61,31 @@ name = "mcp-zenml-bundle"
 version = "{version}"
 requires-python = ">=3.12,<3.15"
 dependencies = [
-    "httpx==0.28.1",
-    "mcp[cli]==2.2.0",
-    "zenml==0.96.4",
-    "setuptools==82.0.1",
-    "requests==2.32.5",
-]
+{dependency_lines}]
+
+[tool.uv]
+exclude-newer-package = {{ {exemption_items} }}
 ''',
     encoding="utf-8",
 )
 PY
 
-lock_mode=(--offline)
-if [[ "${MCPB_REFRESH_LOCK:-0}" == "1" ]]; then
-  lock_mode=(--upgrade)
-fi
+# Default: offline, so an ordinary build reproduces the committed lock exactly.
+# MCPB_REFRESH_LOCK=1: online, keeps every locked version that still satisfies
+# pyproject.toml and moves only what a dependency change forces (use after
+# editing [project].dependencies). MCPB_REFRESH_LOCK=upgrade: online, moves
+# every package to its newest allowed version.
+case "${MCPB_REFRESH_LOCK:-0}" in
+  0) lock_mode=(--offline) ;;
+  1) lock_mode=() ;;
+  upgrade) lock_mode=(--upgrade) ;;
+  *)
+    echo "MCPB_REFRESH_LOCK must be 0, 1 or upgrade, got: ${MCPB_REFRESH_LOCK}" >&2
+    exit 1
+    ;;
+esac
 
-uvx --from "uv==${UV_VERSION}" uv lock --project "${STAGE_DIR}" "${lock_mode[@]}" \
-  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z"
+uvx --from "uv==${UV_VERSION}" uv lock --project "${STAGE_DIR}" ${lock_mode[@]+"${lock_mode[@]}"}
 cp "${STAGE_DIR}/uv.lock" "${ROOT}/mcpb-uv.lock"
 
 export npm_config_cache="${npm_config_cache:-${TMPDIR:-/tmp}/mcpb-npm-cache}"

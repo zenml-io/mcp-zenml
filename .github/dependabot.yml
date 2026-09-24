@@ -18,7 +18,8 @@ updates:
       default-days: 7
 
   # Keep dev tool pins in requirements-dev.txt (currently just ty) updated.
-  # Restricted to ty so Dependabot never rewrites the hashed requirements.txt.
+  # Restricted to ty so Dependabot never touches the runtime dependencies in
+  # pyproject.toml or the hashed requirements.txt compiled from them.
   - package-ecosystem: pip
     directory: /
     schedule:

@@ -44,8 +44,10 @@ The MCPB uses manifest 0.4 and the UV runtime. It contains source and a small
 for macOS, Windows, or Linux at first installation. The bundle does not contain
 host-specific native Python extensions. `mcpb-uv.lock` is the committed source
 for its full dependency graph, so ordinary builds resolve Python dependencies
-offline and produce the same lock. Use `MCPB_REFRESH_LOCK=1` only for an
-intentional dependency refresh.
+offline and produce the same lock. The bundle's dependency list comes from
+`[project].dependencies` in `pyproject.toml`. Use `MCPB_REFRESH_LOCK=1` only for
+an intentional dependency refresh; it keeps every locked version that still
+fits. `MCPB_REFRESH_LOCK=upgrade` moves every package to its newest version.
 
 ## Running the orchestrator
 

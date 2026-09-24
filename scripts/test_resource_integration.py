@@ -31,6 +31,7 @@ import asyncio
 import json
 import os
 import sys
+import tomllib
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -46,7 +47,16 @@ class IntegrationIncomplete(RuntimeError):
     """The operator requested a live receipt without all of its prerequisites."""
 
 
-REQUIRED_ZENML_SERVER_VERSION = "0.96.4"
+# The zenml pin in pyproject.toml, which every PEP 723 header mirrors.
+REQUIRED_ZENML_SERVER_VERSION: str = next(
+    dependency.removeprefix("zenml==")
+    for dependency in tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )["project"]["dependencies"]
+    if dependency.startswith("zenml==")
+)
 
 
 def _require_complete_receipt() -> bool:
@@ -145,7 +155,7 @@ def _verify_server_version(target: str) -> str:
             "disposable integration requires ZenML server "
             f"{REQUIRED_ZENML_SERVER_VERSION}; received {version!r}"
         )
-    return version
+    return REQUIRED_ZENML_SERVER_VERSION
 
 
 def _restricted_api_key() -> str | None:

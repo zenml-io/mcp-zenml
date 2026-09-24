@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly ZENML_VERSION="0.96.4"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd -P)"
+# Start the same ZenML version the server pins in pyproject.toml.
+ZENML_VERSION="$(sed -n 's/^[[:space:]]*"zenml==\([^"]*\)",[[:space:]]*$/\1/p' "${ROOT}/pyproject.toml")"
+if [[ -z "${ZENML_VERSION}" ]]; then
+  echo "Could not find an exact \"zenml==...\" pin in ${ROOT}/pyproject.toml" >&2
+  exit 1
+fi
+readonly ROOT ZENML_VERSION
 readonly ZENML_HOST="127.0.0.1"
 if [[ -n "${ZENML_MCP_INTEGRATION_PORT:-}" ]]; then
   ZENML_PORT="${ZENML_MCP_INTEGRATION_PORT}"
@@ -63,4 +70,4 @@ fi
 ZENML_STORE_URL="${ZENML_URL}" \
 ZENML_STORE_API_KEY="local-server-has-no-authentication" \
 ZENML_MCP_DISPOSABLE_INTEGRATION="1" \
-  uv run scripts/test_resource_integration.py
+  uv run "${ROOT}/scripts/test_resource_integration.py"

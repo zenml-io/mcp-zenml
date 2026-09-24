@@ -643,8 +643,10 @@ platform-specific native extensions. Installation needs network access the
 first time UV resolves the bundled environment.
 
 Bundle builds reuse the committed `mcpb-uv.lock` and resolve its Python
-dependency graph in offline mode. Set `MCPB_REFRESH_LOCK=1` only when
-intentionally refreshing those pins.
+dependency graph in offline mode. The bundle's dependency list comes from
+`[project].dependencies` in `pyproject.toml`. After changing that list, set
+`MCPB_REFRESH_LOCK=1` to re-resolve online while keeping every pin that still
+fits; `MCPB_REFRESH_LOCK=upgrade` moves every pin to its newest version.
 
 When you drag and drop the `.mcpb` file into Claude Desktop's settings, it automatically handles:
 - Runtime dependency installation
