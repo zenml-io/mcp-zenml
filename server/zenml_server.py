@@ -647,8 +647,6 @@ def handle_tool_exceptions(func: Callable[P, T]) -> Callable[P, T]:
 
     @functools.wraps(func)
     def wrapper(*args: Any, ctx: Context[Any, Any] | None = None, **kwargs: Any) -> T:
-        import time
-
         start_time = time.perf_counter()
         success = True
         reported_outcome = "success"
@@ -974,6 +972,16 @@ def get_access_token(
     *,
     timeout: tuple[float, float] = _ZENML_REST_TIMEOUT,
 ) -> str:
+    """Generate a short-lived access token using the ZenML API key."""
+    return _request_access_token(server_url, api_key, timeout=timeout)[0]
+
+
+def _request_access_token(
+    server_url: str,
+    api_key: str,
+    *,
+    timeout: tuple[float, float] = _ZENML_REST_TIMEOUT,
+) -> tuple[str, int | None]:
     """
     Generate a short-lived access token using the ZenML API key.
 
@@ -982,7 +990,7 @@ def get_access_token(
         api_key: The ZenML API key
 
     Returns:
-        The access token as a string
+        The access token, and its lifetime in seconds if the server gave one
 
     Raises:
         requests.HTTPError: If the request fails
@@ -1015,7 +1023,42 @@ def get_access_token(
         raise RuntimeError("Invalid ZenML authentication response") from error
     if not isinstance(access_token, str) or not access_token.strip():
         raise RuntimeError("Invalid ZenML authentication response")
-    return access_token
+    expires_in = token_data.get("expires_in")
+    return access_token, expires_in if isinstance(expires_in, int) else None
+
+
+# Access tokens get_step_logs reuses across calls, keyed by (server URL,
+# API key), with the time.monotonic() after which to log in again.
+_access_tokens: dict[tuple[str, str], tuple[str, float]] = {}
+# Log in again this long before the server's expiry, and at least this often.
+_ACCESS_TOKEN_EXPIRY_MARGIN_S = 60
+_ACCESS_TOKEN_MAX_REUSE_S = 3600
+
+
+def _cached_access_token(
+    server_url: str, api_key: str, *, refresh: bool = False
+) -> tuple[str, bool]:
+    """Return an access token and whether it came from the cache.
+
+    Logging in is a separate request, so reusing the token saves a round trip
+    on every call. Tokens are reused until shortly before the expiry the
+    server reported, and never for more than an hour. ``refresh`` skips the
+    cache and replaces whatever it held.
+    """
+    key = (server_url.rstrip("/"), api_key)
+    cached = _access_tokens.get(key)
+    if not refresh and cached is not None and time.monotonic() < cached[1]:
+        return cached[0], True
+    token, expires_in = _request_access_token(server_url, api_key)
+    reuse_for = min(
+        _ACCESS_TOKEN_MAX_REUSE_S,
+        (expires_in or _ACCESS_TOKEN_MAX_REUSE_S) - _ACCESS_TOKEN_EXPIRY_MARGIN_S,
+    )
+    if reuse_for > 0:
+        _access_tokens[key] = (token, time.monotonic() + reuse_for)
+    else:
+        _access_tokens.pop(key, None)
+    return token, False
 
 
 # Most log entries one get_step_logs call returns. It matches ZenML's default
@@ -1506,18 +1549,25 @@ def get_step_logs(
             f"tail must be between 1 and {STEP_LOGS_MAX_ENTRIES}."
         )
 
-    # Generate a short-lived access token
-    access_token = get_access_token(server_url, api_key)
-
-    # Get the logs using the access token
-    return make_step_logs_request(
+    fetch_logs = functools.partial(
+        make_step_logs_request,
         server_url,
         step_run_id,
-        access_token,
         source=source,
         logs_id=logs_id,
         tail=tail,
     )
+    access_token, from_cache = _cached_access_token(server_url, api_key)
+    try:
+        return fetch_logs(access_token)
+    except requests.HTTPError as error:
+        # A cached token the server now rejects (revoked, or the server
+        # restarted with a new secret): log in again and retry the read once.
+        rejected = error.response is not None and error.response.status_code == 401
+        if not (from_cache and rejected):
+            raise
+    access_token, _ = _cached_access_token(server_url, api_key, refresh=True)
+    return fetch_logs(access_token)
 
 
 # =============================================================================
