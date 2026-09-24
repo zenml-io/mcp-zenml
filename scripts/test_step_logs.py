@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -284,6 +285,11 @@ def test_later_page_failure_keeps_earlier_pages() -> None:
     assert "failed to load (HTTP 429)" in result["note"]
     assert "older entries are missing" in result["note"]
 
+    # The failed page, not `tail`, is why fewer entries came back.
+    with_tail = _fetch(fake, source=None, logs_id="logs-1", tail=10)
+    assert with_tail["possibly_truncated"] is True
+    assert "tail" not in with_tail["note"]
+
 
 def test_first_page_failure_raises() -> None:
     for status, body in (
@@ -307,7 +313,7 @@ def test_old_server_falls_back_and_is_remembered() -> None:
             OLD_LOGS_URL: lambda _: _response(200, _entries(0, 4)),
         }
     )
-    with patch.object(server, "_servers_without_log_entries", set()):
+    with patch.object(server, "_servers_without_log_entries", {}):
         first = _fetch(fake)
         assert _messages(first) == [f"line {index}" for index in range(4)]
         assert first["possibly_truncated"] is False
@@ -320,9 +326,24 @@ def test_old_server_falls_back_and_is_remembered() -> None:
         assert second["possibly_truncated"] is True
         assert fake.calls == [(OLD_LOGS_URL, {"logs_id": "logs-1"})]
 
+        # An hour later the server has been upgraded: probe again, use the
+        # entries endpoint and forget the old mark.
+        fake.routes[ENTRIES_URL] = lambda _: _response(
+            200, {"items": _entries(0, 2), "before": None, "after": None}
+        )
+        fake.calls.clear()
+        later = time.monotonic() + server._LOG_ENTRIES_RECHECK_S
+        with patch.object(server.time, "monotonic", return_value=later):
+            upgraded = _fetch(fake, source=None, logs_id="logs-1")
+        assert _messages(upgraded) == ["line 0", "line 1"]
+        assert fake.urls() == [ENTRIES_URL]
+        assert not server._servers_without_log_entries
+
     fake = FakeServer({OLD_LOGS_URL: lambda _: _response(200, _entries(0, 5))})
     with (
-        patch.object(server, "_servers_without_log_entries", {SERVER_URL}),
+        patch.object(
+            server, "_servers_without_log_entries", {SERVER_URL: time.monotonic()}
+        ),
         patch.object(server, "STEP_LOGS_MAX_ENTRIES", 5),
     ):
         capped = _fetch(fake)

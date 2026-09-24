@@ -33,6 +33,7 @@ import os
 import re
 import socket
 import sys
+import time
 import warnings
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -1022,9 +1023,12 @@ def get_access_token(
 STEP_LOGS_MAX_ENTRIES = 50_000
 
 # Server URLs that answered /logs/{id}/entries with FastAPI's "no such route"
-# 404, i.e. servers older than ZenML 0.97. Later calls skip straight to the
-# older /steps/{id}/logs endpoint.
-_servers_without_log_entries: set[str] = set()
+# 404 (servers older than ZenML 0.97), with the time.monotonic() of that
+# answer. For the next hour, calls skip straight to the older /steps/{id}/logs
+# endpoint; after that they probe again, so an upgraded server is picked up
+# without restarting the MCP server.
+_servers_without_log_entries: dict[str, float] = {}
+_LOG_ENTRIES_RECHECK_S = 3600.0
 
 
 def _is_missing_route(response: requests.Response) -> bool:
@@ -1192,7 +1196,11 @@ def make_step_logs_request(
     with requests.Session() as session:
         session.headers["Authorization"] = f"Bearer {access_token}"
         fetched = None
-        if server_url not in _servers_without_log_entries:
+        marked_old_at = _servers_without_log_entries.get(server_url)
+        if (
+            marked_old_at is None
+            or time.monotonic() - marked_old_at >= _LOG_ENTRIES_RECHECK_S
+        ):
             stream_id = logs_id or _resolve_step_logs_id(
                 session, server_url, step_id, cast(str, source)
             )
@@ -1203,7 +1211,9 @@ def make_step_logs_request(
                     session, server_url, stream_id, wanted=wanted
                 )
                 if fetched is None:
-                    _servers_without_log_entries.add(server_url)
+                    _servers_without_log_entries[server_url] = time.monotonic()
+                else:
+                    _servers_without_log_entries.pop(server_url, None)
         if fetched is None:
             params = {"source": source} if source is not None else {"logs_id": logs_id}
             response = session.get(
@@ -1221,7 +1231,10 @@ def make_step_logs_request(
             fetched = data, full, _store_limit_note() if full else None
     entries, more, note = fetched
     notes = [note] if note else []
-    if tail is not None and (more or len(entries) > wanted):
+    # A note from the fetch explains any early stop other than having enough
+    # entries for `tail`, so only credit `tail` when it actually cut entries
+    # or was the reason reading stopped.
+    if tail is not None and (len(entries) > wanted or (more and note is None)):
         notes.append(
             f"Only the newest {tail:,} of the entries read were returned, "
             f"because tail={tail}."
