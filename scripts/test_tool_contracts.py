@@ -23,11 +23,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -576,6 +579,24 @@ async def test_legacy_sensitive_resources_redact_configuration() -> None:
     assert component["name"] == "alerter"
 
 
+class CredentialsNotValid(Exception):
+    """Same name as ZenML's login error, which the error classifier matches."""
+
+
+def _fake_rest_client(login_error: Exception | None = None) -> Any:
+    """A ZenML client whose REST store hands out a session."""
+
+    class Store:
+        url = "https://zenml.example"
+        session = server.requests.Session()
+
+        def authenticate(self, force: bool = False) -> None:
+            if login_error is not None:
+                raise login_error
+
+    return SimpleNamespace(zen_store=Store())
+
+
 async def test_step_logs_send_source_or_logs_id() -> None:
     """Step log calls always satisfy ZenML's exactly-one selector contract."""
     calls: list[dict[str, Any]] = []
@@ -590,10 +611,7 @@ async def test_step_logs_send_source_or_logs_id() -> None:
     }
     with (
         patch.dict(os.environ, env),
-        patch.object(server, "_access_tokens", {}),
-        patch.object(
-            server, "_request_access_token", return_value=("access-token", 3600)
-        ),
+        patch.object(server, "get_zenml_client", return_value=_fake_rest_client()),
         patch.object(server, "make_step_logs_request", side_effect=record_logs),
     ):
         async with Client(server.mcp, mode="legacy") as session:
@@ -655,9 +673,9 @@ async def test_step_logs_send_source_or_logs_id() -> None:
     for source, logs_id in ((" ", None), (None, "")):
         try:
             server.make_step_logs_request(
+                server.requests.Session(),
                 "https://zenml.example",
                 "step-1",
-                "access-token",
                 source=source,
                 logs_id=logs_id,
             )
@@ -806,23 +824,104 @@ async def test_diagnostics_fail_when_authentication_fails() -> None:
                 "ZENML_STORE_API_KEY": "unknown-secret-value",
             },
         ),
-        patch.object(server, "_access_tokens", {}),
         patch.object(
             server,
-            "_request_access_token",
-            side_effect=json.JSONDecodeError("FAKE-LOGIN-SECRET", "not-json", 0),
+            "get_zenml_client",
+            return_value=_fake_rest_client(
+                login_error=CredentialsNotValid("FAKE-LOGIN-SECRET rejected")
+            ),
+        ),
+        patch.object(
+            server,
+            "make_step_logs_request",
+            side_effect=server.requests.HTTPError(response=unauthorized),
         ),
     ):
         async with Client(server.mcp, mode="legacy") as session:
-            malformed_login = _structured_error(
+            rejected_login = _structured_error(
                 await session.call_tool(
                     "get_step_logs",
                     {"step_run_id": "step-1", "source": "step"},
                 )
             )
-    assert malformed_login["type"] == "UpstreamError"
-    assert "invalid JSON response" in malformed_login["message"]
-    assert "FAKE-LOGIN-SECRET" not in repr(malformed_login)
+    assert rejected_login["type"] == "AuthenticationError"
+    assert "FAKE-LOGIN-SECRET" not in repr(rejected_login)
+
+
+async def test_diagnostics_use_store_verify_ssl() -> None:
+    """Diagnostics apply ZENML_STORE_VERIFY_SSL the way the ZenML client does."""
+    healthy = type(
+        "HealthyResponse",
+        (),
+        {"status_code": 200, "json": lambda self: {"version": "0.97.0"}},
+    )()
+    pem = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----"
+
+    def diagnose(verify_ssl: str | None) -> tuple[dict[str, Any], list[Any]]:
+        env = {"ZENML_STORE_URL": "https://zenml.example", "ZENML_STORE_API_KEY": "k"}
+        if verify_ssl is not None:
+            env["ZENML_STORE_VERIFY_SSL"] = verify_ssl
+        seen: list[Any] = []
+        with (
+            patch.dict(os.environ, env),
+            patch.object(
+                server.requests,
+                "get",
+                side_effect=lambda *_, **kw: seen.append(kw["verify"]) or healthy,
+            ),
+            patch.object(
+                server,
+                "get_access_token",
+                side_effect=lambda *_, **kw: seen.append(kw["verify"]) or "t",
+            ),
+        ):
+            if verify_ssl is None:
+                os.environ.pop("ZENML_STORE_VERIFY_SSL", None)
+            return server.collect_zenml_setup_diagnostics(), seen
+
+    for value, verify, mode in (
+        (None, True, "on"),
+        ("false", False, "off"),
+        ("No", False, "off"),
+        ("1", True, "on"),
+        (str(SERVER_PATH), str(SERVER_PATH), "ca_bundle"),
+    ):
+        diagnostics, seen = diagnose(value)
+        # The connectivity probe and the login both use the setting.
+        assert seen == [verify, verify], (value, seen)
+        assert diagnostics["checks"]["tls_verification"] == mode
+
+    # Inline bundle contents go to a private file that requests can read.
+    # A file planted in the temp directory beforehand is never used: the
+    # bundle file is created fresh, with a name nobody can predict. (An
+    # earlier version derived the name from the contents, so this path is
+    # where an attacker would have planted one.)
+    digest = hashlib.sha256(pem.encode()).hexdigest()[:16]
+    planted = Path(tempfile.gettempdir(), f"mcp-zenml-ca-bundle-{digest}.pem")
+    planted.write_text("ATTACKER CA")
+    try:
+        with patch.object(server, "_inline_ca_bundles", {}):
+            diagnostics, seen = diagnose(pem)
+            _, seen_again = diagnose(pem)
+    finally:
+        planted.unlink()
+    bundle = Path(seen[0])
+    assert seen == [str(bundle), str(bundle)]
+    assert seen_again == seen, "the bundle file is reused, not rewritten"
+    assert bundle != planted
+    assert bundle.read_text() == pem
+    assert bundle.stat().st_mode & 0o777 == 0o600
+    assert pem not in repr(diagnostics)
+
+    with (
+        patch.dict(os.environ, {"ZENML_STORE_URL": "https://zenml.example"}),
+        patch.object(
+            server.requests, "get", side_effect=server.requests.exceptions.SSLError()
+        ),
+    ):
+        os.environ.pop("ZENML_STORE_API_KEY", None)
+        untrusted = server.collect_zenml_setup_diagnostics()
+    assert "tls_verification_failed" in {i["code"] for i in untrusted["issues"]}
 
 
 async def test_trigger_pipeline_selector_contract() -> None:
@@ -1326,6 +1425,10 @@ async def main() -> int:
         (
             "test_diagnostics_fail_when_authentication_fails",
             test_diagnostics_fail_when_authentication_fails,
+        ),
+        (
+            "test_diagnostics_use_store_verify_ssl",
+            test_diagnostics_use_store_verify_ssl,
         ),
         (
             "test_trigger_pipeline_selector_contract",

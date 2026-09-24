@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `scripts/test_resource_integration.py` - skips its live part unless run through the disposable-server script below
   - `scripts/test_sdk_contracts.py` - checks the ZenML SDK method signatures the dispatcher calls still match
   - `scripts/test_tool_contracts.py`, `test_tool_profiles.py` - tool schemas, and which tools each profile/write policy advertises
-  - `scripts/test_step_logs.py` - `get_step_logs` against fake ZenML servers: cursor paging on the 0.97+ `/logs/{id}/entries` endpoint, the fallback to `/steps/{id}/logs` on 0.96, `tail`, the `possibly_truncated` flag and its `note`, and access-token reuse
+  - `scripts/test_step_logs.py` - `get_step_logs` against fake ZenML servers: cursor paging on the 0.97+ `/logs/{id}/entries` endpoint, the fallback to `/steps/{id}/logs` on 0.96, `tail`, the `possibly_truncated` flag and its `note`, and login through the ZenML client's session
   - `scripts/test_mcp_transport.py` - the MCP 2.2 runtime: protocol negotiation, HTTP host/origin security, timeouts and cancellation, error sanitising, analytics allowlist
   - `scripts/test_mcp_apps.py` - drives both MCP Apps in headless Chromium. Install the browser first with `uv run --with playwright==1.55.0 playwright install --with-deps chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at an existing Chromium
   - `scripts/test_distributions.py self-test`
@@ -78,7 +78,7 @@ The project is a Model Context Protocol (MCP) server that gives AI assistants ac
 - Registers every tool, prompt and resource. At the end of registration it removes the tools that the configured profile and write policy do not allow (see "Tool profiles and write policy" below).
 - Tools use `@mcp.tool()` + `@handle_tool_exceptions`, which turns exceptions into structured error results, records analytics (including `resource_type`, `operation` and `action` for the generic tools), and normalizes datetime filters. Prompts and resources use the simpler `@handle_exceptions`.
 - The ZenML client is created lazily on first use. Tool handlers run in worker threads, so every client/REST call is serialized through `_zenml_client_call_lock`. The REST session is configured with zero automatic retries, because a retried create or delete could run twice.
-- `get_step_logs` talks to the ZenML REST API directly rather than through the SDK. It reuses its access token (`_cached_access_token`) until 60 seconds before the expiry the server reports, or for at most an hour, and on a 401 with a cached token logs in again and retries the read once. `diagnose_zenml_setup` always logs in fresh, because checking the credentials is its job.
+- `get_step_logs` sends raw HTTP requests (it needs the raw responses to tell a 0.96 server's missing route from ZenML's own 404s), but through the ZenML client's session (`get_zenml_client().zen_store.session`). So it shares the client's token and its `verify_ssl` and User-Agent settings, and it works however the client is connected (environment variables or `zenml login`). Like the client, it logs in only after a 401 (`store.authenticate()`), then retries once. `diagnose_zenml_setup` still logs in fresh with `get_access_token`, because checking the credentials is its job. It must work even when the ZenML client can't start, so it sends its own requests, but it reads `ZENML_STORE_VERIFY_SSL` the way the client does (`_store_verify_ssl`).
 - Logs go to stderr only (stdout carries the MCP JSON protocol), and `LOGLEVEL` is clamped to WARNING or higher.
 
 **Tool catalog**: `server/zenml_tool_catalog.py` - the single list of which tool names each profile and write policy advertises (`tool_names()`), and which tools write (`MUTATING_TOOLS`). Module-level asserts pin the counts (compact 16/11, legacy 57/52).
@@ -105,6 +105,7 @@ The project is a Model Context Protocol (MCP) server that gives AI assistants ac
 | Variable | Values | Effect |
 |---|---|---|
 | `ZENML_STORE_URL`, `ZENML_STORE_API_KEY` | | ZenML server connection (required for tools) |
+| `ZENML_STORE_VERIFY_SSL` | `true` (default), `false`, CA bundle path or contents | TLS verification, read by the ZenML client. `diagnose_zenml_setup` applies it to its own requests too |
 | `ZENML_ACTIVE_PROJECT_ID` | project UUID | Default project for calls that omit `project_id` |
 | `ZENML_MCP_PROFILE` | `compact` (default), `legacy` | Which tool names are advertised. An invalid value stops startup |
 | `ZENML_MCP_WRITE_POLICY` | `read_write` (default), `read_only` | `read_only` removes the four generic write tools and `trigger_pipeline`, and hides mutation schemas. Any unrecognized value falls back to read-only |
