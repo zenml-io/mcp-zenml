@@ -1132,6 +1132,14 @@ def _fetch_log_entries(
             response.raise_for_status()
             page = response.json()
         except (requests.RequestException, ValueError) as error:
+            # A rejected token (e.g. it expired mid-read) goes to get_step_logs,
+            # which logs in again and redoes the read once.
+            if (
+                isinstance(error, requests.HTTPError)
+                and error.response is not None
+                and error.response.status_code == 401
+            ):
+                raise
             # Keep the pages already read rather than discarding them over a
             # rate limit (429) or a log-backend outage (502/503) on a later page.
             logger.warning("Stopped paging step logs early: %s", type(error).__name__)

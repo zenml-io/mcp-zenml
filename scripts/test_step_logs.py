@@ -89,13 +89,14 @@ class FakeServer(requests.Session):
         self.routes = routes
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.headers["Authorization"] = "Bearer token"
-        self.expected_token = "token"
+        self.expected_token: str | None = "token"
 
     def get(self, url: str | bytes, **kwargs: Any) -> requests.Response:  # type: ignore[override]
         url = str(url)
         params = dict(kwargs.get("params") or {})
         self.calls.append((url, params))
-        if self.headers.get("Authorization") != f"Bearer {self.expected_token}":
+        token = self.headers.get("Authorization")
+        if self.expected_token is not None and token != f"Bearer {self.expected_token}":
             return _response(401, {"detail": ["CredentialsNotValid", "bad token"]})
         return self.routes[url](params)
 
@@ -284,6 +285,31 @@ def test_later_page_failure_keeps_earlier_pages() -> None:
     with_tail = _fetch(fake, source=None, logs_id="logs-1", tail=10)
     assert with_tail["possibly_truncated"] is True
     assert "tail" not in with_tail["note"]
+
+
+def test_later_page_401_reaches_the_login_retry() -> None:
+    """A token that expires mid-read is refreshed, not reported as truncation."""
+    fake = FakeServer({})
+    fake.expected_token = None  # only page two checks the token below
+
+    def entries(params: dict[str, Any]) -> requests.Response:
+        if "before" not in params:
+            return _response(200, {"items": _entries(3, 6), "before": "1"})
+        if fake.headers["Authorization"] != "Bearer token-1":
+            return _response(401, {"detail": ["CredentialsNotValid", "expired"]})
+        return _response(200, {"items": _entries(0, 3), "before": None})
+
+    fake.routes = {STEP_URL: lambda _: STEP_WITH_LOGS, ENTRIES_URL: entries}
+    # Page one works with the old token, page two refuses it: the 401 is
+    # raised rather than page one being returned as a partial result.
+    _expect_http_error(fake, 401, source=None, logs_id="logs-1")
+
+    # Through the tool: one forced login, then the whole read is redone.
+    store = FakeStore(fake)
+    result = _call_tool(store)
+    assert _messages(result) == [f"line {index}" for index in range(6)]
+    assert result["possibly_truncated"] is False
+    assert store.logins == [True]
 
 
 def test_first_page_failure_raises() -> None:
