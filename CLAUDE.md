@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `scripts/test_mcp_transport.py` - the MCP 2.2 runtime: protocol negotiation, HTTP host/origin security, timeouts and cancellation, error sanitising, analytics allowlist
   - `scripts/test_mcp_apps.py` - drives both MCP Apps in headless Chromium. Install the browser first with `uv run --with playwright==1.55.0 playwright install --with-deps chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at an existing Chromium
   - `scripts/test_distributions.py self-test`
-- **Live integration against a throwaway ZenML server**: `bash scripts/run_disposable_resource_integration.sh`. It starts a local ZenML 0.96.4 OSS server on a random loopback port with a temporary database, runs `test_resource_integration.py` against it (real create/update/delete calls, plus a check that two projects with same-named resources stay separate), then deletes everything. No credentials needed. Extra opt-in integration gates (`ZENML_MCP_ACTION_INTEGRATION`, `ZENML_MCP_RESTRICTED_INTEGRATION`) need an external server; see `RELEASE.md`.
+- **Live integration against a throwaway ZenML server**: `bash scripts/run_disposable_resource_integration.sh`. It starts a local ZenML OSS server (the version pinned in `pyproject.toml`) on a random loopback port with a temporary database, runs `test_resource_integration.py` against it (real create/update/delete calls, plus a check that two projects with same-named resources stay separate), then deletes everything. No credentials needed. Extra opt-in integration gates (`ZENML_MCP_ACTION_INTEGRATION`, `ZENML_MCP_RESTRICTED_INTEGRATION`) need an external server; see `RELEASE.md`.
 - **Manifest check**: `uv run scripts/generate_manifest_fields.py --check` (drop `--check` to regenerate the `tools`/`prompts` fields in `manifest.json`). CI fails if the manifest does not match the registered tools.
 - **MCPB bundle**: `bash scripts/build_mcpb.sh` builds `mcp-zenml.mcpb` (needs Node/npm; CI uses Node 20). `uv run scripts/test_distributions.py reproducible mcp-zenml.mcpb` rebuilds it and checks the bytes match and the unpacked bundle starts and lists the right tools.
 - **Docker**: `docker build -t mcp-zenml:test . && uv run scripts/test_distributions.py docker mcp-zenml:test` (the second command starts MCP inside the container and checks the tool list).
@@ -120,7 +120,7 @@ Analytics variables are listed under the analytics module above.
 
 - **2024-07-22**: Run Templates introduced, pointing to "pipeline deployments"
 - **2025-07-22**: Pipeline Deployments renamed to **Snapshots**; Run Templates now reference snapshots via `source_snapshot_id`
-- **Current (ZenML 0.96.4)**: run-template CRUD is still supported. Snapshots are preferred; pipeline convenience creation and template-based triggering are deprecated.
+- **Current (ZenML 0.97.0)**: run-template CRUD is still supported. Snapshots are preferred; pipeline convenience creation and template-based triggering are deprecated.
 
 **What this means:**
 - **Snapshots** = The core "frozen pipeline configuration" artifact (immutable, runnable, deployable)
@@ -170,13 +170,13 @@ Analytics variables are listed under the analytics module above.
 
 The server requires:
 - Python 3.12-3.14 (the Docker image and PR CI use 3.12; the release workflow tests the MCPB bundle on Linux, macOS and Windows with 3.12, 3.13 and 3.14)
-- Exactly `mcp[cli]==2.2.0` and `zenml==0.96.4`, installed via `uv` (preferred) or pip
+- Exactly `mcp[cli]==2.2.0` and `zenml==0.97.0` (pinned in `pyproject.toml`), installed via `uv` (preferred) or pip
 - ZenML server URL and API key configured as environment variables
 
 ### Testing Infrastructure
 
 - **Scheduled testing**: `mcp-smoke-test.yml` runs the smoke test every 3 days against a real ZenML server; on failure it opens a GitHub issue and sends a Discord alert.
-- **CI/CD**: Uses `uv` with caching. The PR, release and release-docker workflows and `build_mcpb.sh` pin `uv` to `0.11.28`. The Docker runtime image, the scheduled smoke workflow and the zizmor workflow use `0.8.15`.
+- **CI/CD**: Uses `uv` with caching. The PR, release, release-docker and scheduled smoke workflows and `build_mcpb.sh` pin `uv` to `0.11.28`. The Docker runtime image and the zizmor workflow use `0.8.15`; neither runs a PEP 723 script.
 - **Important**: When adding new test scripts, always wire them into `.github/workflows/pr-test.yml` so they run in CI. Tests that don't need ZenML credentials should run unconditionally (no `if: env.HAS_ZENML_CREDENTIALS == 'true'` guard).
 
 ### Debugging with MCP Inspector
@@ -273,7 +273,7 @@ This prints a public URL like `https://random-words.trycloudflare.com`.
 - `server/` - the modules described under Core Components, plus `ui/` (MCP App HTML)
 - `scripts/` - tests (`test_*.py`), `fixtures/` (JSON contract fixtures used by the tests), and tooling: `format.sh`, `build_mcpb.sh`, `bump_version.py`, `generate_manifest_fields.py`, `check_pep723_requirements.py`, `run_disposable_resource_integration.sh`
 - `assets/` - Project assets and images
-- Root files: `VERSION` (version source of truth), `manifest.json` (MCPB manifest, version 0.4), `mcp-zenml.mcpb` + `mcpb-uv.lock` (Claude Desktop bundle and its dependency lock), `server.json` (MCP Registry entry), `Dockerfile`, `requirements.in` / `requirements.txt`, `RELEASE.md` (detailed release runbook)
+- Root files: `VERSION` (version source of truth), `manifest.json` (MCPB manifest, version 0.4), `mcp-zenml.mcpb` + `mcpb-uv.lock` (Claude Desktop bundle and its dependency lock), `server.json` (MCP Registry entry), `Dockerfile`, `requirements.txt` (compiled from `pyproject.toml`), `RELEASE.md` (detailed release runbook)
 
 ### Type Checking with ty
 
@@ -296,33 +296,35 @@ bash scripts/format.sh          # Runs ruff + ty together
 
 **CI Integration**: Type checking runs as a separate job in PR tests (`.github/workflows/pr-test.yml`).
 
-**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked. Runtime scripts that install `mcp` also carry the same `[tool.uv] exclude-newer-package` block as `server/zenml_server.py`, which exempts the pinned MCP SDK from the 7-day cooldown (the drift check enforces this). When adding a new PEP 723 script, copy those blocks into its header. ty is pinned once in `requirements-dev.txt`, which CI and `scripts/format.sh` pass to `uvx --constraints`; Dependabot opens a PR when a new ty release is available.
+**Note on third-party imports**: Since this project uses PEP 723 inline script metadata for dependencies (installed on-the-fly by `uv run`), ty runs in isolation and can't see them. Since ty 0.0.62, any file with a PEP 723 header is treated as its own project and takes its rules from that header, not from `pyproject.toml`. So every PEP 723 script carries a `[tool.ty.rules]` block with `unresolved-import = "ignore"`, and scripts that import from `server/` also carry `[tool.ty.environment]` with `extra-paths = ["../server"]` so first-party imports (like `zenml_mcp_analytics`) are still checked; scripts that import the shared pin reader (`pinned_version`, `read_pyproject`) from `check_pep723_requirements.py` add `"."` to `extra-paths` for the same reason. Runtime scripts that install `mcp` or `zenml` also carry a `[tool.uv] exclude-newer-package` table holding only the dated entries from `pyproject.toml` (the drift check enforces this, and `--fix` writes it). The `zenml = false` entry stays in `pyproject.toml` only: inside the repo uv applies it to every script anyway, outside the repo no cooldown applies so it would do nothing, and uv 0.8.x refuses to parse `false` in a header, which would stop the server starting for users on older uv. When adding a new PEP 723 script, copy the `[tool.ty]` blocks into its header, then run `uv run scripts/check_pep723_requirements.py --fix` to fill in the dependencies and `[tool.uv]` table. ty is pinned once in `requirements-dev.txt`, which CI and `scripts/format.sh` pass to `uvx --constraints`; Dependabot opens a PR when a new ty release is available.
 
 ### Supply Chain Security
 
 The project applies multiple layers of supply chain protection:
 
 - **Python package cooldown**: `exclude-newer = "7 days"` in `[tool.uv]` (`pyproject.toml`) prevents installing packages published within the last 7 days, giving time for compromised versions to be detected and yanked. Override for a single install: `uv add <pkg> --exclude-newer "0 days"`
-- **Pinned + hashed requirements**: `requirements.in` holds human-editable constraints; `requirements.txt` is compiled with exact versions and SHA256 hashes. Docker builds enforce these hashes with `uv pip install --require-hashes ...`. PR CI also dry-run installs it with hash checking (command below).
-- **PEP 723 drift check**: `scripts/check_pep723_requirements.py` finds every PEP 723 file under `server/` and `scripts/` and fails CI if one disagrees with `requirements.in`. A file that depends on `zenml` must list exactly the `requirements.in` dependencies; any other file must pin shared packages the same way; any file that depends on `mcp` must carry the server's `[tool.uv] exclude-newer-package` block. New scripts are picked up automatically.
-- **Pinned MCPB build**: `scripts/build_mcpb.sh` uses exact uv and MCPB tool (`@anthropic-ai/mcpb@2.1.2`) versions, copies `mcpb-uv.lock`, updates only the local package version offline, and packages source instead of host-native vendored dependencies. Set `MCPB_REFRESH_LOCK=1` only for an intentional lock refresh.
+- **One dependency list**: `[project].dependencies` in `pyproject.toml` is the only hand-edited list of runtime dependencies. The PEP 723 headers, `requirements.txt`, the MCPB bundle (`build_mcpb.sh` reads it), the disposable integration server (`run_disposable_resource_integration.sh` reads the `zenml` pin) and the version checks in `test_sdk_contracts.py`, `test_resource_integration.py` and `test_distributions.py` all follow it. `[tool.uv] managed = false` stops a plain `uv run --with X cmd` in the repo from creating `.venv`/`uv.lock` and installing these dependencies; scripts with a PEP 723 header ignore `[project].dependencies` either way. To change a dependency: edit `pyproject.toml`, recompile `requirements.txt` (command below), run `uv run scripts/check_pep723_requirements.py --fix`, then rebuild the MCPB lock and bundle (`MCPB_REFRESH_LOCK=1 bash scripts/build_mcpb.sh`).
+- **Pinned + hashed requirements**: `requirements.txt` is compiled from `pyproject.toml` with exact versions and SHA256 hashes. Docker builds enforce these hashes with `uv pip install --require-hashes ...`. PR CI also dry-run installs it with hash checking (command below).
+- **PEP 723 drift check**: `scripts/check_pep723_requirements.py` finds every PEP 723 file under `server/` and `scripts/` and fails CI if one disagrees with `pyproject.toml`. A file that depends on `zenml` must list exactly the `pyproject.toml` dependencies, in the same order; any other file must pin shared packages the same way; any file that depends on `mcp` or `zenml` must carry the `[tool.uv] exclude-newer-package` table from `pyproject.toml`. `--fix` rewrites the headers to match. New scripts are picked up automatically.
+- **Pinned MCPB build**: `scripts/build_mcpb.sh` uses exact uv and MCPB tool (`@anthropic-ai/mcpb@2.1.2`) versions, copies `mcpb-uv.lock`, takes the dependency list and dated `exclude-newer-package` entries from `pyproject.toml`, updates only the local package version offline, and packages source instead of host-native vendored dependencies. Set `MCPB_REFRESH_LOCK=1` only for an intentional lock refresh: it re-resolves online but keeps every locked version that still fits, so only what a `pyproject.toml` change forces moves. `MCPB_REFRESH_LOCK=upgrade` moves every package to its newest version.
 - **Docker image digests**: Base images in the `Dockerfile` are pinned to `@sha256:` digests (not just tags) to prevent tag mutation attacks
 - **GitHub Actions SHA pinning**: All third-party actions pinned to full commit SHAs with version comments; `persist-credentials: false` on all checkout steps. Every `astral-sh/setup-uv` step pins an explicit `uv` version (see Testing Infrastructure).
-- **Dependabot cooldown**: 7-day cooldown on grouped GitHub Actions updates and on `ty` bumps in `requirements-dev.txt` (`.github/dependabot.yml`). Dependabot does not touch the hashed `requirements.txt`.
+- **Dependabot cooldown**: 7-day cooldown on grouped GitHub Actions updates and on `ty` bumps in `requirements-dev.txt` (`.github/dependabot.yml`). Dependabot is restricted to `ty`, so it does not touch the runtime dependencies in `pyproject.toml` or the hashed `requirements.txt`.
 - **MCP Registry publisher pinned**: `release-docker.yml` downloads the `mcp-publisher` release binary at a fixed version (`MCP_PUBLISHER_VERSION`, currently 1.8.1) and checks its SHA256 (`MCP_PUBLISHER_LINUX_AMD64_SHA256`) before running it. Bump both together. It logs in with GitHub OIDC (`mcp-publisher login github-oidc`), so no registry token is stored.
 - **zizmor audit**: Security linting of workflow files runs in the dedicated `.github/workflows/zizmor.yml` workflow with minimal permissions, path filters, weekly scheduled runs, and manual dispatch.
 
-**Recompiling requirements.txt** (after updating `requirements.in`):
+Run the two `uv pip` commands below from the repo root: uv then reads the cooldown and its exemptions from `[tool.uv]` in `pyproject.toml`, so they need no `--exclude-newer` flags.
+
+**Recompiling requirements.txt** (after changing `[project].dependencies` in `pyproject.toml`):
 ```bash
-uv pip compile --generate-hashes --exclude-newer "7 days" \
-  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
-  --python-version 3.12 requirements.in -o requirements.txt
+uv pip compile --generate-hashes --python-version 3.12 pyproject.toml -o requirements.txt
 ```
 
 **Checking PEP 723 dependency drift locally**:
 ```bash
 python scripts/check_pep723_requirements.py
+uv run scripts/check_pep723_requirements.py --fix  # rewrite the headers to match pyproject.toml
+python3 scripts/check_pep723_requirements.py --print-pin zenml  # print the exact version pyproject.toml pins
 ```
 
 **Validating requirements.txt hashes locally** (skip the first three lines if a virtualenv is already active):
@@ -330,10 +332,7 @@ python scripts/check_pep723_requirements.py
 REQUIREMENTS_HASH_CHECK_ENV=$(mktemp -d)
 uv venv --python 3.12 "${REQUIREMENTS_HASH_CHECK_ENV}"
 source "${REQUIREMENTS_HASH_CHECK_ENV}/bin/activate"
-uv pip install --dry-run --require-hashes \
-  --exclude-newer-package "mcp=2026-09-08T00:00:00Z" \
-  --exclude-newer-package "mcp-types=2026-09-08T00:00:00Z" \
-  -r requirements.txt
+uv pip install --dry-run --require-hashes -r requirements.txt
 ```
 
 **Running the workflow security scan locally**:

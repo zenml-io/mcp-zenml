@@ -4,7 +4,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]==2.2.0",
-#     "zenml==0.96.4",
+#     "zenml==0.97.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
@@ -16,7 +16,7 @@
 # unresolved-import = "ignore"
 #
 # [tool.ty.environment]
-# extra-paths = ["../server"]
+# extra-paths = [".", "../server"]
 # ///
 """Explicitly gated CRUD and action receipts against a disposable ZenML server.
 
@@ -41,12 +41,15 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
+from check_pep723_requirements import pinned_version  # noqa: E402
+
 
 class IntegrationIncomplete(RuntimeError):
     """The operator requested a live receipt without all of its prerequisites."""
 
 
-REQUIRED_ZENML_SERVER_VERSION = "0.96.4"
+# The zenml pin in pyproject.toml, which every PEP 723 header mirrors.
+REQUIRED_ZENML_SERVER_VERSION = pinned_version("zenml")
 
 
 def _require_complete_receipt() -> bool:
@@ -145,7 +148,7 @@ def _verify_server_version(target: str) -> str:
             "disposable integration requires ZenML server "
             f"{REQUIRED_ZENML_SERVER_VERSION}; received {version!r}"
         )
-    return version
+    return REQUIRED_ZENML_SERVER_VERSION
 
 
 def _restricted_api_key() -> str | None:

@@ -1,22 +1,47 @@
 # pyproject.toml
-# Configuration for development tools (ty, ruff, etc.)
+# Runtime dependency list and configuration for development tools (ty, ruff).
 #
-# Note: Runtime dependencies are specified via inline script metadata (PEP 723)
-# in server/zenml_server.py and scripts/*.py files. This allows `uv run` to
-# automatically install deps. Do NOT add dependencies here - it will break
-# the existing workflow.
+# [project].dependencies is the one hand-edited list of runtime dependencies.
+# Everything else is generated from it or checked against it:
+# - requirements.txt (hashed, used by the Docker image) is compiled from it;
+#   see "Recompiling requirements.txt" in CLAUDE.md.
+# - The PEP 723 headers in server/zenml_server.py and scripts/*.py repeat it,
+#   because `uv run <script>` only reads a script's own header. Run
+#   `uv run scripts/check_pep723_requirements.py --fix` to copy it into them.
+# - scripts/build_mcpb.sh reads it for the Claude Desktop bundle.
+# A script with a PEP 723 header ignores these dependencies, so adding them here
+# does not change what `uv run <script>` installs.
 
 [project]
 name = "mcp-zenml"
 version = "2.0.0"
 description = "MCP server for ZenML API access"
 requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "mcp[cli]==2.2.0",
+    "zenml==0.97.0",
+    "setuptools",
+    "requests>=2.32.0",
+]
 
 [tool.uv]
 # Supply chain security: ignore packages published within the last 7 days.
 # Most compromised packages are detected and yanked within this window.
 # Override for a single install: uv add <pkg> --exclude-newer "0 days"
 exclude-newer = "7 days"
+# Exemptions from the cooldown above. The PEP 723 headers and the MCPB bundle
+# copy only the dated entries (check_pep723_requirements.py checks the headers),
+# because uv 0.8.x on users' machines cannot parse `false` there.
+# `zenml = false` turns the cooldown off for zenml alone: it is ZenML's own
+# package, always pinned to an exact version, and the team would notice a rogue
+# release. zenml's own dependencies still get the 7-day cooldown.
+exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z", zenml = false }
+# Nothing here is meant to be installed as a project. Without this line, a
+# plain `uv run --with X cmd` in the repo would create .venv and uv.lock and
+# install every dependency above into it first. Scripts with a PEP 723 header
+# are unaffected either way, and still get the exclude-newer setting above.
+managed = false
 
 [tool.ty]
 # Type checker configuration

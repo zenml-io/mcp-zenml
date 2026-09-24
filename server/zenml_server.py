@@ -3,7 +3,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]==2.2.0",
-#     "zenml==0.96.4",
+#     "zenml==0.97.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
@@ -1013,6 +1013,12 @@ def get_access_token(
     return access_token
 
 
+# Page sizes at which ZenML's step-logs endpoint silently stops: 50,000 for the
+# artifact log store (ZENML_LOGS_MAX_ENTRIES_PER_REQUEST) and, since ZenML
+# 0.97.0, 1,000 for the Datadog log store.
+STEP_LOG_PAGE_SIZES = frozenset({1_000, 50_000})
+
+
 def make_step_logs_request(
     server_url: str,
     step_id: str,
@@ -1059,9 +1065,20 @@ def make_step_logs_request(
 
     data = response.json()
     # The ZenML API returns a list of log entries, but FastMCP expects a dict.
-    if isinstance(data, list):
-        return {"logs": data}
-    return data
+    if not isinstance(data, list):
+        return data
+    result: Dict[str, Any] = {"logs": data}
+    # The endpoint returns only the log store's first page and gives no sign
+    # that it cut anything off, so flag results that are exactly a page long.
+    if len(data) in STEP_LOG_PAGE_SIZES:
+        result["possibly_truncated"] = True
+        result["note"] = (
+            f"Exactly {len(data)} entries came back, which is a ZenML log "
+            "store page limit, so later or earlier lines may be missing. "
+            "The artifact store keeps the oldest entries; on ZenML 0.97+ "
+            "the Datadog log store keeps only the newest."
+        )
+    return result
 
 
 # =============================================================================
@@ -2067,8 +2084,8 @@ def trigger_pipeline(
         snapshot_name_or_id: The name or ID of a specific snapshot to run (preferred)
         stack_name_or_id: Optional stack override for the run
         template_id: Deprecated template-based trigger parameter. Use
-            `snapshot_name_or_id` for new integrations. ZenML 0.96.4 still
-            retains run-template CRUD APIs.
+            `snapshot_name_or_id` for new integrations. The supported ZenML
+            version still retains run-template CRUD APIs.
 
     Usage examples:
         * Run the latest runnable snapshot for a pipeline:
@@ -2123,8 +2140,9 @@ def trigger_pipeline(
         used_deprecated_template = True
         deprecation_warning = (
             "The `template_id` parameter is deprecated. "
-            "Please use `snapshot_name_or_id` instead. ZenML 0.96.4 retains "
-            "run-template CRUD APIs, while snapshots are preferred for new workflows."
+            "Please use `snapshot_name_or_id` instead. The supported ZenML "
+            "version retains run-template CRUD APIs, while snapshots are "
+            "preferred for new workflows."
         )
 
     client = get_zenml_client()
@@ -2212,9 +2230,9 @@ def trigger_pipeline(
 def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     """Get a run template for a pipeline.
 
-    ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for new
-    workflows; pipeline convenience creation and template-based triggering are
-    deprecated.
+    The supported ZenML version retains run-template CRUD. Snapshots are
+    preferred for new workflows; pipeline convenience creation and
+    template-based triggering are deprecated.
 
     Args:
         name_id_or_prefix: The name, ID or prefix of the run template to retrieve
@@ -2222,9 +2240,9 @@ def get_run_template(name_id_or_prefix: str) -> dict[str, Any]:
     run_template = get_zenml_client().get_run_template(name_id_or_prefix)
     return {
         "deprecation_notice": (
-            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
-            "new workflows; pipeline convenience creation and template-based "
-            "triggering are deprecated."
+            "The supported ZenML version retains run-template CRUD. Snapshots are "
+            "preferred for new workflows; pipeline convenience creation and "
+            "template-based triggering are deprecated."
         ),
         "run_template": run_template.model_dump(mode="json"),
     }
@@ -2243,8 +2261,8 @@ def list_run_templates(
 ) -> dict[str, Any]:
     """List all run templates in the ZenML workspace.
 
-    ZenML 0.96.4 retains run-template CRUD. For new runnable configurations,
-    prefer `list_snapshots(runnable=True)`.
+    The supported ZenML version retains run-template CRUD. For new runnable
+    configurations, prefer `list_snapshots(runnable=True)`.
 
     Returns paginated results with 'items', 'total', 'page', 'size' fields.
 
@@ -2259,14 +2277,14 @@ def list_run_templates(
         created: Filter by creation time (e.g. gte:2026-02-01 00:00:00)
         updated: Filter by update time (same syntax as created)
         name: Filter by template name (e.g. contains:train)
-        tag: Legacy tag filter. ZenML 0.96.4 has no equivalent server-side
-            run-template filter, so non-null values are rejected.
+        tag: Legacy tag filter. The supported ZenML version has no equivalent
+            server-side run-template filter, so non-null values are rejected.
     """
     if tag is not None:
         return _make_error_result(
             "list_run_templates",
-            "ZenML 0.96.4 does not support tag filtering for run templates. "
-            "Use `list_snapshots` with `tag`, or omit this filter.",
+            "The supported ZenML version does not support tag filtering for run "
+            "templates. Use `list_snapshots` with `tag`, or omit this filter.",
             "UnsupportedFilter",
         )
     run_templates = get_zenml_client().list_run_templates(
@@ -2279,9 +2297,9 @@ def list_run_templates(
     )
     return {
         "deprecation_notice": (
-            "ZenML 0.96.4 retains run-template CRUD. Snapshots are preferred for "
-            "new workflows; use `list_snapshots(runnable=True)` for runnable "
-            "configurations."
+            "The supported ZenML version retains run-template CRUD. Snapshots are "
+            "preferred for new workflows; use `list_snapshots(runnable=True)` "
+            "for runnable configurations."
         ),
         "run_templates": run_templates.model_dump(mode="json"),
     }

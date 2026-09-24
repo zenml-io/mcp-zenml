@@ -15,8 +15,9 @@ when `dry_run` is false.
    `python scripts/generate_manifest_fields.py --check`.
 3. Run the credential-free tests from `.github/workflows/pr-test.yml`.
 4. Run `bash scripts/run_disposable_resource_integration.sh`. PR and release CI
-   use this command to start a fresh loopback-only ZenML 0.96.4 OSS server, run
-   persisted CRUD and same-name project-isolation receipts, and remove the
+   use this command to start a fresh loopback-only ZenML OSS server (the
+   version pinned in `pyproject.toml`), run persisted CRUD and same-name
+   project-isolation receipts, and remove the
    temporary server and database. No repository environment, self-hosted
    runner, or ZenML credential is required.
 5. To collect separate trigger, deployment, wait-condition, and
@@ -40,12 +41,14 @@ when `dry_run` is false.
    and 3.14. The release job publishes that same candidate.
 
 The MCPB uses manifest 0.4 and the UV runtime. It contains source and a small
-`pyproject.toml`; UV resolves the pinned MCP 2.2.0 and ZenML 0.96.4 environment
+`pyproject.toml`; UV resolves the pinned MCP 2.2.0 and ZenML 0.97.0 environment
 for macOS, Windows, or Linux at first installation. The bundle does not contain
 host-specific native Python extensions. `mcpb-uv.lock` is the committed source
 for its full dependency graph, so ordinary builds resolve Python dependencies
-offline and produce the same lock. Use `MCPB_REFRESH_LOCK=1` only for an
-intentional dependency refresh.
+offline and produce the same lock. The bundle's dependency list comes from
+`[project].dependencies` in `pyproject.toml`. Use `MCPB_REFRESH_LOCK=1` only for
+an intentional dependency refresh; it keeps every locked version that still
+fits. `MCPB_REFRESH_LOCK=upgrade` moves every package to its newest version.
 
 ## Running the orchestrator
 

@@ -62,7 +62,7 @@ server, providing a way to get live information about:
 - **Model Versions** - versioned model artifacts
 
 ### Compatibility APIs (migration recommended)
-- **Pipeline run templates** remain available in ZenML 0.96.4, while **Snapshots** are preferred for new workflows (see [Migration Guide](#migration-run-templates--snapshots))
+- **Pipeline run templates** remain available in ZenML 0.97.0, while **Snapshots** are preferred for new workflows (see [Migration Guide](#migration-run-templates--snapshots))
 
 The server also allows you to **trigger new pipeline runs** using snapshots (preferred) or the deprecated template-based trigger parameter.
 
@@ -96,7 +96,7 @@ streamed logs or code, pipeline execution, or an interactive App:
 
 Use `ZENML_MCP_PROFILE=legacy` when an existing client still depends on the old
 entity-specific names such as `list_pipeline_runs`. This retains the
-characterized tool-name and schema compatibility layer for ZenML 0.96.4. It
+characterized tool-name and schema compatibility layer for ZenML 0.97.0. It
 does not add support for older ZenML server versions. Use it only while
 migrating: legacy response shapes may expose more operational metadata than the
 compact tools, although the server omits credential-bearing configuration and
@@ -160,19 +160,19 @@ resources rather than tools.
 
 ### Run-template compatibility
 
-ZenML 0.96.4 retains run-template CRUD APIs. Snapshots are preferred for new
+ZenML 0.97.0 retains run-template CRUD APIs. Snapshots are preferred for new
 workflows. Pipeline convenience creation and the template-based trigger
 parameter are deprecated. In the legacy profile, `get_run_template` and
 `list_run_templates` remain available for existing clients.
 
 The legacy `tag` input remains in `list_run_templates` for schema compatibility,
-but ZenML 0.96.4 has no equivalent server-side filter. A non-null value is
+but ZenML 0.97.0 has no equivalent server-side filter. A non-null value is
 rejected before the SDK call. Snapshot tag filtering remains available.
 
 ## Migration: Run Templates → Snapshots
 
 **Why the change?** Snapshots replaced run templates as ZenML's preferred
-runnable pipeline artifact. The 0.96.4 SDK still supports run-template CRUD,
+runnable pipeline artifact. The 0.97.0 SDK still supports run-template CRUD,
 while new code should use snapshots.
 
 ### Quick Migration Guide
@@ -344,7 +344,7 @@ The automated tests verify:
 - `diagnose_zenml_setup` returns structured diagnostics even in constrained environments
 
 Credential-free CI covers every adapter through the MCP protocol. PR and
-release CI also start a fresh ZenML 0.96.4 OSS server on a loopback address and
+release CI also start a fresh ZenML 0.97.0 OSS server on a loopback address and
 run persisted CRUD and same-name project-isolation receipts. The server uses a
 temporary configuration and database that are removed when the job exits; no
 repository environment, self-hosted runner, or ZenML credential is required.
@@ -442,7 +442,7 @@ you can sign up for a free trial at [ZenML Pro](https://cloud.zenml.io) and we'l
 
 > **Tip:** Once you have a ZenML server, check out the [MCP Settings page](#quick-setup-via-dashboard-recommended) in your dashboard for the easiest setup experience.
 
-> **Compatibility:** Version 2.0.0 is tested against **ZenML 0.96.4**.
+> **Compatibility:** The current version is tested against **ZenML 0.97.0**.
 > If you are running an older ZenML version, please use an [earlier release](https://github.com/zenml-io/mcp-zenml/releases) of this MCP server.
 
 You will also (probably) need to have `uv` installed locally. For more information, see
@@ -643,8 +643,10 @@ platform-specific native extensions. Installation needs network access the
 first time UV resolves the bundled environment.
 
 Bundle builds reuse the committed `mcpb-uv.lock` and resolve its Python
-dependency graph in offline mode. Set `MCPB_REFRESH_LOCK=1` only when
-intentionally refreshing those pins.
+dependency graph in offline mode. The bundle's dependency list comes from
+`[project].dependencies` in `pyproject.toml`. After changing that list, set
+`MCPB_REFRESH_LOCK=1` to re-resolve online while keeping every pin that still
+fits; `MCPB_REFRESH_LOCK=upgrade` moves every pin to its newest version.
 
 When you drag and drop the `.mcpb` file into Claude Desktop's settings, it automatically handles:
 - Runtime dependency installation

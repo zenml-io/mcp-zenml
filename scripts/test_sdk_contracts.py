@@ -4,7 +4,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]==2.2.0",
-#     "zenml==0.96.4",
+#     "zenml==0.97.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
@@ -14,6 +14,9 @@
 #
 # [tool.ty.rules]
 # unresolved-import = "ignore"
+#
+# [tool.ty.environment]
+# extra-paths = ["."]
 # ///
 """Verify server adapters bind to the pinned ZenML SDK contracts."""
 
@@ -26,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import zenml
+from check_pep723_requirements import pinned_version
 from zenml.client import Client
 from zenml.zen_stores.base_zen_store import BaseZenStore
 from zenml.zen_stores.zen_store_interface import ZenStoreInterface
@@ -41,7 +45,8 @@ from zenml_resource_registry import (  # noqa: E402
     RESOURCE_REGISTRY,
 )
 
-EXPECTED_ZENML_VERSION = "0.96.4"
+# The zenml pin in pyproject.toml, which every PEP 723 header mirrors.
+EXPECTED_ZENML_VERSION = pinned_version("zenml")
 
 
 def _direct_client_calls() -> list[tuple[str, int, list[str], bool, int]]:
@@ -149,7 +154,7 @@ def test_dynamic_calls_bind() -> None:
 
 
 def test_expected_released_signatures() -> None:
-    """Critical drift-sensitive parameters remain present in ZenML 0.96.4."""
+    """Critical drift-sensitive parameters remain present in the pinned ZenML."""
     assert zenml.__version__ == EXPECTED_ZENML_VERSION
     expected_parameters = {
         "list_snapshots": {"tags"},

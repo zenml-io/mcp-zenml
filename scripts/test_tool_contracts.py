@@ -4,7 +4,7 @@
 # dependencies = [
 #     "httpx",
 #     "mcp[cli]==2.2.0",
-#     "zenml==0.96.4",
+#     "zenml==0.97.0",
 #     "setuptools",
 #     "requests>=2.32.0",
 # ]
@@ -646,6 +646,19 @@ async def test_step_logs_send_source_or_logs_id() -> None:
             source="step",
         ) == {"logs": []}
     assert request.call_args.kwargs["params"] == {"source": "step"}
+    for count, flagged in ((999, False), (1_000, True), (50_000, True)):
+        entries = [{"message": "line"}] * count
+        full_page = type(
+            "LogsResponse",
+            (),
+            {"raise_for_status": lambda self: None, "json": lambda self: entries},
+        )()
+        with patch.object(server.requests, "get", return_value=full_page):
+            result = server.make_step_logs_request(
+                "https://zenml.example", "step-1", "access-token", source="step"
+            )
+        assert len(result["logs"]) == count
+        assert result.get("possibly_truncated", False) is flagged
     for selectors in ({"source": " "}, {"logs_id": ""}):
         try:
             server.make_step_logs_request(
@@ -665,7 +678,7 @@ async def test_diagnostics_fail_when_authentication_fails() -> None:
     healthy = type(
         "HealthyResponse",
         (),
-        {"status_code": 200, "json": lambda self: {"version": "0.96.4"}},
+        {"status_code": 200, "json": lambda self: {"version": "0.97.0"}},
     )()
     unauthorized = __import__("requests").Response()
     unauthorized.status_code = 401
