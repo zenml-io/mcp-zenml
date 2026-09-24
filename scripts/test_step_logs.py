@@ -32,6 +32,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -80,25 +81,22 @@ STEP_WITH_LOGS = _response(
 ROUTE_MISSING = _response(404, {"detail": "Not Found"})
 
 
-class FakeServer:
-    """Stands in for `requests.Session`: answers GETs from a table and records them."""
+class FakeServer(requests.Session):
+    """A session that answers GETs from a table and records them."""
 
     def __init__(self, routes: dict[str, Callable[[dict[str, Any]], Any]]) -> None:
+        super().__init__()
         self.routes = routes
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.headers: dict[str, str] = {}
+        self.headers["Authorization"] = "Bearer token"
+        self.expected_token = "token"
 
-    def __enter__(self) -> FakeServer:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        return None
-
-    def get(self, url: str, **kwargs: Any) -> requests.Response:
+    def get(self, url: str | bytes, **kwargs: Any) -> requests.Response:  # type: ignore[override]
+        url = str(url)
         params = dict(kwargs.get("params") or {})
         self.calls.append((url, params))
-        if self.headers.get("Authorization") != "Bearer token":
-            raise AssertionError("request sent without the access token")
+        if self.headers.get("Authorization") != f"Bearer {self.expected_token}":
+            return _response(401, {"detail": ["CredentialsNotValid", "bad token"]})
         return self.routes[url](params)
 
     def urls(self) -> list[str]:
@@ -107,10 +105,7 @@ class FakeServer:
 
 def _fetch(fake: FakeServer, **kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("source", "step")
-    with patch.object(server.requests, "Session", return_value=fake):
-        return server.make_step_logs_request(
-            SERVER_URL + "/", "step-1", "token", **kwargs
-        )
+    return server.make_step_logs_request(fake, SERVER_URL + "/", "step-1", **kwargs)
 
 
 def _expect_http_error(fake: FakeServer, status: int, **kwargs: Any) -> None:
@@ -366,86 +361,100 @@ def test_unknown_source_uses_old_endpoint_error() -> None:
     assert not server._servers_without_log_entries
 
 
-def test_access_token_is_reused_until_near_expiry() -> None:
-    logins: list[str] = []
+class FakeStore:
+    """Stands in for the ZenML client's REST store."""
 
-    def login(*_: Any, **__: Any) -> tuple[str, int | None]:
-        logins.append("login")
-        return f"token-{len(logins)}", 600
+    url = SERVER_URL
 
-    reuse_for = 600 - server._ACCESS_TOKEN_EXPIRY_MARGIN_S
-    now = time.monotonic()
+    def __init__(self, session: requests.Session) -> None:
+        self.session = session
+        self.logins: list[bool] = []
+
+    def authenticate(self, force: bool = False) -> None:
+        self.logins.append(force)
+        self.session.headers["Authorization"] = f"Bearer token-{len(self.logins)}"
+
+
+def _call_tool(store: Any, **kwargs: Any) -> dict[str, Any]:
+    """Call `get_step_logs` without the MCP wrapper, against a fake client.
+
+    The ZENML_STORE_* variables are removed: the tool reads the connection
+    from the client, so clients set up with `zenml login` work too.
+    """
     with (
-        patch.object(server, "_access_tokens", {}),
-        patch.object(server, "_request_access_token", side_effect=login),
-        patch.object(server.time, "monotonic", return_value=now),
+        patch.dict(os.environ),
+        patch.object(
+            server, "get_zenml_client", return_value=SimpleNamespace(zen_store=store)
+        ),
+        patch.object(server, "_servers_without_log_entries", {}),
     ):
-        assert server._cached_access_token(SERVER_URL, "key") == ("token-1", False)
-        assert server._cached_access_token(SERVER_URL + "/", "key") == ("token-1", True)
-        # A different API key never gets another key's token.
-        assert server._cached_access_token(SERVER_URL, "other") == ("token-2", False)
-        with patch.object(server.time, "monotonic", return_value=now + reuse_for - 1):
-            assert server._cached_access_token(SERVER_URL, "key")[1] is True
-        with patch.object(server.time, "monotonic", return_value=now + reuse_for):
-            assert server._cached_access_token(SERVER_URL, "key") == ("token-3", False)
-        refreshed = server._cached_access_token(SERVER_URL, "key", refresh=True)
-        assert refreshed == ("token-4", False)
+        os.environ.pop("ZENML_STORE_URL", None)
+        os.environ.pop("ZENML_STORE_API_KEY", None)
+        return server.get_step_logs.__wrapped__("step-1", **kwargs)
 
 
-def test_access_token_lifetime_fallbacks() -> None:
-    """No reported lifetime: reuse for the maximum. Too short: don't reuse."""
-    now = time.monotonic()
-    longest = server._ACCESS_TOKEN_MAX_REUSE_S - server._ACCESS_TOKEN_EXPIRY_MARGIN_S
-    for expires_in, deadline in ((None, now + longest), (30, None)):
-        with (
-            patch.object(server, "_access_tokens", {}),
-            patch.object(
-                server, "_request_access_token", return_value=("t", expires_in)
-            ),
-            patch.object(server.time, "monotonic", return_value=now),
-        ):
-            server._cached_access_token(SERVER_URL, "key")
-            cached = server._access_tokens.get((SERVER_URL, "key"))
-            assert (cached[1] if cached else None) == deadline
+def _one_page_server(
+    *, expected_token: str = "token", send_token: bool = True
+) -> FakeServer:
+    fake = FakeServer(
+        {
+            STEP_URL: lambda _: STEP_WITH_LOGS,
+            ENTRIES_URL: lambda _: _response(200, {"items": _entries(0, 2)}),
+        }
+    )
+    fake.expected_token = expected_token
+    if not send_token:
+        del fake.headers["Authorization"]
+    return fake
 
 
-def test_rejected_cached_token_is_replaced_once() -> None:
-    """A 401 with a cached token logs in again and retries; a fresh 401 raises."""
-    step_logs = server.get_step_logs.__wrapped__
-    env = {"ZENML_STORE_URL": SERVER_URL, "ZENML_STORE_API_KEY": "key"}
-    unauthorized = requests.HTTPError(response=_response(401, {"detail": "no"}))
-    used_tokens: list[str] = []
+def test_tool_uses_the_zenml_client_session() -> None:
+    """Requests go through the client's session, with its token, and no login."""
+    fake = _one_page_server()
+    store = FakeStore(fake)
+    result = _call_tool(store, tail=1)
+    assert _messages(result) == ["line 1"]
+    assert fake.urls() == [STEP_URL, ENTRIES_URL]
+    assert store.logins == []
 
-    def fetch(_url: str, _step: str, token: str, **_: Any) -> dict[str, Any]:
-        used_tokens.append(token)
-        if token == "stale":
-            raise unauthorized
-        return {"logs": [], "possibly_truncated": False}
 
-    with (
-        patch.dict(os.environ, env),
-        patch.object(server, "_access_tokens", {(SERVER_URL, "key"): ("stale", 1e18)}),
-        patch.object(server, "_request_access_token", return_value=("fresh", 3600)),
-        patch.object(server, "make_step_logs_request", side_effect=fetch),
-    ):
-        assert step_logs("step-1") == {"logs": [], "possibly_truncated": False}
-        assert used_tokens == ["stale", "fresh"]
-        assert server._access_tokens[(SERVER_URL, "key")][0] == "fresh"
+def test_login_happens_only_after_a_401() -> None:
+    """Like the ZenML client: log in on a 401, retry once, raise a second 401."""
+    # No token sent yet: a normal login, which may reuse a stored valid token.
+    fake = _one_page_server(expected_token="token-1", send_token=False)
+    store = FakeStore(fake)
+    assert _messages(_call_tool(store)) == ["line 0", "line 1"]
+    assert store.logins == [False]
+    assert fake.urls() == [STEP_URL, STEP_URL, ENTRIES_URL]
 
-    used_tokens.clear()
-    with (
-        patch.dict(os.environ, env),
-        patch.object(server, "_access_tokens", {}),
-        patch.object(server, "_request_access_token", return_value=("stale", 3600)),
-        patch.object(server, "make_step_logs_request", side_effect=fetch),
-    ):
-        try:
-            step_logs("step-1")
-        except requests.HTTPError as error:
-            assert error is unauthorized
-        else:
-            raise AssertionError("a freshly issued token's 401 was retried")
-    assert used_tokens == ["stale"]
+    # A token was sent and rejected: force a fresh login.
+    fake = _one_page_server(expected_token="token-1")
+    store = FakeStore(fake)
+    assert _messages(_call_tool(store)) == ["line 0", "line 1"]
+    assert store.logins == [True]
+
+    fake = _one_page_server(expected_token="never-issued")
+    store = FakeStore(fake)
+    try:
+        _call_tool(store)
+    except requests.HTTPError as error:
+        assert error.response.status_code == 401
+    else:
+        raise AssertionError("a second 401 was not raised")
+    assert store.logins == [True]
+
+
+def test_tool_needs_a_server_connection() -> None:
+    """A client on a local database has no REST session to read logs through."""
+    local_store = SimpleNamespace(url="sqlite:///zenml.db")
+    try:
+        _call_tool(local_store)
+    except ValueError as error:
+        # The error classifier turns this into "Missing required environment
+        # variable: ZENML_STORE_URL."
+        assert str(error) == "ZENML_STORE_URL environment variable not set"
+    else:
+        raise AssertionError("a store without a REST session was accepted")
 
 
 def main() -> int:

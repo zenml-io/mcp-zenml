@@ -900,6 +900,12 @@ _client_init_failure_reported = False
 _zenml_client_init_lock = Lock()
 
 
+def _rest_session(client: Any) -> requests.Session | None:
+    """The client's REST session, or None if it isn't connected to a server."""
+    session = getattr(client.zen_store, "session", None)
+    return session if isinstance(session, requests.Session) else None
+
+
 def _configure_zero_retry_rest_session(client: Any) -> None:
     """Disable automatic REST retries once while preserving pool sizing.
 
@@ -908,9 +914,8 @@ def _configure_zero_retry_rest_session(client: Any) -> None:
     shared public REST session uses zero-retry adapters for both schemes.
     ZenML's explicit re-authentication after a rejected token remains intact.
     """
-    store = client.zen_store
-    session = getattr(store, "session", None)
-    if not isinstance(session, requests.Session):
+    session = _rest_session(client)
+    if session is None:
         return
 
     retries = Retry(
@@ -972,25 +977,18 @@ def get_access_token(
     *,
     timeout: tuple[float, float] = _ZENML_REST_TIMEOUT,
 ) -> str:
-    """Generate a short-lived access token using the ZenML API key."""
-    return _request_access_token(server_url, api_key, timeout=timeout)[0]
-
-
-def _request_access_token(
-    server_url: str,
-    api_key: str,
-    *,
-    timeout: tuple[float, float] = _ZENML_REST_TIMEOUT,
-) -> tuple[str, int | None]:
     """
     Generate a short-lived access token using the ZenML API key.
+
+    ``diagnose_zenml_setup`` uses this to check the credentials with a fresh
+    login. Tools use the ZenML client's own authenticated session instead.
 
     Args:
         server_url: The base URL of the ZenML server
         api_key: The ZenML API key
 
     Returns:
-        The access token, and its lifetime in seconds if the server gave one
+        The access token as a string
 
     Raises:
         requests.HTTPError: If the request fails
@@ -1023,42 +1021,7 @@ def _request_access_token(
         raise RuntimeError("Invalid ZenML authentication response") from error
     if not isinstance(access_token, str) or not access_token.strip():
         raise RuntimeError("Invalid ZenML authentication response")
-    expires_in = token_data.get("expires_in")
-    return access_token, expires_in if isinstance(expires_in, int) else None
-
-
-# Access tokens get_step_logs reuses across calls, keyed by (server URL,
-# API key), with the time.monotonic() after which to log in again.
-_access_tokens: dict[tuple[str, str], tuple[str, float]] = {}
-# Log in again this long before the server's expiry, and at least this often.
-_ACCESS_TOKEN_EXPIRY_MARGIN_S = 60
-_ACCESS_TOKEN_MAX_REUSE_S = 3600
-
-
-def _cached_access_token(
-    server_url: str, api_key: str, *, refresh: bool = False
-) -> tuple[str, bool]:
-    """Return an access token and whether it came from the cache.
-
-    Logging in is a separate request, so reusing the token saves a round trip
-    on every call. Tokens are reused until shortly before the expiry the
-    server reported, and never for more than an hour. ``refresh`` skips the
-    cache and replaces whatever it held.
-    """
-    key = (server_url.rstrip("/"), api_key)
-    cached = _access_tokens.get(key)
-    if not refresh and cached is not None and time.monotonic() < cached[1]:
-        return cached[0], True
-    token, expires_in = _request_access_token(server_url, api_key)
-    reuse_for = min(
-        _ACCESS_TOKEN_MAX_REUSE_S,
-        (expires_in or _ACCESS_TOKEN_MAX_REUSE_S) - _ACCESS_TOKEN_EXPIRY_MARGIN_S,
-    )
-    if reuse_for > 0:
-        _access_tokens[key] = (token, time.monotonic() + reuse_for)
-    else:
-        _access_tokens.pop(key, None)
-    return token, False
+    return access_token
 
 
 # Most log entries one get_step_logs call returns. It matches ZenML's default
@@ -1193,9 +1156,9 @@ def _fetch_log_entries(
 
 
 def make_step_logs_request(
+    session: requests.Session,
     server_url: str,
     step_id: str,
-    access_token: str,
     *,
     source: str | None = None,
     logs_id: str | None = None,
@@ -1208,9 +1171,9 @@ def make_step_logs_request(
     ``/steps/{id}/logs``, which returns a single list.
 
     Args:
+        session: An authenticated session for the ZenML server
         server_url: The base URL of the ZenML server
         step_id: The ID of the step to get logs for
-        access_token: The access token for authentication
         source: The log source to read. Exactly one of source/logs_id.
         logs_id: The exact log stream ID to read.
         tail: Return only the newest ``tail`` entries.
@@ -1235,43 +1198,38 @@ def make_step_logs_request(
 
     logger.debug(f"Fetching logs for step {step_id}")
 
-    # One session so every page reuses the same connection.
-    with requests.Session() as session:
-        session.headers["Authorization"] = f"Bearer {access_token}"
-        fetched = None
-        marked_old_at = _servers_without_log_entries.get(server_url)
-        if (
-            marked_old_at is None
-            or time.monotonic() - marked_old_at >= _LOG_ENTRIES_RECHECK_S
-        ):
-            stream_id = logs_id or _resolve_step_logs_id(
-                session, server_url, step_id, cast(str, source)
-            )
-            # No stream with that source: the older endpoint below returns
-            # ZenML's usual "no logs found" error.
-            if stream_id is not None:
-                fetched = _fetch_log_entries(
-                    session, server_url, stream_id, wanted=wanted
-                )
-                if fetched is None:
-                    _servers_without_log_entries[server_url] = time.monotonic()
-                else:
-                    _servers_without_log_entries.pop(server_url, None)
-        if fetched is None:
-            params = {"source": source} if source is not None else {"logs_id": logs_id}
-            response = session.get(
-                f"{server_url}/api/v1/steps/{step_id}/logs",
-                params=params,
-                timeout=_ZENML_REST_TIMEOUT,
-            )
-            response.raise_for_status()
-            data = response.json()
-            if not isinstance(data, list):
-                return data
-            # This endpoint returns at most one server page (50,000 entries by
-            # default) and gives no sign when it stopped early.
-            full = len(data) >= STEP_LOGS_MAX_ENTRIES
-            fetched = data, full, _store_limit_note() if full else None
+    fetched = None
+    marked_old_at = _servers_without_log_entries.get(server_url)
+    if (
+        marked_old_at is None
+        or time.monotonic() - marked_old_at >= _LOG_ENTRIES_RECHECK_S
+    ):
+        stream_id = logs_id or _resolve_step_logs_id(
+            session, server_url, step_id, cast(str, source)
+        )
+        # No stream with that source: the older endpoint below returns
+        # ZenML's usual "no logs found" error.
+        if stream_id is not None:
+            fetched = _fetch_log_entries(session, server_url, stream_id, wanted=wanted)
+            if fetched is None:
+                _servers_without_log_entries[server_url] = time.monotonic()
+            else:
+                _servers_without_log_entries.pop(server_url, None)
+    if fetched is None:
+        params = {"source": source} if source is not None else {"logs_id": logs_id}
+        response = session.get(
+            f"{server_url}/api/v1/steps/{step_id}/logs",
+            params=params,
+            timeout=_ZENML_REST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            return data
+        # This endpoint returns at most one server page (50,000 entries by
+        # default) and gives no sign when it stopped early.
+        full = len(data) >= STEP_LOGS_MAX_ENTRIES
+        fetched = data, full, _store_limit_note() if full else None
     entries, more, note = fetched
     notes = [note] if note else []
     # A note from the fetch explains any early stop other than having enough
@@ -1522,16 +1480,6 @@ def get_step_logs(
         logs_id: Optional exact log record ID. Cannot be combined with ``source``.
         tail: Optional number of newest entries to return, from 1 to 50000.
     """
-    # Get server URL and API key from environment variables
-    server_url = os.environ.get("ZENML_STORE_URL")
-    api_key = os.environ.get("ZENML_STORE_API_KEY")
-
-    if not server_url:
-        raise ValueError("ZENML_STORE_URL environment variable not set")
-
-    if not api_key:
-        raise ValueError("ZENML_STORE_API_KEY environment variable not set")
-
     if source is not None:
         source = source.strip()
         if not source:
@@ -1549,25 +1497,40 @@ def get_step_logs(
             f"tail must be between 1 and {STEP_LOGS_MAX_ENTRIES}."
         )
 
+    # Use the ZenML client's own session: it carries the store's SSL
+    # (`verify_ssl`) and User-Agent settings, and its token is shared with
+    # every other tool instead of logging in again here.
+    client = get_zenml_client()
+    session = _rest_session(client)
+    if session is None:
+        # Without a server URL the client falls back to a local database,
+        # which has no REST API to read logs through.
+        raise ValueError("ZENML_STORE_URL environment variable not set")
+    store = client.zen_store
     fetch_logs = functools.partial(
         make_step_logs_request,
-        server_url,
+        session,
+        store.url,
         step_run_id,
         source=source,
         logs_id=logs_id,
         tail=tail,
     )
-    access_token, from_cache = _cached_access_token(server_url, api_key)
+    # Like the ZenML client (`RestZenStore._request`), send whatever token the
+    # session already has and log in only when the server answers 401, so
+    # servers without authentication never need a login. The client's check
+    # for another thread having logged in meanwhile isn't needed here: tool
+    # calls hold `_zenml_client_call_lock`.
+    sent_token = "Authorization" in session.headers
     try:
-        return fetch_logs(access_token)
+        return fetch_logs()
     except requests.HTTPError as error:
-        # A cached token the server now rejects (revoked, or the server
-        # restarted with a new secret): log in again and retry the read once.
-        rejected = error.response is not None and error.response.status_code == 401
-        if not (from_cache and rejected):
+        if error.response is None or error.response.status_code != 401:
             raise
-    access_token, _ = _cached_access_token(server_url, api_key, refresh=True)
-    return fetch_logs(access_token)
+    # A rejected token (revoked, or the server restarted with a new secret)
+    # must not be reused; with no token sent yet, a valid cached one is fine.
+    store.authenticate(force=sent_token)
+    return fetch_logs()
 
 
 # =============================================================================

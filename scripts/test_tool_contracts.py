@@ -28,6 +28,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -576,6 +577,24 @@ async def test_legacy_sensitive_resources_redact_configuration() -> None:
     assert component["name"] == "alerter"
 
 
+class CredentialsNotValid(Exception):
+    """Same name as ZenML's login error, which the error classifier matches."""
+
+
+def _fake_rest_client(login_error: Exception | None = None) -> Any:
+    """A ZenML client whose REST store hands out a session."""
+
+    class Store:
+        url = "https://zenml.example"
+        session = server.requests.Session()
+
+        def authenticate(self, force: bool = False) -> None:
+            if login_error is not None:
+                raise login_error
+
+    return SimpleNamespace(zen_store=Store())
+
+
 async def test_step_logs_send_source_or_logs_id() -> None:
     """Step log calls always satisfy ZenML's exactly-one selector contract."""
     calls: list[dict[str, Any]] = []
@@ -590,10 +609,7 @@ async def test_step_logs_send_source_or_logs_id() -> None:
     }
     with (
         patch.dict(os.environ, env),
-        patch.object(server, "_access_tokens", {}),
-        patch.object(
-            server, "_request_access_token", return_value=("access-token", 3600)
-        ),
+        patch.object(server, "get_zenml_client", return_value=_fake_rest_client()),
         patch.object(server, "make_step_logs_request", side_effect=record_logs),
     ):
         async with Client(server.mcp, mode="legacy") as session:
@@ -655,9 +671,9 @@ async def test_step_logs_send_source_or_logs_id() -> None:
     for source, logs_id in ((" ", None), (None, "")):
         try:
             server.make_step_logs_request(
+                server.requests.Session(),
                 "https://zenml.example",
                 "step-1",
-                "access-token",
                 source=source,
                 logs_id=logs_id,
             )
@@ -806,23 +822,28 @@ async def test_diagnostics_fail_when_authentication_fails() -> None:
                 "ZENML_STORE_API_KEY": "unknown-secret-value",
             },
         ),
-        patch.object(server, "_access_tokens", {}),
         patch.object(
             server,
-            "_request_access_token",
-            side_effect=json.JSONDecodeError("FAKE-LOGIN-SECRET", "not-json", 0),
+            "get_zenml_client",
+            return_value=_fake_rest_client(
+                login_error=CredentialsNotValid("FAKE-LOGIN-SECRET rejected")
+            ),
+        ),
+        patch.object(
+            server,
+            "make_step_logs_request",
+            side_effect=server.requests.HTTPError(response=unauthorized),
         ),
     ):
         async with Client(server.mcp, mode="legacy") as session:
-            malformed_login = _structured_error(
+            rejected_login = _structured_error(
                 await session.call_tool(
                     "get_step_logs",
                     {"step_run_id": "step-1", "source": "step"},
                 )
             )
-    assert malformed_login["type"] == "UpstreamError"
-    assert "invalid JSON response" in malformed_login["message"]
-    assert "FAKE-LOGIN-SECRET" not in repr(malformed_login)
+    assert rejected_login["type"] == "AuthenticationError"
+    assert "FAKE-LOGIN-SECRET" not in repr(rejected_login)
 
 
 async def test_trigger_pipeline_selector_contract() -> None:
