@@ -22,7 +22,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -471,10 +471,10 @@ class MCPSmokeTest:
                     if is_error:
                         error_msg = f"Tool {tool_name} returned isError=True"
                         print(f"❌ {error_msg}")
-                        results["tool_test_results"][tool_name] = cast(
-                            ToolTestResult,
-                            {"success": False, "error": error_msg},
-                        )
+                        results["tool_test_results"][tool_name] = {
+                            "success": False,
+                            "error": error_msg,
+                        }
                         results["errors"].append(error_msg)
                         continue
 
@@ -485,10 +485,10 @@ class MCPSmokeTest:
                     if error_reason:
                         error_msg = f"Tool {tool_name} returned error: {error_reason}"
                         print(f"❌ {error_msg}")
-                        results["tool_test_results"][tool_name] = cast(
-                            ToolTestResult,
-                            {"success": False, "error": error_reason},
-                        )
+                        results["tool_test_results"][tool_name] = {
+                            "success": False,
+                            "error": error_reason,
+                        }
                         results["errors"].append(error_msg)
                     else:
                         # Tool executed successfully - compute content length
@@ -502,25 +502,25 @@ class MCPSmokeTest:
                         else:
                             content_length = len(payload)
                             print(f"✅ Tool {tool_name} executed successfully")
-                        results["tool_test_results"][tool_name] = cast(
-                            ToolTestResult,
-                            {"success": True, "content_length": content_length},
-                        )
+                        results["tool_test_results"][tool_name] = {
+                            "success": True,
+                            "content_length": content_length,
+                        }
                 except TimeoutError:
                     error_msg = f"Tool {tool_name} timed out after 60s"
                     print(f"❌ {error_msg}")
-                    results["tool_test_results"][tool_name] = cast(
-                        ToolTestResult,
-                        {"success": False, "error": "timeout"},
-                    )
+                    results["tool_test_results"][tool_name] = {
+                        "success": False,
+                        "error": "timeout",
+                    }
                     results["errors"].append(error_msg)
                 except Exception as e:
                     error_msg = f"Tool {tool_name} failed with exception: {e}"
                     print(f"❌ {error_msg}")
-                    results["tool_test_results"][tool_name] = cast(
-                        ToolTestResult,
-                        {"success": False, "error": str(e)},
-                    )
+                    results["tool_test_results"][tool_name] = {
+                        "success": False,
+                        "error": str(e),
+                    }
                     results["errors"].append(error_msg)
 
         if generic_project_id and "zenml_get_resource" in available_tools:
