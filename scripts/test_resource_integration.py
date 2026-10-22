@@ -341,7 +341,9 @@ def run_disposable_crud(target: str) -> None:
             updated_value,
             scoped_project_id,
         ) in cases:
-            kwargs = {"project_id": scoped_project_id} if scoped_project_id else {}
+            kwargs: dict[str, Any] = (
+                {"project_id": scoped_project_id} if scoped_project_id else {}
+            )
             if resource_type == "code_repository":
                 allowed_prefixes = os.getenv(
                     "ZENML_MCP_ALLOWED_IMPORT_PREFIXES", "zenml."
