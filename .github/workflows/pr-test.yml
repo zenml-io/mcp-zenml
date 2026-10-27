@@ -81,7 +81,7 @@ jobs:
         run: python scripts/check_pep723_requirements.py
 
       - name: Install Apps browser
-        run: uv run --with playwright==1.55.0 playwright install --with-deps chromium
+        run: uv run --with playwright==1.64.0 playwright install --with-deps chromium
 
       # Runs from the repo root, so uv applies the cooldown and its exemptions
       # from [tool.uv] in pyproject.toml.
