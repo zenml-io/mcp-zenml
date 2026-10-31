@@ -33,7 +33,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 from mcp import Client
@@ -167,6 +167,37 @@ def test_singleton_initialization_and_zero_retry_session() -> None:
             assert retries.total == 0
             assert retries.connect == 0
             assert retries.read == 0
+    finally:
+        server.zenml_client = original_client
+        server._client_init_failure_reported = original_failure
+
+
+def test_client_initialization_retries_once_on_transient_error() -> None:
+    """A network stall during client start-up is retried once, then surfaced."""
+    import requests
+
+    stall = requests.ReadTimeout("server stalled")
+    client = type("FakeClient", (), {"zen_store": object()})()
+    original_client = server.zenml_client
+    original_failure = server._client_init_failure_reported
+    try:
+        with patch.object(server, "_CLIENT_INIT_RETRY_DELAY_S", 0):
+            server.zenml_client = None
+            recovers = Mock(side_effect=[stall, client])
+            with patch("zenml.client.Client", recovers):
+                assert server.get_zenml_client() is client
+            assert recovers.call_count == 2
+
+            server.zenml_client = None
+            stays_down = Mock(side_effect=[stall, stall])
+            with patch("zenml.client.Client", stays_down):
+                try:
+                    server.get_zenml_client()
+                    raise AssertionError("expected ReadTimeout")
+                except requests.ReadTimeout:
+                    pass
+            assert stays_down.call_count == 2
+            assert server.zenml_client is None
     finally:
         server.zenml_client = original_client
         server._client_init_failure_reported = original_failure
@@ -713,6 +744,8 @@ async def main() -> int:
         print(f"PASS: {test.__name__}")
     test_singleton_initialization_and_zero_retry_session()
     print("PASS: test_singleton_initialization_and_zero_retry_session")
+    test_client_initialization_retries_once_on_transient_error()
+    print("PASS: test_client_initialization_retries_once_on_transient_error")
     test_cli_port_validation_and_startup_failure_exit_nonzero()
     print("PASS: test_cli_port_validation_and_startup_failure_exit_nonzero")
     test_analytics_metadata_allowlist()

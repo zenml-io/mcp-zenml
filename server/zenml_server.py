@@ -901,6 +901,7 @@ _zenml_client_call_lock = Lock()
 # Track if we've already reported client init failure (avoid spam)
 _client_init_failure_reported = False
 _zenml_client_init_lock = Lock()
+_CLIENT_INIT_RETRY_DELAY_S = 2.0
 
 
 def _rest_session(client: Any) -> requests.Session | None:
@@ -935,6 +936,22 @@ def _configure_zero_retry_rest_session(client: Any) -> None:
             adapter.max_retries = retries
 
 
+def _start_client_with_one_retry(client_cls: Callable[[], Any]) -> Any:
+    """Start the client, retrying once after a network stall.
+
+    Start-up only reads server info and logs in, so retrying it is safe.
+    """
+    try:
+        return client_cls()
+    except (requests.ConnectionError, requests.Timeout) as e:
+        logger.warning(
+            "ZenML client initialization failed (%s); retrying once",
+            type(e).__name__,
+        )
+        time.sleep(_CLIENT_INIT_RETRY_DELAY_S)
+        return client_cls()
+
+
 def get_zenml_client():
     """Get or initialize the ZenML client lazily."""
     global zenml_client, _client_init_failure_reported
@@ -950,7 +967,7 @@ def get_zenml_client():
 
         logger.debug("Initializing ZenML client...")
         try:
-            initialized_client = Client()
+            initialized_client = _start_client_with_one_retry(Client)
             _configure_zero_retry_rest_session(initialized_client)
             zenml_client = initialized_client
             logger.debug("ZenML client initialized successfully")
