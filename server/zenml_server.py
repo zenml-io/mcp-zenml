@@ -2370,6 +2370,7 @@ def trigger_pipeline(
     snapshot_name_or_id: str | None = None,
     stack_name_or_id: str | None = None,
     template_id: str | None = None,
+    run_configuration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Trigger a pipeline to run from the server.
 
@@ -2381,6 +2382,10 @@ def trigger_pipeline(
         template_id: Deprecated template-based trigger parameter. Use
             `snapshot_name_or_id` for new integrations. The supported ZenML
             version still retains run-template CRUD APIs.
+
+        run_configuration: Optional ZenML run configuration overrides, including
+            step parameters, substitutions, and cache settings. Validated by the
+            ZenML SDK before triggering the run.
 
     Usage examples:
         * Run the latest runnable snapshot for a pipeline:
@@ -2424,6 +2429,9 @@ def trigger_pipeline(
         trigger_kwargs["pipeline_name_or_id"] = pipeline_name_or_id
     if stack_name_or_id is not None:
         trigger_kwargs["stack_name_or_id"] = stack_name_or_id
+
+    if run_configuration is not None:
+        trigger_kwargs["run_configuration"] = run_configuration
 
     deprecation_warning: str | None = None
     used_deprecated_template = False

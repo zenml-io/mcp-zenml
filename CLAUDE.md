@@ -41,6 +41,8 @@ ALSO IMPORTANT: **Before opening a PR or making a large commit**, always run `/s
 
 2. **Make your changes** and run what is relevant: `bash scripts/format.sh` always; the tests covering the code you touched; `bash scripts/run_disposable_resource_integration.sh` if you changed dispatch or the registry; the Docker and MCPB checks if you changed packaging. CI runs the full suite on the PR.
 
+   **Keep the committed MCPB in sync.** After the final edit to any bundled file or build input (see `scripts/build_mcpb.sh`), including server code, MCP App HTML, or `README.md`, run `bash scripts/build_mcpb.sh` and commit the regenerated `mcp-zenml.mcpb` in the same PR. Verify it with `uv run scripts/test_distributions.py reproducible mcp-zenml.mcpb` before committing. Source-only changes should retain the existing dependency lock; use a lock-refresh mode only for intentional dependency changes.
+
 3. **Create a pull request** - never commit directly to main:
    ```bash
    git push -u origin feature/your-feature-name

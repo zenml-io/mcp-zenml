@@ -205,6 +205,23 @@ while new code should use snapshots.
    → get_deployment_logs(name_id_or_prefix="my-deployment", tail=100)
 ```
 
+To override parameters when triggering a runnable snapshot, pass a ZenML run
+configuration (the snapshot itself remains unchanged):
+
+```python
+trigger_pipeline(
+    snapshot_name_or_id="my-snapshot",
+    run_configuration={
+        "steps": {"train": {"parameters": {"learning_rate": 0.01}}},
+        "enable_cache": False,
+    },
+)
+```
+
+For static snapshots, override step parameters as shown above. Top-level
+`run_configuration={"parameters": {...}}` overrides pipeline function parameters
+and is supported only for dynamic snapshots; ZenML rejects it for static snapshots.
+
 **Note:** `get_deployment_logs` returns bounded output (default 100 lines, max 1000, capped at 100KB) and requires the appropriate deployer integration to be installed.
 
 ## Quick Setup via Dashboard (Recommended)
