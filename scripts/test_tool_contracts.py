@@ -937,6 +937,11 @@ async def test_trigger_pipeline_selector_contract() -> None:
             self.calls.append(kwargs)
             return FakeResponse({"id": "run-1"})
 
+    configuration = {
+        "steps": {"train": {"parameters": {"learning_rate": 0.01}}},
+        "enable_cache": False,
+        "substitutions": {"dataset": "validation"},
+    }
     fake_client = TriggerClient()
     original_client = server.zenml_client
     server.zenml_client = fake_client
@@ -945,6 +950,15 @@ async def test_trigger_pipeline_selector_contract() -> None:
             snapshot = _structured_payload(
                 await session.call_tool(
                     "trigger_pipeline", {"snapshot_name_or_id": "snapshot-1"}
+                )
+            )
+            configured = _structured_payload(
+                await session.call_tool(
+                    "trigger_pipeline",
+                    {
+                        "snapshot_name_or_id": "snapshot-1",
+                        "run_configuration": configuration,
+                    },
                 )
             )
             template = _structured_payload(
@@ -967,8 +981,10 @@ async def test_trigger_pipeline_selector_contract() -> None:
         server.zenml_client = original_client
 
     assert snapshot["pipeline_run"] == {"id": "run-1"}
+    assert configured["pipeline_run"] == {"id": "run-1"}
     assert fake_client.calls == [
         {"snapshot_name_or_id": "snapshot-1"},
+        {"snapshot_name_or_id": "snapshot-1", "run_configuration": configuration},
         {"template_id": "11111111-1111-4111-8111-111111111111"},
     ]
     assert "deprecated" in template["deprecation_warning"].lower()

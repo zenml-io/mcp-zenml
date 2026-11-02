@@ -596,6 +596,18 @@
             "string",
             "null"
           ]
+        },
+        "run_configuration": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "type": "object"

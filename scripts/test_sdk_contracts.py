@@ -143,6 +143,7 @@ def test_dynamic_calls_bind() -> None:
             "pipeline_name_or_id": "pipeline",
             "stack_name_or_id": "stack",
             "snapshot_name_or_id": "snapshot",
+            "run_configuration": {"enable_cache": False},
         },
         {
             "pipeline_name_or_id": "pipeline",
