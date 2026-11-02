@@ -218,6 +218,10 @@ trigger_pipeline(
 )
 ```
 
+For static snapshots, override step parameters as shown above. Top-level
+`run_configuration={"parameters": {...}}` overrides pipeline function parameters
+and is supported only for dynamic snapshots; ZenML rejects it for static snapshots.
+
 **Note:** `get_deployment_logs` returns bounded output (default 100 lines, max 1000, capped at 100KB) and requires the appropriate deployer integration to be installed.
 
 ## Quick Setup via Dashboard (Recommended)
