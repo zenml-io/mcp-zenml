@@ -156,6 +156,8 @@ async def _inspect_profile(
                         tool.annotations is not None
                         and tool.annotations.read_only_hint is False
                     ), tool.name
+                    if tool.name == "trigger_pipeline":
+                        assert tool.annotations.destructive_hint is True, tool.name
 
             excluded = set(ALL_TOOLS) - set(actual)
             for name in sorted(excluded):

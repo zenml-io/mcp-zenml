@@ -2366,7 +2366,7 @@ def list_flavors(
 @mcp.tool(
     annotations={
         "readOnlyHint": False,
-        "destructiveHint": False,
+        "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
     }
