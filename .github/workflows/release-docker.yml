@@ -51,7 +51,7 @@ jobs:
           enable-cache: false
 
       - name: Verify runner TLS before installing dependencies
-        run: python3 scripts/check_runner_tls.py
+        run: python3 scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Verify Docker package and MCP discovery
         run: |
