@@ -50,8 +50,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.28"
+          version: "0.13.5"
           enable-cache: true
+
+      - name: Verify runner TLS before installing dependencies
+        run: python3 scripts/check_runner_tls.py
 
       - name: Set up Node.js 20
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -110,8 +113,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.28"
+          version: "0.13.5"
           enable-cache: false
+
+      - name: Verify runner TLS before installing dependencies
+        run: python3 scripts/check_runner_tls.py
 
       - name: Run disposable OSS integration receipt
         run: bash scripts/run_disposable_resource_integration.sh
@@ -136,8 +142,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.28"
+          version: "0.13.5"
           enable-cache: false
+
+      - name: Verify runner TLS before installing dependencies
+        run: python3 scripts/check_runner_tls.py
 
       - name: Set up Node.js 20
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -188,6 +197,88 @@ jobs:
       UV_PYTHON: ${{ matrix.python }}
       ZENML_MCP_ANALYTICS_ENABLED: "false"
     steps:
+      # Temporary mitigation for actions/runner-images#15228, before Git checkout.
+      - name: Repair macOS trust and verify preinstalled TLS clients
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import ssl
+          import subprocess
+          import tempfile
+          import urllib.error
+          import urllib.request
+
+          # Only the roots needed to block the direct and AAA cross-signed chains.
+          # https://emudhra.we-have-a-problem.com/roots.json
+          blocked = {
+              "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b",
+              "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4",
+          }
+          bundles = {Path("/etc/ssl/cert.pem")}
+          for prefix in (Path("/opt/homebrew/etc"), Path("/usr/local/etc")):
+              bundles.update(prefix.glob("openssl*/cert.pem"))
+              bundle = prefix / "ca-certificates/cert.pem"
+              if bundle.exists():
+                  bundles.add(bundle)
+          for bundle in {path.resolve(strict=True) for path in bundles}:
+              certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", bundle.read_text(), re.S)
+              retained = [cert for cert in certs if hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert)).hexdigest() not in blocked]
+              if not retained:
+                  raise RuntimeError(f"Refusing to install an empty CA bundle: {bundle}")
+              if len(retained) != len(certs):
+                  with tempfile.NamedTemporaryFile(mode="w") as temporary:
+                      temporary.write("\n".join(retained) + "\n")
+                      temporary.flush()
+                      ssl.create_default_context(cafile=temporary.name)
+                      subprocess.run(["sudo", "/usr/bin/install", "-m", "0644", "-o", "root", "-g", "wheel", temporary.name, str(bundle)], check=True)
+              print(f"Filtered {len(certs) - len(retained)} compromised roots from {bundle}")
+
+          # Route clients with independent defaults to the repaired bundle too.
+          empty_directory = Path(os.environ["RUNNER_TEMP"]) / "empty-ca-directory"
+          empty_directory.mkdir(exist_ok=True)
+          overrides = dict.fromkeys(("SSL_CERT_FILE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "PIP_CERT", "REQUESTS_CA_BUNDLE"), "/etc/ssl/cert.pem")
+          overrides["SSL_CERT_DIR"] = str(empty_directory)
+          os.environ.update(overrides)
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.writelines(f"{key}={value}\n" for key, value in overrides.items())
+
+          bad_urls = ("https://dv-g3b-emudhra.we-have-a-problem.com/", "https://dv-g3b-aaa-emudhra.we-have-a-problem.com/")
+          for client, command, healthy in (
+              ("curl", ["curl", "--disable", "--silent", "--show-error", "--fail", "--connect-timeout", "10", "--max-time", "30", "--output", os.devnull], "https://pypi.org/simple/certifi/"),
+              ("git", ["git", "-c", "credential.helper=", "-c", "http.extraHeader=", "ls-remote"], "https://github.com/curl/curl.git"),
+          ):
+              env = {key: os.environ[key] for key in ("PATH", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO") if key in os.environ}
+              env.update(HOME=tempfile.mkdtemp(dir=os.environ["RUNNER_TEMP"]), LC_ALL="C", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
+              subprocess.run([*command, healthy], env=env, check=True, capture_output=True, timeout=45)
+              for url in bad_urls:
+                  result = subprocess.run([*command, url], env=env, capture_output=True, text=True, timeout=45)
+                  certificate_error = result.returncode == 60 if client == "curl" else any(message in result.stderr.lower() for message in ("certificate verify failed", "certificate verification failed", "ssl certificate problem"))
+                  if result.returncode == 0 or not certificate_error or re.search(r"expired|not.?yet.?valid|not.?valid.?yet|not.?valid.?for.?name|hostname|does not match|no alternative certificate subject name|certificate subject name", result.stderr.lower()):
+                      raise RuntimeError(f"{client} did not reject the compromised certificate (exit {result.returncode}): {result.stderr[-1500:]}")
+              print(f"PASS: pre-checkout {client} rejects both compromised chains")
+
+          # Apple's Python can ignore SSL_CERT_FILE, so test its actual default context.
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          with opener.open("https://pypi.org/simple/certifi/", timeout=30) as response:
+              if response.status != 200:
+                  raise RuntimeError("System Python healthy HTTPS control failed")
+          for url in bad_urls:
+              try:
+                  with opener.open(url, timeout=30):
+                      pass
+              except urllib.error.URLError as error:
+                  if isinstance(error.reason, ssl.SSLCertVerificationError) and error.reason.verify_code in (19, 20, 21, 23, 27, 28):
+                      continue
+                  raise
+              raise RuntimeError(f"System Python accepted a compromised certificate: {url}")
+          print("PASS: pre-checkout system Python rejects both compromised chains")
+          PY
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -201,8 +292,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.28"
+          version: "0.13.5"
           enable-cache: true
+
+      - name: Verify selected Python and uv reject compromised certificates
+        if: runner.os != 'Windows'
+        shell: bash
+        run: python scripts/check_runner_tls.py
 
       - name: Download exact release candidate
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

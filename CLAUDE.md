@@ -18,6 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `scripts/test_mcp_transport.py` - the MCP 2.2 runtime: protocol negotiation, HTTP host/origin security, timeouts and cancellation, error sanitising, analytics allowlist
   - `scripts/test_mcp_apps.py` - drives both MCP Apps in headless Chromium. Install the browser first with `uv run --with playwright==1.64.0 playwright install --with-deps chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at an existing Chromium
   - `scripts/test_distributions.py self-test`
+  - `scripts/test_runner_tls.py` - network-free regression checks for TLS rejection classification; `python scripts/check_runner_tls.py` probes healthy HTTPS and the compromised direct/cross-signed chains with Python, curl, Git, and uv
 - **Live integration against a throwaway ZenML server**: `bash scripts/run_disposable_resource_integration.sh`. It starts a local ZenML OSS server (the version pinned in `pyproject.toml`) on a random loopback port with a temporary database, runs `test_resource_integration.py` against it (real create/update/delete calls, plus a check that two projects with same-named resources stay separate), then deletes everything. No credentials needed. Extra opt-in integration gates (`ZENML_MCP_ACTION_INTEGRATION`, `ZENML_MCP_RESTRICTED_INTEGRATION`) need an external server; see `RELEASE.md`.
 - **Manifest check**: `uv run scripts/generate_manifest_fields.py --check` (drop `--check` to regenerate the `tools`/`prompts` fields in `manifest.json`). CI fails if the manifest does not match the registered tools.
 - **MCPB bundle**: `bash scripts/build_mcpb.sh` builds `mcp-zenml.mcpb` (needs Node/npm; CI uses Node 20). `uv run scripts/test_distributions.py reproducible mcp-zenml.mcpb` rebuilds it and checks the bytes match and the unpacked bundle starts and lists the right tools.
@@ -181,7 +182,7 @@ The server requires:
 ### Testing Infrastructure
 
 - **Scheduled testing**: `mcp-smoke-test.yml` runs the smoke test every 3 days against a real ZenML server; on failure it opens a GitHub issue and sends a Discord alert.
-- **CI/CD**: Uses `uv` with caching. The PR, release, release-docker and scheduled smoke workflows and `build_mcpb.sh` pin `uv` to `0.11.28`. The Docker runtime image and the zizmor workflow use `0.8.15`; neither runs a PEP 723 script.
+- **CI/CD**: Workflows, `build_mcpb.sh`, and the Docker runtime image pin `uv` to `0.13.5`, which rejects the compromised eMudhra intermediate keys. The credential-free Runner TLS PR matrix checks Ubuntu, macOS ARM, and macOS Intel. macOS jobs repair system/Homebrew CA bundles and verify preinstalled clients before checkout; selected Python and uv are checked before dependency installation. The temporary root removal can reject legitimate services chaining to AAA Certificate Services; remove it once hosted images reliably reject both compromised chains without overrides (actions/runner-images#15228).
 - **Important**: When adding new test scripts, always wire them into `.github/workflows/pr-test.yml` so they run in CI. Tests that don't need ZenML credentials should run unconditionally (no `if: env.HAS_ZENML_CREDENTIALS == 'true'` guard).
 
 ### Debugging with MCP Inspector

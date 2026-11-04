@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -
 ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd -P)"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-zenml-bundle.XXXXXX")"
 MCPB_VERSION="2.1.2"
-UV_VERSION="0.11.28"
+UV_VERSION="0.13.5"
 TARGET_PATH="${1:-${ROOT}/mcp-zenml.mcpb}"
 
 cleanup() {
