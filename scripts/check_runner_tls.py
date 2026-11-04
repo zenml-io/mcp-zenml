@@ -1,5 +1,7 @@
 """Check the TLS clients used by CI against compromised eMudhra chains."""
 
+import argparse
+import hashlib
 import os
 import re
 import ssl
@@ -8,15 +10,21 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 COMPROMISED_URLS = (
     "https://dv-g3b-emudhra.we-have-a-problem.com/",
     "https://dv-g3b-aaa-emudhra.we-have-a-problem.com/",
 )
+BLOCKED_ROOTS = {
+    "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b",
+    "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4",
+}
 CERTIFICATE_ERRORS = (
     "certificate verify failed",
     "certificate verification failed",
     "server certificate verification failed",
+    "server verification failed: certificate signer not trusted",
     "ssl certificate problem",
 )
 UNRELATED_CERTIFICATE_ERRORS = re.compile(
@@ -34,9 +42,55 @@ PROBE_ENVIRONMENT = (
     "SSL_CERT_DIR",
     "CURL_CA_BUNDLE",
     "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
     "OPENSSL_X509_TEA_DISABLE",
 )
 TRUST_REJECTION_CODES = {19, 20, 21, 23, 27, 28}
+
+
+def repair_linux_trust() -> None:
+    """Filter the runner's CA bundle and export isolated trust for subsequent steps."""
+    source = ssl.get_default_verify_paths().cafile
+    if source is None:
+        raise RuntimeError("Python has no default CA bundle to repair")
+    certs = re.findall(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        Path(source).read_text(),
+        re.S,
+    )
+    retained = [
+        cert
+        for cert in certs
+        if hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert)).hexdigest()
+        not in BLOCKED_ROOTS
+    ]
+    if not retained:
+        raise RuntimeError("Refusing to install an empty CA bundle")
+    directory = Path(
+        tempfile.mkdtemp(prefix="runner-tls-trust-", dir=os.environ["RUNNER_TEMP"])
+    )
+    bundle = directory / "cert.pem"
+    bundle.write_text("\n".join(retained) + "\n")
+    ssl.create_default_context(cafile=str(bundle))
+    empty_directory = directory / "certs"
+    empty_directory.mkdir()
+    overrides = dict.fromkeys(
+        ("SSL_CERT_FILE", "GIT_SSL_CAINFO", "PIP_CERT", "REQUESTS_CA_BUNDLE"),
+        str(bundle),
+    )
+    # CURL_CA_BUNDLE takes precedence over SSL_CERT_DIR; curl needs both SSL_CERT_* overrides.
+    overrides["CURL_CA_BUNDLE"] = ""
+    overrides.update(
+        SSL_CERT_DIR=str(empty_directory), GIT_SSL_CAPATH=str(empty_directory)
+    )
+    with open(os.environ["GITHUB_ENV"], "a") as environment:
+        environment.writelines(f"{key}={value}\n" for key, value in overrides.items())
+    os.environ.update(overrides)
+    print(
+        f"Filtered {len(certs) - len(retained)} blocked roots from {source}; "
+        f"using {bundle} and empty CA directory {empty_directory}",
+        flush=True,
+    )
 
 
 def run_probe(
@@ -182,6 +236,20 @@ def check_command_clients() -> None:
 
 def main() -> None:
     """Check the interpreter and the network tools available on this runner."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repair-linux-trust",
+        action="store_true",
+        help="On Linux, export a filtered CA bundle in RUNNER_TEMP via GITHUB_ENV.",
+    )
+    arguments = parser.parse_args()
+    print(
+        f"Python {sys.executable}: {ssl.OPENSSL_VERSION}; "
+        f"default trust: {ssl.get_default_verify_paths()}",
+        flush=True,
+    )
+    if arguments.repair_linux_trust and sys.platform == "linux":
+        repair_linux_trust()
     check_python()
     check_command_clients()
 

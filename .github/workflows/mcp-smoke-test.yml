@@ -45,7 +45,7 @@ jobs:
           python-version: "3.12"
       
       - name: Verify runner TLS before authenticated smoke tests
-        run: python scripts/check_runner_tls.py
+        run: python scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Run MCP smoke test
         id: smoke-test

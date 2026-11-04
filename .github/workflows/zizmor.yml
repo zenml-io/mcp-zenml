@@ -41,7 +41,7 @@ jobs:
           version: "0.13.5"
 
       - name: Verify runner TLS before installing dependencies
-        run: python3 scripts/check_runner_tls.py
+        run: python3 scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Run zizmor
         run: uvx zizmor==1.25.2 --format=github --config=.github/zizmor.yml .github/workflows/

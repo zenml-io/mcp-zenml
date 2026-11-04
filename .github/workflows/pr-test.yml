@@ -133,7 +133,7 @@ jobs:
       - name: Test TLS gate failure classification
         run: python scripts/test_runner_tls.py
       - name: Verify selected Python and uv reject compromised certificates
-        run: python scripts/check_runner_tls.py
+        run: python scripts/check_runner_tls.py --repair-linux-trust
 
   disposable-integration:
     name: Disposable OSS ZenML integration
@@ -164,7 +164,7 @@ jobs:
           enable-cache: false
 
       - name: Verify runner TLS before installing dependencies
-        run: python3 scripts/check_runner_tls.py
+        run: python3 scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Run disposable OSS integration receipt
         run: bash scripts/run_disposable_resource_integration.sh
@@ -200,7 +200,7 @@ jobs:
           enable-cache: true
 
       - name: Verify runner TLS before installing dependencies
-        run: python3 scripts/check_runner_tls.py
+        run: python3 scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Check PEP 723 dependency drift
         run: python scripts/check_pep723_requirements.py
@@ -276,7 +276,7 @@ jobs:
           enable-cache: true
 
       - name: Verify runner TLS before installing dependencies
-        run: python3 scripts/check_runner_tls.py
+        run: python3 scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Build Docker image
         run: |
@@ -309,7 +309,7 @@ jobs:
           enable-cache: true
 
       - name: Verify runner TLS before installing dependencies
-        run: python3 scripts/check_runner_tls.py
+        run: python3 scripts/check_runner_tls.py --repair-linux-trust
 
       - name: Run ty type checker
         run: |

@@ -3,11 +3,67 @@
 import os
 import ssl
 import subprocess
+import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import check_runner_tls
+
+
+class LinuxTrustRepairTests(unittest.TestCase):
+    def test_repair_removes_blocked_roots_and_persists_client_trust(self) -> None:
+        fixture = Path(__file__).parent / "fixtures/runner_tls_roots.pem"
+        original = fixture.read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            github_env = Path(temporary) / "github-env"
+            defaults = ssl.get_default_verify_paths()._replace(cafile=str(fixture))
+            with (
+                patch.dict(
+                    os.environ,
+                    {"RUNNER_TEMP": temporary, "GITHUB_ENV": str(github_env)},
+                ),
+                patch("ssl.get_default_verify_paths", return_value=defaults),
+            ):
+                check_runner_tls.repair_linux_trust()
+                bundle = Path(os.environ["SSL_CERT_FILE"])
+                context = ssl.create_default_context(cafile=str(bundle))
+                self.assertEqual(len(context.get_ca_certs()), 1)
+                self.assertEqual(fixture.read_bytes(), original)
+                for key in ("GIT_SSL_CAINFO", "PIP_CERT", "REQUESTS_CA_BUNDLE"):
+                    self.assertEqual(os.environ[key], str(bundle))
+                self.assertEqual(os.environ["CURL_CA_BUNDLE"], "")
+                directory = Path(os.environ["SSL_CERT_DIR"])
+                self.assertEqual(list(directory.iterdir()), [])
+                self.assertEqual(os.environ["GIT_SSL_CAPATH"], str(directory))
+                persisted = dict(
+                    line.split("=", 1) for line in github_env.read_text().splitlines()
+                )
+                self.assertEqual(persisted["SSL_CERT_FILE"], str(bundle))
+                self.assertEqual(persisted["GIT_SSL_CAPATH"], str(directory))
+                with patch("subprocess.run") as execute:
+                    check_runner_tls.run_probe(["git", "https://public.example"])
+                self.assertEqual(
+                    execute.call_args.kwargs["env"]["GIT_SSL_CAPATH"], str(directory)
+                )
+
+    def test_repair_refuses_an_empty_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "empty.pem"
+            bundle.write_text("")
+            github_env = Path(temporary) / "github-env"
+            defaults = ssl.get_default_verify_paths()._replace(cafile=str(bundle))
+            with (
+                patch.dict(
+                    os.environ,
+                    {"RUNNER_TEMP": temporary, "GITHUB_ENV": str(github_env)},
+                ),
+                patch("ssl.get_default_verify_paths", return_value=defaults),
+                self.assertRaises(RuntimeError),
+            ):
+                check_runner_tls.repair_linux_trust()
+            self.assertFalse(github_env.exists())
 
 
 class CertificateRejectionTests(unittest.TestCase):
@@ -46,6 +102,17 @@ class CertificateRejectionTests(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             check_runner_tls.require_certificate_rejection("git", result)
+
+    def test_git_gnutls_untrusted_signer_counts_as_rejection(self) -> None:
+        result = subprocess.CompletedProcess(
+            [],
+            128,
+            "",
+            "fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': "
+            "server verification failed: certificate signer not trusted. "
+            "(CAfile: /repaired.pem CRLfile: none)",
+        )
+        check_runner_tls.require_certificate_rejection("git", result)
 
     def test_curl_requires_certificate_verification_exit_status(self) -> None:
         for status in (6, 7, 22, 28, 35):
