@@ -150,6 +150,15 @@ async def _inspect_profile(
             assert actual == expected, (profile, policy, actual)
             assert len(actual) == len(set(actual))
 
+            for tool in listed.tools:
+                if tool.name in MUTATING_TOOLS:
+                    assert (
+                        tool.annotations is not None
+                        and tool.annotations.read_only_hint is False
+                    ), tool.name
+                    if tool.name == "trigger_pipeline":
+                        assert tool.annotations.destructive_hint is True, tool.name
+
             excluded = set(ALL_TOOLS) - set(actual)
             for name in sorted(excluded):
                 await _unknown_tool(session, name)
