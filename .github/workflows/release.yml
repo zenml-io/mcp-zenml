@@ -243,16 +243,26 @@ jobs:
           empty_directory.mkdir(exist_ok=True)
           overrides = dict.fromkeys(("SSL_CERT_FILE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "PIP_CERT", "REQUESTS_CA_BUNDLE"), "/etc/ssl/cert.pem")
           overrides["SSL_CERT_DIR"] = str(empty_directory)
+          # Apple LibreSSL can retry missing issuers against Keychain trust.
+          # https://github.com/galadran/we-have-a-problem.com/issues/65
+          overrides["OPENSSL_X509_TEA_DISABLE"] = "1"
           os.environ.update(overrides)
           with open(os.environ["GITHUB_ENV"], "a") as environment:
               environment.writelines(f"{key}={value}\n" for key, value in overrides.items())
+
+          subprocess.run(["git", "--version", "--build-options"], check=True)
+          git_exec_path = subprocess.run(["git", "--exec-path"], check=True, capture_output=True, text=True).stdout.strip()
+          git_https_helper = Path(git_exec_path) / "git-remote-https"
+          print(f"Git HTTPS helper: {git_https_helper}", flush=True)
+          subprocess.run(["/usr/bin/otool", "-L", str(git_https_helper)], check=True)
+          print(f"Git CA bundle: {overrides['GIT_SSL_CAINFO']}; Apple Keychain fallback disabled", flush=True)
 
           bad_urls = ("https://dv-g3b-emudhra.we-have-a-problem.com/", "https://dv-g3b-aaa-emudhra.we-have-a-problem.com/")
           for client, command, healthy in (
               ("curl", ["curl", "--disable", "--silent", "--show-error", "--fail", "--connect-timeout", "10", "--max-time", "30", "--output", os.devnull], "https://pypi.org/simple/certifi/"),
               ("git", ["git", "-c", "credential.helper=", "-c", "http.extraHeader=", "ls-remote"], "https://github.com/curl/curl.git"),
           ):
-              env = {key: os.environ[key] for key in ("PATH", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO") if key in os.environ}
+              env = {key: os.environ[key] for key in ("PATH", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "OPENSSL_X509_TEA_DISABLE") if key in os.environ}
               env.update(HOME=tempfile.mkdtemp(dir=os.environ["RUNNER_TEMP"]), LC_ALL="C", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
               subprocess.run([*command, healthy], env=env, check=True, capture_output=True, timeout=45)
               for url in bad_urls:

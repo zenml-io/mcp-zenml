@@ -36,6 +36,17 @@ class CertificateRejectionTests(unittest.TestCase):
             result = subprocess.CompletedProcess([], 128, "", diagnostic)
             check_runner_tls.require_certificate_rejection("git", result)
 
+    def test_git_http_response_does_not_count_as_certificate_rejection(self) -> None:
+        result = subprocess.CompletedProcess(
+            [],
+            128,
+            "",
+            "fatal: https://dv-g3b-emudhra.we-have-a-problem.com/info/refs "
+            "not valid: is this a git repository?",
+        )
+        with self.assertRaises(RuntimeError):
+            check_runner_tls.require_certificate_rejection("git", result)
+
     def test_curl_requires_certificate_verification_exit_status(self) -> None:
         for status in (6, 7, 22, 28, 35):
             result = subprocess.CompletedProcess([], status, "", "TLS failed")
@@ -131,6 +142,19 @@ class CertificateRejectionTests(unittest.TestCase):
         child = execute.call_args.kwargs["env"]
         self.assertNotIn("SSL_CERT_FILE", child)
         self.assertNotIn("SSL_CERT_DIR", child)
+
+    def test_probes_keep_apple_keychain_fallback_disabled(self) -> None:
+        for client in ("git", "curl"):
+            with (
+                self.subTest(client=client),
+                patch.dict(os.environ, {"OPENSSL_X509_TEA_DISABLE": "1"}),
+                patch("subprocess.run") as execute,
+            ):
+                check_runner_tls.run_probe([client, "https://public.example"])
+                self.assertEqual(
+                    execute.call_args.kwargs["env"].get("OPENSSL_X509_TEA_DISABLE"),
+                    "1",
+                )
 
     def test_python_network_failure_does_not_count_as_rejection(self) -> None:
         opener = MagicMock()
