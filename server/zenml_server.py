@@ -2363,7 +2363,14 @@ def list_flavors(
     return flavors.model_dump(mode="json")
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
 @handle_tool_exceptions
 def trigger_pipeline(
     pipeline_name_or_id: str | None = None,
