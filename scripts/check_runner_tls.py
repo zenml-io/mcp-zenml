@@ -26,6 +26,7 @@ CERTIFICATE_ERRORS = (
     "server certificate verification failed",
     "server verification failed: certificate signer not trusted",
     "ssl certificate problem",
+    "ssl certificate openssl verify result: unable to get local issuer certificate (20)",
 )
 UNRELATED_CERTIFICATE_ERRORS = re.compile(
     r"expired|not.?yet.?valid|not.?valid.?yet|not.?valid.?for.?name|hostname|does not match|"
