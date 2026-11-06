@@ -1,15 +1,45 @@
 """Regression checks for the TLS verification gate, without network requests."""
 
+import ast
 import os
+import re
 import ssl
 import subprocess
 import tempfile
+import textwrap
 import unittest
 import urllib.error
 from pathlib import Path
+from types import CodeType
 from unittest.mock import MagicMock, patch
 
 import check_runner_tls
+
+
+def load_precheckout_classifier(workflow: str) -> CodeType:
+    """Compile only the certificate classification and rejection statements."""
+    path = Path(__file__).resolve().parents[1] / ".github/workflows" / workflow
+    script = path.read_text().split("/usr/bin/python3 - <<'PY'\n", 1)[1]
+    tree = ast.parse(textwrap.dedent(script.split("\n          PY", 1)[0]))
+    for loop in ast.walk(tree):
+        if not isinstance(loop, ast.For):
+            continue
+        for index, statement in enumerate(loop.body[:-1]):
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and statement.targets[0].id == "certificate_error"
+            ):
+                rejection = loop.body[index + 1]
+                if not isinstance(rejection, ast.If):
+                    raise AssertionError(f"Missing rejection check in {workflow}")
+                return compile(
+                    ast.Module(body=[statement, rejection], type_ignores=[]),
+                    str(path),
+                    "exec",
+                )
+    raise AssertionError(f"Missing certificate classifier in {workflow}")
 
 
 class LinuxTrustRepairTests(unittest.TestCase):
@@ -67,6 +97,67 @@ class LinuxTrustRepairTests(unittest.TestCase):
 
 
 class CertificateRejectionTests(unittest.TestCase):
+    def test_openssl_distrust_in_shared_and_precheckout_guards(self) -> None:
+        diagnostic = (
+            "fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': "
+            "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)"
+        )
+        cases = [("git", 128, diagnostic, True), ("git", 0, diagnostic, False)]
+        cases.extend(
+            (client, 60 if client == "curl" else 128, f"{diagnostic}: {error}", False)
+            for client in ("git", "curl")
+            for error in (
+                "expired",
+                "not yet valid",
+                "not valid yet",
+                "certificate not valid for name",
+                "hostname mismatch",
+                "does not match",
+                "no alternative certificate subject name",
+                "certificate subject name",
+            )
+        )
+        cases.extend(
+            ("git", 128, error, False)
+            for error in (
+                "Could not resolve host",
+                "Connection timed out",
+                "HTTP 404",
+                "HTTP 500",
+                "SSL connect error",
+                "SSL certificate OpenSSL verify result: unsupported certificate purpose (26)",
+            )
+        )
+        cases.extend(
+            ("curl", status, diagnostic, status == 60)
+            for status in (0, 6, 7, 22, 28, 35, 60, 128)
+        )
+        classifiers = {
+            "shared": None,
+            "pr-test.yml": load_precheckout_classifier("pr-test.yml"),
+            "release.yml": load_precheckout_classifier("release.yml"),
+        }
+        for name, code in classifiers.items():
+            for client, status, stderr, accepted in cases:
+                result = subprocess.CompletedProcess([], status, "", stderr)
+
+                def classify() -> None:
+                    if code is None:
+                        check_runner_tls.require_certificate_rejection(
+                            client, result, curl=client == "curl"
+                        )
+                    else:
+                        exec(code, {"re": re, "client": client, "result": result})
+
+                with self.subTest(
+                    classifier=name, client=client, status=status, stderr=stderr
+                ):
+                    if accepted:
+                        classify()
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            classify()
+
     def test_success_never_counts_as_rejection(self) -> None:
         result = subprocess.CompletedProcess([], 0, "", "certificate verify failed")
         with self.assertRaises(RuntimeError):

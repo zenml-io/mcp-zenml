@@ -95,7 +95,7 @@ jobs:
               subprocess.run([*command, healthy], env=env, check=True, capture_output=True, timeout=45)
               for url in bad_urls:
                   result = subprocess.run([*command, url], env=env, capture_output=True, text=True, timeout=45)
-                  certificate_error = result.returncode == 60 if client == "curl" else any(message in result.stderr.lower() for message in ("certificate verify failed", "certificate verification failed", "ssl certificate problem"))
+                  certificate_error = result.returncode == 60 if client == "curl" else any(message in result.stderr.lower() for message in ("certificate verify failed", "certificate verification failed", "ssl certificate problem", "ssl certificate openssl verify result: unable to get local issuer certificate (20)"))
                   if result.returncode == 0 or not certificate_error or re.search(r"expired|not.?yet.?valid|not.?valid.?yet|not.?valid.?for.?name|hostname|does not match|no alternative certificate subject name|certificate subject name", result.stderr.lower()):
                       raise RuntimeError(f"{client} did not reject the compromised certificate (exit {result.returncode}): {result.stderr[-1500:]}")
               print(f"PASS: pre-checkout {client} rejects both compromised chains")
