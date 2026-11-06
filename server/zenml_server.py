@@ -93,6 +93,10 @@ from zenml_tool_catalog import (
     tool_names,
 )
 
+# Explicit MCP credentials must not read or overwrite the CLI's saved login.
+if os.environ.get("ZENML_STORE_API_KEY"):
+    os.environ["DISABLE_CREDENTIALS_DISK_CACHING"] = "true"
+
 # Suppress ZenML warnings that print to stdout (breaks JSON-RPC protocol)
 # E.g., "Setting the global active stack to default"
 warnings.filterwarnings("ignore", module=r"^zenml(\.|$)")

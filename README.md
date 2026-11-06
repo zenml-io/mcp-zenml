@@ -512,6 +512,8 @@ You will need to specify your ZenML MCP server in the following format:
 }
 ```
 
+When `ZENML_STORE_API_KEY` is supplied, the MCP server keeps its ZenML credentials in memory and does not read or update the credentials saved by `zenml login`. This applies to direct Python runs, MCPB extensions, and Docker. Connections without an API key can still use your saved terminal login. Restart the MCP server after changing its API key; a new chat alone may reuse the running server process.
+
 There are four dummy values that you will need to replace:
 
 - the path to your locally installed `uv` (the path listed above is where it

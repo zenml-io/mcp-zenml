@@ -69,6 +69,7 @@ jobs:
 
       - name: Run credential-free MCP contract tests
         run: |
+          uv run scripts/test_credential_isolation.py
           uv run scripts/test_tool_profiles.py
           uv run scripts/test_mcp_transport.py
           uv run scripts/test_distributions.py self-test
