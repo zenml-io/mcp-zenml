@@ -23,6 +23,7 @@ Read `CLAUDE.md` first. It is the contributor guide for this repo: commands, the
 - PRs: plain-English titles, a clear description, link related issues, and add logs/screenshots for failures or tool output when relevant. Ensure the PR Tests workflow passes.
 
 ## Security & Configuration Tips
+- For every PR review, before inspecting PR-controlled files, read [Security review of contributions](CLAUDE.md#security-review-of-contributions) from a trusted checkout of the base branch.
 - Required env vars to run tools: `ZENML_STORE_URL`, `ZENML_STORE_API_KEY`. The full list, including `ZENML_MCP_PROFILE` and `ZENML_MCP_WRITE_POLICY`, is in `CLAUDE.md`.
 - Prefer `uv` for isolated runs. Do not log secrets; scrub values in examples and CI output.
 - Responses from the generic tools go through redaction in `server/zenml_resource_dispatch.py`; keep new code paths going through it.
