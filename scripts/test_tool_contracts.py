@@ -57,6 +57,9 @@ GENERIC_MUTATION_TOOLS = frozenset(
     }
 )
 GENERIC_TOOLS = GENERIC_READ_TOOLS | GENERIC_MUTATION_TOOLS
+# Specialized tools added after the legacy contract was captured.
+POST_CONSOLIDATION_TOOLS = frozenset({"report_feedback"})
+NON_LEGACY_TOOLS = GENERIC_TOOLS | POST_CONSOLIDATION_TOOLS
 
 sys.path.insert(0, str(REPO_ROOT / "server"))
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -84,6 +87,12 @@ def _normalize_schema(value: Any) -> Any:
             for key, item in value.items()
             if key not in {"description", "title"}
         }
+        # Keys under "properties" are parameter names, not annotations.
+        if isinstance(value.get("properties"), dict):
+            normalized["properties"] = {
+                name: _normalize_schema(item)
+                for name, item in value["properties"].items()
+            }
         any_of = normalized.get("anyOf")
         if isinstance(any_of, list) and all(
             isinstance(item, dict) and set(item) == {"type"} for item in any_of
@@ -105,6 +114,48 @@ async def test_app_openers_have_truthful_text_fallbacks() -> None:
     assert "zenml_list_resources" in dashboard
     assert "MCP Apps-capable" in chart
     assert "zenml_list_resources" in chart
+
+
+async def test_report_feedback_builds_prefilled_issue_link() -> None:
+    """Feedback becomes a GitHub new-issue link; nothing is sent anywhere."""
+    from urllib.parse import parse_qs, urlparse
+
+    async with Client(server.mcp, mode="legacy") as session:
+        result = await session.call_tool(
+            "report_feedback",
+            {
+                "title": "  Unhelpful\n error  ",
+                "what_happened": "Filter `created` rejected & ignored.",
+                "proposed_fix": "Say which date formats are accepted.",
+                "tool_name": "zenml_list_resources",
+            },
+        )
+        payload = _structured_payload(result)
+        parsed = urlparse(payload["issue_url"])
+        query = parse_qs(parsed.query)
+        assert payload["issue_url"].startswith(server.FEEDBACK_ISSUE_URL + "?")
+        assert query["title"] == ["Unhelpful error"]
+        assert "Filter `created` rejected & ignored." in query["body"][0]
+        assert "- Tool: `zenml_list_resources`" in query["body"][0]
+        assert payload["truncated"] is False and "body" not in payload
+
+        long_report = await session.call_tool(
+            "report_feedback",
+            {"title": "Long", "what_happened": "é" * 20_000, "proposed_fix": "x"},
+        )
+        long_payload = _structured_payload(long_report)
+        assert long_payload["truncated"] is True
+        assert server._MAX_ISSUE_URL_LENGTH - 20 < len(long_payload["issue_url"])
+        assert len(long_payload["issue_url"]) <= server._MAX_ISSUE_URL_LENGTH
+        long_body = parse_qs(urlparse(long_payload["issue_url"]).query)["body"][0]
+        assert long_body.endswith(server._TRUNCATION_NOTE)
+        assert long_payload["body"].count("é") == 20_000
+
+        empty = await session.call_tool(
+            "report_feedback",
+            {"title": " ", "what_happened": "x", "proposed_fix": "x"},
+        )
+        assert "must not be empty" in _structured_error(empty)["message"]
 
 
 def _structured_payload(result: Any) -> dict[str, Any]:
@@ -403,9 +454,9 @@ async def test_legacy_inventory_and_schemas() -> None:
         schema.get("additionalProperties") is False
         for schema in actual_schemas.values()
     )
-    legacy_names = [name for name in actual_names if name not in GENERIC_TOOLS]
+    legacy_names = [name for name in actual_names if name not in NON_LEGACY_TOOLS]
     assert legacy_names == expected["tool_names"]
-    assert set(actual_names) == set(expected["tool_names"]) | GENERIC_TOOLS
+    assert set(actual_names) == set(expected["tool_names"]) | NON_LEGACY_TOOLS
     assert {name: actual_schemas[name] for name in expected["tool_names"]} == expected[
         "input_schemas"
     ]
@@ -1309,9 +1360,9 @@ async def test_stdio_prompts_resources_apps_without_credentials() -> None:
             expected = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
             actual_names = [tool.name for tool in tools.tools]
             assert [
-                name for name in actual_names if name not in GENERIC_TOOLS
+                name for name in actual_names if name not in NON_LEGACY_TOOLS
             ] == expected["tool_names"]
-            assert set(actual_names) == set(expected["tool_names"]) | GENERIC_TOOLS
+            assert set(actual_names) == set(expected["tool_names"]) | NON_LEGACY_TOOLS
 
             tool_meta = {tool.name: tool.meta for tool in tools.tools}
             assert tool_meta["open_pipeline_run_dashboard"] == {
@@ -1469,6 +1520,10 @@ async def main() -> int:
             test_stdio_prompts_resources_apps_without_credentials,
         ),
         ("test_generic_smoke_payload_guards", test_generic_smoke_payload_guards),
+        (
+            "test_report_feedback_builds_prefilled_issue_link",
+            test_report_feedback_builds_prefilled_issue_link,
+        ),
     ]
     for name, test in tests:
         await test()

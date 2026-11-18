@@ -79,8 +79,8 @@ not start or if the persisted CRUD or project-isolation receipt fails.
 
 - Runtime targets: MCP Python SDK 2.2.0, ZenML SDK and server 0.96.4, Python
   3.12 through 3.14.
-- Default capability: compact/read-write, 16 tools. Optional inventories:
-  compact/read-only 11, legacy/read-write 57, legacy/read-only 52.
+- Default capability: compact/read-write, 17 tools. Optional inventories:
+  compact/read-only 12, legacy/read-write 58, legacy/read-only 53.
 - Credential-free evidence: legacy contracts, SDK bindings, registry coverage,
   generic reads and writes, finite actions, write policy, stdio and real
   localhost HTTP, timeout and cancellation outcomes, Apps browser flows,

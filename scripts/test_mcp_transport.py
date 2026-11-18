@@ -538,7 +538,7 @@ async def test_real_localhost_http_session() -> None:
             tools = await client.list_tools()
             names = [tool.name for tool in tools.tools]
             assert names[0] == "diagnose_zenml_setup"
-            assert len(names) == 16
+            assert len(names) == 17
     finally:
         process.terminate()
         try:

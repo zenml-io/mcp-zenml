@@ -44,7 +44,7 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, ParamSpec, TypeVar, cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import requests
 import urllib3
@@ -3756,6 +3756,130 @@ def open_run_activity_chart() -> str:
         "use zenml_list_resources for pipeline_run resources with a descending "
         "created-time sort."
     )
+
+
+# =============================================================================
+# Feedback
+# =============================================================================
+
+FEEDBACK_ISSUE_URL = "https://github.com/zenml-io/mcp-zenml/issues/new"
+# Browsers and GitHub reject much longer links; 8,000 characters is a safe limit.
+_MAX_ISSUE_URL_LENGTH = 8000
+_MAX_FEEDBACK_TITLE_LENGTH = 200
+_TRUNCATION_NOTE = (
+    "\n\n_(Cut short to fit in a link. Paste the rest of the report here.)_"
+)
+
+
+def _feedback_issue_body(
+    what_happened: str, proposed_fix: str, tool_name: str | None
+) -> str:
+    context = [
+        f"- mcp-zenml: {analytics.get_server_version()}",
+        f"- ZenML client: {distribution_version('zenml')}",
+        f"- Profile: `{ACTIVE_TOOL_PROFILE}`, write policy: `{ACTIVE_WRITE_POLICY}`",
+    ]
+    if tool_name:
+        context.insert(0, f"- Tool: `{tool_name}`")
+    return "\n".join(
+        [
+            "## What happened",
+            what_happened,
+            "",
+            "## Proposed fix",
+            proposed_fix,
+            "",
+            "## Context",
+            *context,
+            "",
+            "_Drafted by an AI agent with the `report_feedback` tool._",
+        ]
+    )
+
+
+def _issue_url(title: str, body: str) -> str:
+    query = urlencode({"title": title, "body": body}, quote_via=quote)
+    return f"{FEEDBACK_ISSUE_URL}?{query}"
+
+
+def _prefilled_issue_url(title: str, body: str) -> tuple[str, bool]:
+    """Build a GitHub new-issue link, cutting the body as little as needed to fit."""
+    url = _issue_url(title, body)
+    if len(url) <= _MAX_ISSUE_URL_LENGTH:
+        return url, False
+    # Binary search for the longest body prefix whose link (plus note) fits.
+    # Each character encodes to at least one, so more than the limit never fits.
+    low, high = 0, min(len(body), _MAX_ISSUE_URL_LENGTH)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = _issue_url(title, body[:middle] + _TRUNCATION_NOTE)
+        if len(candidate) <= _MAX_ISSUE_URL_LENGTH:
+            low = middle
+        else:
+            high = middle - 1
+    return _issue_url(title, body[:low] + _TRUNCATION_NOTE), True
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+)
+@handle_tool_exceptions
+def report_feedback(
+    title: str,
+    what_happened: str,
+    proposed_fix: str,
+    tool_name: str | None = None,
+) -> dict[str, Any]:
+    """Draft a GitHub issue about this MCP server for the user to review and submit.
+
+    Use this when a tool in this server got in your way: an error message that
+    did not explain the problem, a confusing or wrong schema or description, a
+    filter or resource type you needed that is missing, or results that were
+    wrong or hard to use. Do not use it for problems in the user's own
+    pipelines or ZenML server; this reports problems with the MCP server.
+
+    Nothing is sent. The tool returns a link that opens a pre-filled issue on
+    github.com/zenml-io/mcp-zenml. Show the link to the user and tell them to
+    read the text before they submit it, because the issue will be public.
+
+    Write the report for a maintainer who has never seen this conversation.
+    Leave out anything private: API keys, passwords, server URLs, and the names
+    of the user's pipelines, stacks, models or projects. Describe them
+    generically instead (for example "a pipeline with 40 steps").
+
+    Args:
+        title: A one-line summary of the problem, under 100 characters.
+        what_happened: What you called, with which arguments, what you expected,
+            and what you got instead. Quote the error message if there was one.
+        proposed_fix: The change you suggest to the server, as specifically as
+            you can (which tool, parameter or description to change, and how).
+        tool_name: The tool the feedback is about, if it is about one tool.
+    """
+    title = " ".join(title.split())[:_MAX_FEEDBACK_TITLE_LENGTH]
+    what_happened, proposed_fix = what_happened.strip(), proposed_fix.strip()
+    if not (title and what_happened and proposed_fix):
+        raise ResourceDispatchError(
+            "title, what_happened and proposed_fix must not be empty."
+        )
+    body = _feedback_issue_body(what_happened, proposed_fix, tool_name)
+    url, truncated = _prefilled_issue_url(title, body)
+    note = (
+        "Nothing has been sent. Show the user this link and ask them to read "
+        "the issue before submitting it, because it will be public."
+    )
+    result: dict[str, Any] = {"issue_url": url, "truncated": truncated}
+    if truncated:
+        note += (
+            " The report was too long to fit in a link, so the issue text is cut "
+            "short. Give the user the full body below to paste in."
+        )
+        result["body"] = body
+    return {**result, "note": note}
 
 
 for _tool_name in ALL_TOOL_NAMES:

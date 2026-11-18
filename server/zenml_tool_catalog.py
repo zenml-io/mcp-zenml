@@ -32,6 +32,7 @@ COMPACT_SPECIALIZED_TOOLS = (
     "get_deployment_logs",
     "open_pipeline_run_dashboard",
     "open_run_activity_chart",
+    "report_feedback",
 )
 
 # Captured by scripts/fixtures/legacy_tool_schemas.json before consolidation.
@@ -88,8 +89,17 @@ LEGACY_TOOLS = (
     "open_run_activity_chart",
 )
 
+# Specialized tools added after consolidation are not in LEGACY_TOOLS, but the
+# legacy profile still advertises them because it permits every name here.
 ALL_TOOL_NAMES = tuple(
-    dict.fromkeys((*LEGACY_TOOLS[:2], *GENERIC_TOOLS, *LEGACY_TOOLS[2:]))
+    dict.fromkeys(
+        (
+            *LEGACY_TOOLS[:2],
+            *GENERIC_TOOLS,
+            *LEGACY_TOOLS[2:],
+            *COMPACT_SPECIALIZED_TOOLS,
+        )
+    )
 )
 
 MUTATING_TOOLS = frozenset((*GENERIC_WRITE_TOOLS, "trigger_pipeline"))
@@ -145,8 +155,8 @@ def configured_tool_names(
     return tool_names(configured_profile(environ), configured_write_policy(environ))
 
 
-assert len(tool_names("compact", "read_write")) == 16
-assert len(tool_names("compact", "read_only")) == 11
-assert len(tool_names("legacy", "read_write")) == 57
-assert len(tool_names("legacy", "read_only")) == 52
+assert len(tool_names("compact", "read_write")) == 17
+assert len(tool_names("compact", "read_only")) == 12
+assert len(tool_names("legacy", "read_write")) == 58
+assert len(tool_names("legacy", "read_only")) == 53
 assert set(tool_names("legacy", "read_write")) == set(ALL_TOOL_NAMES)

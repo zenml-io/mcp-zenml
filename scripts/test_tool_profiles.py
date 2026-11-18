@@ -58,6 +58,7 @@ COMPACT_READ_WRITE = (
     "get_step_code",
     "open_pipeline_run_dashboard",
     "open_run_activity_chart",
+    "report_feedback",
 )
 MUTATING_TOOLS = {
     "zenml_create_resource",
@@ -67,8 +68,17 @@ MUTATING_TOOLS = {
     "trigger_pipeline",
 }
 LEGACY_SPECIALIZED = tuple(json.loads(LEGACY_CONTRACT.read_text())["tool_names"])
+# Specialized tools added after the legacy contract was captured.
+POST_CONSOLIDATION_TOOLS = ("report_feedback",)
 ALL_TOOLS = tuple(
-    dict.fromkeys((*LEGACY_SPECIALIZED[:2], *GENERIC_TOOLS, *LEGACY_SPECIALIZED[2:]))
+    dict.fromkeys(
+        (
+            *LEGACY_SPECIALIZED[:2],
+            *GENERIC_TOOLS,
+            *LEGACY_SPECIALIZED[2:],
+            *POST_CONSOLIDATION_TOOLS,
+        )
+    )
 )
 EXPECTED_TOOLS = {
     ("compact", "read_write"): COMPACT_READ_WRITE,

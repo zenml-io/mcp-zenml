@@ -55,6 +55,7 @@ EXPECTED_COMPACT_READ_WRITE_TOOLS = (
     "get_step_code",
     "open_pipeline_run_dashboard",
     "open_run_activity_chart",
+    "report_feedback",
 )
 # The bundle must declare exactly the repo's runtime dependency list, and the
 # installed mcp and zenml versions must match its exact pins.
