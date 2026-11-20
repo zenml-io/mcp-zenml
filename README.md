@@ -72,7 +72,7 @@ and help us make it even better!*
 
 ## Tool profiles and write policy
 
-The default `compact` profile advertises 16 tools. Seven generic tools cover the
+The default `compact` profile advertises 17 tools. Seven generic tools cover the
 resource catalog, reads, ordinary mutations, and finite lifecycle actions:
 
 | Tool | Purpose |
@@ -85,19 +85,28 @@ resource catalog, reads, ordinary mutations, and finite lifecycle actions:
 | `zenml_delete_resource` | Delete or archive one exact resource UUID |
 | `zenml_action_resource` | Run an allowlisted lifecycle or relation action without retries |
 
-Nine focused tools remain because they provide diagnostics, active context,
-streamed logs or code, pipeline execution, or an interactive App:
+Ten focused tools remain because they provide diagnostics, active context,
+streamed logs or code, pipeline execution, an interactive App, or feedback:
 
 - `diagnose_zenml_setup`
 - `get_active_user` and `get_active_project`
 - `trigger_pipeline`
 - `get_step_logs`, `get_step_code`, and `get_deployment_logs`
 - `open_pipeline_run_dashboard` and `open_run_activity_chart`
+- `report_feedback`
 
 `get_step_logs` returns at most 50,000 entries, oldest first, with a
 `possibly_truncated` flag, plus a `note` saying which entries are missing and
 why. Pass `tail` to get only the newest entries. On ZenML 0.97+ servers it
 pages through the log store; on 0.96 it uses the older single-request endpoint.
+
+`report_feedback` lets the assistant report a problem with this MCP server,
+such as a confusing error, a wrong tool description or a missing filter. It
+sends nothing. It returns a link to a new GitHub issue on this repository,
+already filled in with what went wrong, a proposed fix, and the server and
+ZenML versions. You open the link, read the text, remove anything you don't
+want to make public, and submit it yourself. It is available in every profile
+and write policy, because it only builds a link.
 
 Use `ZENML_MCP_PROFILE=legacy` when an existing client still depends on the old
 entity-specific names such as `list_pipeline_runs`. This retains the
@@ -111,10 +120,10 @@ Registration and write access are independent:
 
 | Profile | Policy | Advertised tools |
 |---------|--------|-----------------:|
-| `compact` | `read_write` | 16 |
-| `compact` | `read_only` | 11 |
-| `legacy` | `read_write` | 57 |
-| `legacy` | `read_only` | 52 |
+| `compact` | `read_write` | 17 |
+| `compact` | `read_only` | 12 |
+| `legacy` | `read_write` | 58 |
+| `legacy` | `read_only` | 53 |
 
 Set `ZENML_MCP_WRITE_POLICY=read_only` to remove all four generic mutation tools
 and `trigger_pipeline` from MCP discovery and dispatch. Resource discovery also

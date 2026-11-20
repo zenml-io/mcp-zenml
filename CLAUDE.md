@@ -95,7 +95,7 @@ The project is a Model Context Protocol (MCP) server that gives AI assistants ac
 - `get_step_logs` sends raw HTTP requests (it needs the raw responses to tell a 0.96 server's missing route from ZenML's own 404s), but through the ZenML client's session (`get_zenml_client().zen_store.session`). So it shares the client's token and its `verify_ssl` and User-Agent settings, and it works however the client is connected (environment variables or `zenml login`). Like the client, it logs in only after a 401 (`store.authenticate()`), then retries once. `diagnose_zenml_setup` still logs in fresh with `get_access_token`, because checking the credentials is its job. It must work even when the ZenML client can't start, so it sends its own requests, but it reads `ZENML_STORE_VERIFY_SSL` the way the client does (`_store_verify_ssl`).
 - Logs go to stderr only (stdout carries the MCP JSON protocol), and `LOGLEVEL` is clamped to WARNING or higher.
 
-**Tool catalog**: `server/zenml_tool_catalog.py` - the single list of which tool names each profile and write policy advertises (`tool_names()`), and which tools write (`MUTATING_TOOLS`). Module-level asserts pin the counts (compact 16/11, legacy 57/52).
+**Tool catalog**: `server/zenml_tool_catalog.py` - the single list of which tool names each profile and write policy advertises (`tool_names()`), and which tools write (`MUTATING_TOOLS`). Module-level asserts pin the counts (compact 17/12, legacy 58/53).
 
 **Resource registry**: `server/zenml_resource_registry.py` - a static, standard-library-only description of every resource type the generic tools support: which operations exist, which filters are valid and their types, the create/update/delete payload schemas (`_MUTATION_SPECS`) and allowed lifecycle actions (`_ACTION_SPECS`). This file decides what the generic tools advertise and accept; SDK introspection is only used by tests to catch drift.
 
@@ -153,7 +153,7 @@ Analytics variables are listed under the analytics module above.
 `README.md` ("Tool profiles and write policy") has the user-facing tables. What contributors need:
 
 - `server/zenml_tool_catalog.py` is the only place that decides which tools each profile/policy advertises. Its asserts pin the counts, so a change there fails loudly until the counts are updated.
-- **`compact`** (default since 2.0): seven generic `zenml_*_resource` tools that take a `resource_type`, plus nine specialized tools for things that don't fit list/get/create (diagnostics, active user/project, `trigger_pipeline`, step/deployment logs, step code, the two MCP Apps).
+- **`compact`** (default since 2.0): seven generic `zenml_*_resource` tools that take a `resource_type`, plus ten specialized tools for things that don't fit list/get/create (diagnostics, active user/project, `trigger_pipeline`, step/deployment logs, step code, the two MCP Apps, `report_feedback`).
 - **`legacy`**: adds back the 1.x entity-specific tools (`list_pipeline_runs`, `get_stack`, ...) with their exact old schemas, recorded in `scripts/fixtures/legacy_tool_schemas.json`. It exists only so existing clients keep working while they migrate. Don't add new functionality to legacy tools.
 - **`read_only`** removes `zenml_create/update/delete/action_resource` and `trigger_pipeline` from discovery and dispatch, and hides mutation schemas from `zenml_describe_resources`.
 - Prompts and resources (`@mcp.prompt` / `@mcp.resource` in `zenml_server.py`) are the same in both profiles.
@@ -170,8 +170,8 @@ Analytics variables are listed under the analytics module above.
 
 **Only add a new tool** when the behaviour genuinely doesn't fit list/get/create/update/delete/action (e.g. streaming logs, an MCP App). Then:
 1. Add the tool to `server/zenml_server.py` with `@mcp.tool()` + `@handle_tool_exceptions`. If it writes, call `ensure_writes_enabled()` first.
-2. Add its name to `COMPACT_SPECIALIZED_TOOLS` (and/or `LEGACY_TOOLS`) in `server/zenml_tool_catalog.py`; add it to `MUTATING_TOOLS` if it writes; update the count asserts at the bottom of that file.
-3. Update the hard-coded `COMPACT_READ_WRITE` list in `scripts/test_tool_profiles.py` and the tool/profile tables in `README.md`.
+2. Add its name to `COMPACT_SPECIALIZED_TOOLS` in `server/zenml_tool_catalog.py` (the legacy profile picks it up automatically; leave `LEGACY_TOOLS` and `scripts/fixtures/legacy_tool_schemas.json` as the frozen 1.x record); add it to `MUTATING_TOOLS` if it writes; update the count asserts at the bottom of that file.
+3. Update the hard-coded `COMPACT_READ_WRITE` list and `POST_CONSOLIDATION_TOOLS` in `scripts/test_tool_profiles.py`, `POST_CONSOLIDATION_TOOLS` in `scripts/test_tool_contracts.py`, `EXPECTED_COMPACT_READ_WRITE_TOOLS` in `scripts/test_distributions.py`, and the tool/profile tables in `README.md`.
 4. Regenerate the manifest: `uv run scripts/generate_manifest_fields.py`.
 5. If the tool is read-only and needs no arguments, add it to `safe_tools_to_test` in `scripts/test_mcp_server.py`.
 

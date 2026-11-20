@@ -147,6 +147,10 @@
     {
       "name": "open_run_activity_chart",
       "description": "Open an interactive chart showing pipeline run activity over the last 30 days."
+    },
+    {
+      "name": "report_feedback",
+      "description": "Draft a GitHub issue about this MCP server for the user to review and submit."
     }
   ],
   "prompts": [
