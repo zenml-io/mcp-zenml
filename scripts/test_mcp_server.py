@@ -13,7 +13,7 @@
 #
 # [tool.ty.rules]
 # # ty >=0.0.62 takes rules from this block, not pyproject.toml. See CLAUDE.md "Note on third-party imports".
-# unresolved-import = "ignore"
+# import-not-found = "ignore"
 # ///
 import argparse
 import asyncio

@@ -6,7 +6,7 @@
 # ]
 #
 # [tool.ty.rules]
-# unresolved-import = "ignore"
+# import-not-found = "ignore"
 # ///
 """Browser contracts for both MCP Apps under the compact tool profile."""
 
