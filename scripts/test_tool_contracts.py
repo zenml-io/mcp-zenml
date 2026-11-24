@@ -13,7 +13,7 @@
 # exclude-newer-package = { mcp = "2026-09-08T00:00:00Z", "mcp-types" = "2026-09-08T00:00:00Z" }
 #
 # [tool.ty.rules]
-# unresolved-import = "ignore"
+# import-not-found = "ignore"
 #
 # [tool.ty.environment]
 # extra-paths = ["../server", "."]
